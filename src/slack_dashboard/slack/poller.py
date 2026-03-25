@@ -30,6 +30,8 @@ class SlackPoller:
         self._queue = FetchQueue()
         self._consumer_task: asyncio.Task[None] | None = None
         self._refresh_task: asyncio.Task[None] | None = None
+        self._worker_semaphore = asyncio.Semaphore(10)
+        self._active_workers: set[asyncio.Task[None]] = set()
 
     @property
     def threads(self) -> dict[tuple[str, str], ThreadEntry]:
@@ -66,11 +68,22 @@ class SlackPoller:
         try:
             while True:
                 item = await self._queue.dequeue()
-                await self._process_item(item)
+                await self._worker_semaphore.acquire()
+                task = asyncio.create_task(self._run_worker(item))
+                self._active_workers.add(task)
+                task.add_done_callback(self._active_workers.discard)
         except asyncio.CancelledError:
+            for task in self._active_workers:
+                task.cancel()
             return
         except Exception:
             logger.exception("Fatal error in fetch consumer")
+
+    async def _run_worker(self, item: FetchItem) -> None:
+        try:
+            await self._process_item(item)
+        finally:
+            self._worker_semaphore.release()
 
     async def _refresh_loop(self) -> None:
         interval = self._config.fetch.refresh_interval_minutes * 60
@@ -130,9 +143,7 @@ class SlackPoller:
         thread_messages = await self._slack.fetch_threads(
             channel_id, min_replies=self._config.fetch.min_replies
         )
-        for i, msg in enumerate(thread_messages):
-            if i > 0:
-                await asyncio.sleep(1.0)
+        for msg in thread_messages:
             thread_ts = msg.get("thread_ts", msg["ts"])
             key = (channel_id, thread_ts)
             replies = await self._slack.fetch_replies(channel_id, thread_ts)
