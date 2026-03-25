@@ -1,0 +1,30 @@
+otto:
+  api: 1
+  tasks: [ci]
+
+tasks:
+  whitespace:
+    help: "Run whitespace linting"
+    bash: whitespace -r
+
+  format:
+    help: "Check code formatting"
+    bash: uv run ruff format --check .
+
+  lint:
+    help: "Run linter"
+    bash: uv run ruff check .
+
+  typecheck:
+    help: "Run type checker"
+    bash: uv run mypy src/
+
+  test:
+    help: "Run tests"
+    bash: uv run pytest -v
+
+  ci:
+    help: "Full CI pipeline"
+    before: [whitespace, format, lint, typecheck, test]
+    bash: |
+      echo "All CI checks passed!"

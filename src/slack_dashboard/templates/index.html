@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block content %}
+<div id="thread-list"
+     hx-get="/threads"
+     hx-trigger="load, every 30s [document.visibilityState === 'visible'], poll"
+     hx-swap="innerHTML">
+    <p>Loading threads...</p>
+</div>
+{% endblock %}

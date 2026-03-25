@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Slack Dashboard</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <style>
+        .heat-hot { color: #e74c3c; }
+        .heat-warm { color: #f39c12; }
+        .heat-cold { color: #3498db; }
+        .channel-badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+            font-weight: bold;
+            background: var(--pico-muted-border-color);
+        }
+        .thread-meta { font-size: 0.85em; color: var(--pico-muted-color); }
+        .summary-content { margin-top: 0.5em; padding: 0.5em; background: var(--pico-card-sectioning-background-color); border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <main class="container">
+        <h1>Slack Dashboard</h1>
+        {% block content %}{% endblock %}
+    </main>
+    <script>
+        document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState === 'visible') {
+                htmx.trigger(document.getElementById('thread-list'), 'poll');
+            }
+        });
+    </script>
+</body>
+</html>

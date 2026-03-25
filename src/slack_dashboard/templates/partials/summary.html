@@ -1,0 +1,13 @@
+{% if error %}
+<div class="summary-content" role="alert">
+    <p>Failed to generate summary.</p>
+    <button class="outline secondary"
+            hx-get="/summarize/{{ channel_id }}/{{ thread_ts }}"
+            hx-target="#summary-{{ channel_id }}-{{ thread_ts | replace('.', '-') }}"
+            hx-swap="innerHTML">
+        Retry
+    </button>
+</div>
+{% else %}
+<div class="summary-content">{{ summary | markdown }}</div>
+{% endif %}

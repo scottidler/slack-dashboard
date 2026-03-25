@@ -1,0 +1,33 @@
+{% if threads %}
+{% for thread in threads %}
+<article>
+    <header>
+        <span class="channel-badge">{{ thread.channel_name }}</span>
+        <span class="heat-{{ thread.heat_tier }}">&#9679;</span>
+        <strong>{{ thread.display_title }}</strong>
+    </header>
+    <div class="thread-meta">
+        {{ thread.reply_count }} replies &middot;
+        {{ thread.participants | length }} participants &middot;
+        {{ thread.last_activity.strftime('%H:%M') }}
+        &middot;
+        <a href="https://slack.com/app_redirect?channel={{ thread.channel_id }}&message_ts={{ thread.thread_ts }}" target="_blank">Open in Slack</a>
+    </div>
+    <div id="summary-{{ thread.channel_id }}-{{ thread.thread_ts | replace('.', '-') }}">
+        {% if thread.summary %}
+        <div class="summary-content">{{ thread.summary | markdown }}</div>
+        {% else %}
+        <button class="outline secondary"
+                hx-get="/summarize/{{ thread.channel_id }}/{{ thread.thread_ts }}"
+                hx-target="#summary-{{ thread.channel_id }}-{{ thread.thread_ts | replace('.', '-') }}"
+                hx-swap="innerHTML"
+                hx-indicator="closest article">
+            Summarize
+        </button>
+        {% endif %}
+    </div>
+</article>
+{% endfor %}
+{% else %}
+<p>No active threads found.</p>
+{% endif %}
