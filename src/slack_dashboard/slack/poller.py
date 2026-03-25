@@ -5,9 +5,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from slack_dashboard.config import AppConfig
-from slack_dashboard.heat import classify_tier, compute_heat
+from slack_dashboard.heat import classify_tier, compute_heat, filter_stale_threads
 from slack_dashboard.slack.client import SlackClient
-from slack_dashboard.slack.queue import PRIORITY_BACKFILL, FetchItem, FetchQueue
+from slack_dashboard.slack.queue import PRIORITY_BACKFILL, PRIORITY_REFRESH, FetchItem, FetchQueue
 from slack_dashboard.thread import ThreadEntry
 
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ class SlackPoller:
         self._channel_map: dict[str, str] = {}
         self._queue = FetchQueue()
         self._consumer_task: asyncio.Task[None] | None = None
+        self._refresh_task: asyncio.Task[None] | None = None
 
     @property
     def threads(self) -> dict[tuple[str, str], ThreadEntry]:
@@ -39,7 +40,10 @@ class SlackPoller:
         return self._queue
 
     def ranked_threads(self) -> list[ThreadEntry]:
-        threads = list(self._threads.values())
+        threads = filter_stale_threads(list(self._threads.values()), self._config.heat)
+        for t in threads:
+            t.heat_score = compute_heat(t, self._config.heat)
+            t.heat_tier = classify_tier(t.heat_score, self._config.heat)
         return sorted(threads, key=lambda t: t.heat_score, reverse=True)
 
     async def start(self) -> None:
@@ -49,12 +53,14 @@ class SlackPoller:
         )
         self._queue.seed_channels(self._channel_map, priority=PRIORITY_BACKFILL)
         self._consumer_task = asyncio.create_task(self._consume_loop())
+        self._refresh_task = asyncio.create_task(self._refresh_loop())
 
     async def stop(self) -> None:
-        if self._consumer_task:
-            self._consumer_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._consumer_task
+        for task in [self._consumer_task, self._refresh_task]:
+            if task:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
     async def _consume_loop(self) -> None:
         try:
@@ -65,6 +71,16 @@ class SlackPoller:
             return
         except Exception:
             logger.exception("Fatal error in fetch consumer")
+
+    async def _refresh_loop(self) -> None:
+        interval = self._config.fetch.refresh_interval_minutes * 60
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                logger.info("Periodic refresh: re-queuing all channels")
+                self._queue.seed_channels(self._channel_map, priority=PRIORITY_REFRESH)
+        except asyncio.CancelledError:
+            return
 
     async def _process_item(self, item: FetchItem) -> None:
         try:
@@ -111,7 +127,9 @@ class SlackPoller:
         self._maybe_trigger_llm(entry, reply_texts)
 
     async def _fetch_channel(self, channel_id: str, channel_name: str) -> None:
-        thread_messages = await self._slack.fetch_threads(channel_id)
+        thread_messages = await self._slack.fetch_threads(
+            channel_id, min_replies=self._config.fetch.min_replies
+        )
         for i, msg in enumerate(thread_messages):
             if i > 0:
                 await asyncio.sleep(1.0)
@@ -145,14 +163,7 @@ class SlackPoller:
 
     def _update_heat(self, entry: ThreadEntry) -> None:
         entry.heat_score = compute_heat(entry, self._config.heat)
-        now = datetime.now(UTC)
-        minutes_inactive = (now - entry.last_activity).total_seconds() / 60
-        entry.heat_tier = classify_tier(
-            entry.heat_score,
-            self._config.heat,
-            minutes_inactive=minutes_inactive,
-            cold_threshold_minutes=self._config.polling.cold_threshold_minutes,
-        )
+        entry.heat_tier = classify_tier(entry.heat_score, self._config.heat)
 
     def _maybe_trigger_llm(self, entry: ThreadEntry, reply_texts: list[str]) -> None:
         if self._on_title_needed and entry.needs_retitle(

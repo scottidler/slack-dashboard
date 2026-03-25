@@ -19,25 +19,20 @@ class SlackConfig(_KebabModel):
     app_token: str = ""
 
 
-class PollingConfig(_KebabModel):
-    hot_interval_seconds: int = 30
-    warm_interval_seconds: int = 120
-    cold_interval_seconds: int = 300
-    cold_threshold_minutes: int = 60
+class FetchConfig(_KebabModel):
+    refresh_interval_minutes: int = 10
+    min_replies: int = 3
 
 
 class HeatConfig(_KebabModel):
     reply_weight: int = 2
     participant_weight: int = 3
-    recency_max_bonus: int = 100
+    decay_half_life_hours: int = 24
+    max_thread_age_days: int = 3
     hot_threshold: int = 50
     warm_threshold: int = 20
     retitle_reply_growth: int = 5
     retitle_reply_percent: int = 25
-
-
-class PruningConfig(_KebabModel):
-    cold_max_hours: int = 24
 
 
 class LlmConfig(_KebabModel):
@@ -55,9 +50,8 @@ class ServerConfig(_KebabModel):
 class AppConfig(_KebabModel):
     slack: SlackConfig = SlackConfig()
     channels: dict[str, str] = {}
-    polling: PollingConfig = PollingConfig()
+    fetch: FetchConfig = FetchConfig()
     heat: HeatConfig = HeatConfig()
-    pruning: PruningConfig = PruningConfig()
     llm: LlmConfig = LlmConfig()
     server: ServerConfig = ServerConfig()
 

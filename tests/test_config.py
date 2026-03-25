@@ -6,10 +6,9 @@ import pytest
 import yaml
 
 from slack_dashboard.config import (
+    FetchConfig,
     HeatConfig,
     LlmConfig,
-    PollingConfig,
-    PruningConfig,
     ServerConfig,
     SlackConfig,
     load_config,
@@ -33,29 +32,27 @@ def test_load_minimal_config(tmp_path: Path) -> None:
     assert config.channels == {"general": "C111", "random": "C222"}
     assert config.server.port == 8080
     assert config.heat.reply_weight == 2
-    assert config.polling.hot_interval_seconds == 30
+    assert config.fetch.refresh_interval_minutes == 10
 
 
 def test_load_full_config(tmp_path: Path) -> None:
     data = {
-        "slack": {"token": "xoxp-test"},
+        "slack": {"token": "xoxp-test", "app-token": "xapp-test"},
         "channels": {"sre-internal": "C111", "data-platform": "C222"},
-        "polling": {
-            "hot-interval-seconds": 15,
-            "warm-interval-seconds": 60,
-            "cold-interval-seconds": 180,
-            "cold-threshold-minutes": 30,
+        "fetch": {
+            "refresh-interval-minutes": 5,
+            "min-replies": 5,
         },
         "heat": {
             "reply-weight": 3,
             "participant-weight": 5,
-            "recency-max-bonus": 200,
+            "decay-half-life-hours": 48,
+            "max-thread-age-days": 7,
             "hot-threshold": 80,
             "warm-threshold": 30,
             "retitle-reply-growth": 10,
             "retitle-reply-percent": 50,
         },
-        "pruning": {"cold-max-hours": 48},
         "llm": {
             "provider": "anthropic",
             "model": "claude-sonnet-4-6",
@@ -70,14 +67,16 @@ def test_load_full_config(tmp_path: Path) -> None:
     config_file = write_config(tmp_path, data)
     config = load_config(config_file)
     assert config.slack.token == "xoxp-test"
+    assert config.slack.app_token == "xapp-test"
     assert config.channels == {"sre-internal": "C111", "data-platform": "C222"}
-    assert config.polling.hot_interval_seconds == 15
-    assert config.polling.cold_threshold_minutes == 30
+    assert config.fetch.refresh_interval_minutes == 5
+    assert config.fetch.min_replies == 5
     assert config.heat.reply_weight == 3
     assert config.heat.participant_weight == 5
+    assert config.heat.decay_half_life_hours == 48
+    assert config.heat.max_thread_age_days == 7
     assert config.heat.hot_threshold == 80
     assert config.heat.retitle_reply_growth == 10
-    assert config.pruning.cold_max_hours == 48
     assert config.llm.provider == "anthropic"
     assert config.llm.model == "claude-sonnet-4-6"
     assert config.server.host == "127.0.0.1"
@@ -116,21 +115,18 @@ def test_defaults() -> None:
     slack = SlackConfig()
     assert slack.token == ""
     assert slack.app_token == ""
-    polling = PollingConfig()
-    assert polling.hot_interval_seconds == 30
-    assert polling.warm_interval_seconds == 120
-    assert polling.cold_interval_seconds == 300
-    assert polling.cold_threshold_minutes == 60
+    fetch = FetchConfig()
+    assert fetch.refresh_interval_minutes == 10
+    assert fetch.min_replies == 3
     heat = HeatConfig()
     assert heat.reply_weight == 2
     assert heat.participant_weight == 3
-    assert heat.recency_max_bonus == 100
+    assert heat.decay_half_life_hours == 24
+    assert heat.max_thread_age_days == 3
     assert heat.hot_threshold == 50
     assert heat.warm_threshold == 20
     assert heat.retitle_reply_growth == 5
     assert heat.retitle_reply_percent == 25
-    pruning = PruningConfig()
-    assert pruning.cold_max_hours == 24
     llm = LlmConfig()
     assert llm.provider == "anthropic"
     assert llm.model == "claude-haiku-4-5-20251001"
