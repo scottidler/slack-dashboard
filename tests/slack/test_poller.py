@@ -6,7 +6,12 @@ import pytest
 from slack_dashboard.config import AppConfig
 from slack_dashboard.slack.client import SlackClient
 from slack_dashboard.slack.poller import SlackPoller
-from slack_dashboard.slack.queue import PRIORITY_BACKFILL, PRIORITY_SOCKET_EVENT, FetchItem
+from slack_dashboard.slack.queue import (
+    PRIORITY_BACKFILL,
+    PRIORITY_REFRESH,
+    PRIORITY_SOCKET_EVENT,
+    FetchItem,
+)
 
 _NOW = str(time.time())
 _REPLY_1 = str(time.time() + 1)
@@ -47,7 +52,7 @@ async def test_fetch_channel_via_process_item() -> None:
     assert entry.reply_count == 3
     assert len(entry.participants) == 3
     assert entry.channel_name == "general"
-    assert entry.first_message == "Root message"
+    assert entry.first_message == "root"
 
 
 @pytest.mark.asyncio
@@ -114,3 +119,96 @@ async def test_queue_property_accessible() -> None:
     config = AppConfig(channels={"general": "C111"})
     poller = SlackPoller(mock_slack, config)
     assert poller.queue.pending_count == 0
+
+
+@pytest.mark.asyncio
+async def test_channel_watermark_set_after_fetch() -> None:
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    item = FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    await poller._process_item(item)
+    assert "C111" in poller.channel_watermarks
+    assert poller.channel_watermarks["C111"] == _NOW
+
+
+@pytest.mark.asyncio
+async def test_thread_watermark_set_after_fetch() -> None:
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    item = FetchItem(
+        priority=PRIORITY_BACKFILL,
+        channel_id="C111",
+        channel_name="general",
+        thread_ts=_NOW,
+    )
+    await poller._process_item(item)
+    assert ("C111", _NOW) in poller.thread_watermarks
+    assert poller.thread_watermarks[("C111", _NOW)] == _REPLY_3
+
+
+@pytest.mark.asyncio
+async def test_refresh_passes_oldest_to_fetch_threads() -> None:
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    # Do initial backfill
+    item = FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    await poller._process_item(item)
+    # Now do refresh
+    refresh_item = FetchItem(priority=PRIORITY_REFRESH, channel_id="C111", channel_name="general")
+    await poller._process_item(refresh_item)
+    # Second call to fetch_threads should have oldest set
+    calls = mock_slack.fetch_threads.call_args_list
+    assert len(calls) == 2
+    assert calls[1][1].get("oldest") == _NOW
+
+
+@pytest.mark.asyncio
+async def test_backfill_does_not_pass_oldest() -> None:
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    # Set a fake watermark
+    poller._channel_watermarks["C111"] = "999.999"
+    item = FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    await poller._process_item(item)
+    call_kwargs = mock_slack.fetch_threads.call_args[1]
+    assert call_kwargs.get("oldest") is None
+
+
+@pytest.mark.asyncio
+async def test_incremental_merge_adds_participants() -> None:
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    # Initial full fetch
+    item = FetchItem(
+        priority=PRIORITY_BACKFILL,
+        channel_id="C111",
+        channel_name="general",
+        thread_ts=_NOW,
+    )
+    await poller._process_item(item)
+    key = ("C111", _NOW)
+    assert poller.threads[key].reply_count == 3
+    assert len(poller.threads[key].participants) == 3
+
+    # Simulate incremental fetch with new reply from new user
+    new_reply_ts = str(time.time() + 10)
+    mock_slack.fetch_replies = AsyncMock(
+        return_value=[
+            {"ts": new_reply_ts, "user": "U_NEW", "text": "new reply"},
+        ]
+    )
+    refresh_item = FetchItem(
+        priority=PRIORITY_REFRESH,
+        channel_id="C111",
+        channel_name="general",
+        thread_ts=_NOW,
+    )
+    await poller._process_item(refresh_item)
+    assert poller.threads[key].reply_count == 4
+    assert "U_NEW" in poller.threads[key].participants
+    assert len(poller.threads[key].participants) == 4

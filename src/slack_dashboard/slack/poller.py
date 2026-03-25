@@ -7,7 +7,12 @@ from typing import Any
 from slack_dashboard.config import AppConfig
 from slack_dashboard.heat import classify_tier, compute_heat, filter_stale_threads
 from slack_dashboard.slack.client import SlackClient
-from slack_dashboard.slack.queue import PRIORITY_BACKFILL, PRIORITY_REFRESH, FetchItem, FetchQueue
+from slack_dashboard.slack.queue import (
+    PRIORITY_BACKFILL,
+    PRIORITY_REFRESH,
+    FetchItem,
+    FetchQueue,
+)
 from slack_dashboard.thread import ThreadEntry
 
 logger = logging.getLogger(__name__)
@@ -32,6 +37,8 @@ class SlackPoller:
         self._refresh_task: asyncio.Task[None] | None = None
         self._worker_semaphore = asyncio.Semaphore(10)
         self._active_workers: set[asyncio.Task[None]] = set()
+        self._channel_watermarks: dict[str, str] = {}
+        self._thread_watermarks: dict[tuple[str, str], str] = {}
 
     @property
     def threads(self) -> dict[tuple[str, str], ThreadEntry]:
@@ -40,6 +47,14 @@ class SlackPoller:
     @property
     def queue(self) -> FetchQueue:
         return self._queue
+
+    @property
+    def channel_watermarks(self) -> dict[str, str]:
+        return self._channel_watermarks
+
+    @property
+    def thread_watermarks(self) -> dict[tuple[str, str], str]:
+        return self._thread_watermarks
 
     def ranked_threads(self) -> list[ThreadEntry]:
         threads = filter_stale_threads(list(self._threads.values()), self._config.heat)
@@ -97,10 +112,15 @@ class SlackPoller:
 
     async def _process_item(self, item: FetchItem) -> None:
         try:
+            incremental = item.priority == PRIORITY_REFRESH
             if item.thread_ts is not None:
-                await self._fetch_thread(item.channel_id, item.channel_name, item.thread_ts)
+                await self._fetch_thread(
+                    item.channel_id, item.channel_name, item.thread_ts, incremental=incremental
+                )
             else:
-                await self._fetch_channel(item.channel_id, item.channel_name)
+                await self._fetch_channel(
+                    item.channel_id, item.channel_name, incremental=incremental
+                )
         except Exception:
             logger.exception(
                 "Error processing fetch item: channel=%s thread=%s",
@@ -108,18 +128,39 @@ class SlackPoller:
                 item.thread_ts,
             )
 
-    async def _fetch_thread(self, channel_id: str, channel_name: str, thread_ts: str) -> None:
-        replies = await self._slack.fetch_replies(channel_id, thread_ts)
+    async def _fetch_thread(
+        self,
+        channel_id: str,
+        channel_name: str,
+        thread_ts: str,
+        *,
+        incremental: bool = False,
+    ) -> None:
+        key = (channel_id, thread_ts)
+        oldest = self._thread_watermarks.get(key) if incremental else None
+        replies = await self._slack.fetch_replies(channel_id, thread_ts, oldest=oldest)
         if not replies:
             return
-        participants = {r["user"] for r in replies if "user" in r}
-        last_ts = max(
-            (float(r["ts"]) for r in replies),
-            default=float(thread_ts),
-        )
-        last_activity = datetime.fromtimestamp(last_ts, tz=UTC)
-        key = (channel_id, thread_ts)
+
+        latest_ts = max(r["ts"] for r in replies)
+        self._thread_watermarks[key] = latest_ts
+
         existing = self._threads.get(key)
+        if incremental and existing and oldest:
+            new_replies = [r for r in replies if r["ts"] != thread_ts]
+            existing.participants |= {r["user"] for r in new_replies if "user" in r}
+            existing.reply_count += len(new_replies)
+            last_activity = datetime.fromtimestamp(float(latest_ts), tz=UTC)
+            if last_activity > existing.last_activity:
+                existing.last_activity = last_activity
+            self._update_heat(existing)
+            reply_texts = [r.get("text", "") for r in new_replies if r.get("text")]
+            if reply_texts:
+                self._maybe_trigger_llm(existing, reply_texts)
+            return
+
+        participants = {r["user"] for r in replies if "user" in r}
+        last_activity = datetime.fromtimestamp(float(latest_ts), tz=UTC)
         first_message = replies[0].get("text", "") if replies else ""
         entry = ThreadEntry(
             channel_id=channel_id,
@@ -139,38 +180,27 @@ class SlackPoller:
         reply_texts = [r.get("text", "") for r in replies if r.get("text")]
         self._maybe_trigger_llm(entry, reply_texts)
 
-    async def _fetch_channel(self, channel_id: str, channel_name: str) -> None:
+    async def _fetch_channel(
+        self,
+        channel_id: str,
+        channel_name: str,
+        *,
+        incremental: bool = False,
+    ) -> None:
+        oldest = self._channel_watermarks.get(channel_id) if incremental else None
         thread_messages = await self._slack.fetch_threads(
-            channel_id, min_replies=self._config.fetch.min_replies
+            channel_id, min_replies=self._config.fetch.min_replies, oldest=oldest
         )
+
+        if thread_messages:
+            latest_ts = max(msg.get("ts", "0") for msg in thread_messages)
+            existing_wm = self._channel_watermarks.get(channel_id, "0")
+            if latest_ts > existing_wm:
+                self._channel_watermarks[channel_id] = latest_ts
+
         for msg in thread_messages:
             thread_ts = msg.get("thread_ts", msg["ts"])
-            key = (channel_id, thread_ts)
-            replies = await self._slack.fetch_replies(channel_id, thread_ts)
-            participants = {r["user"] for r in replies if "user" in r}
-            last_ts = max(
-                (float(r["ts"]) for r in replies),
-                default=float(thread_ts),
-            )
-            last_activity = datetime.fromtimestamp(last_ts, tz=UTC)
-            existing = self._threads.get(key)
-            entry = ThreadEntry(
-                channel_id=channel_id,
-                channel_name=channel_name,
-                thread_ts=thread_ts,
-                first_message=msg.get("text", ""),
-                reply_count=len(replies) - 1,
-                participants=participants,
-                last_activity=last_activity,
-                title=existing.title if existing else None,
-                title_watermark=existing.title_watermark if existing else 0,
-                summary=existing.summary if existing else None,
-                summary_watermark=existing.summary_watermark if existing else 0,
-            )
-            self._update_heat(entry)
-            self._threads[key] = entry
-            reply_texts = [r.get("text", "") for r in replies if r.get("text")]
-            self._maybe_trigger_llm(entry, reply_texts)
+            await self._fetch_thread(channel_id, channel_name, thread_ts, incremental=incremental)
 
     def _update_heat(self, entry: ThreadEntry) -> None:
         entry.heat_score = compute_heat(entry, self._config.heat)
