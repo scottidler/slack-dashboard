@@ -1,18 +1,26 @@
 {% if threads %}
-{% for thread in threads %}
+{% for thread in threads[:15] %}
 <article>
     <header>
         <span class="channel-badge">{{ thread.channel_name }}</span>
+        {% if thread.started_by %}<span class="started-by">{{ thread.started_by }}</span>{% endif %}
         <span class="heat-{{ thread.heat_tier }}">&#9679;</span>
         <strong>{{ thread.display_title }}</strong>
     </header>
-    <div class="thread-meta">
-        {{ thread.reply_count }} replies &middot;
-        {{ thread.participants | length }} participants &middot;
-        {{ thread.last_activity.strftime('%H:%M') }}
-        &middot;
-        <a href="https://slack.com/app_redirect?channel={{ thread.channel_id }}&message_ts={{ thread.thread_ts }}" target="_blank">Open in Slack</a>
-    </div>
+    <details class="thread-meta">
+        <summary>
+            {{ thread.reply_count }} replies &middot;
+            {{ thread.participants | length }} participants &middot;
+            {{ thread.last_activity.strftime('%H:%M') }}
+            &middot;
+            <a href="https://slack.com/app_redirect?channel={{ thread.channel_id }}&message_ts={{ thread.thread_ts }}" target="_blank">Open in Slack</a>
+        </summary>
+        <ul class="participant-list">
+            {% for p in thread.participants %}
+            <li>{{ p }}</li>
+            {% endfor %}
+        </ul>
+    </details>
     <div id="summary-{{ thread.channel_id }}-{{ thread.thread_ts | replace('.', '-') }}">
         {% if thread.summary %}
         <div class="summary-content">{{ thread.summary | markdown }}</div>

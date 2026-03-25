@@ -39,6 +39,7 @@ class SlackPoller:
         self._active_workers: set[asyncio.Task[None]] = set()
         self._channel_watermarks: dict[str, str] = {}
         self._thread_watermarks: dict[tuple[str, str], str] = {}
+        self._user_cache: dict[str, str] = {}
 
     @property
     def threads(self) -> dict[tuple[str, str], ThreadEntry]:
@@ -162,11 +163,18 @@ class SlackPoller:
         participants = {r["user"] for r in replies if "user" in r}
         last_activity = datetime.fromtimestamp(float(latest_ts), tz=UTC)
         first_message = replies[0].get("text", "") if replies else ""
+        started_by_id = replies[0].get("user", "") if replies else ""
+        started_by_name = (
+            existing.started_by
+            if existing and existing.started_by
+            else await self._resolve_user(started_by_id)
+        )
         entry = ThreadEntry(
             channel_id=channel_id,
             channel_name=channel_name,
             thread_ts=thread_ts,
             first_message=first_message,
+            started_by=started_by_name,
             reply_count=len(replies) - 1,
             participants=participants,
             last_activity=last_activity,
@@ -201,6 +209,15 @@ class SlackPoller:
         for msg in thread_messages:
             thread_ts = msg.get("thread_ts", msg["ts"])
             await self._fetch_thread(channel_id, channel_name, thread_ts, incremental=incremental)
+
+    async def _resolve_user(self, user_id: str) -> str:
+        if not user_id:
+            return ""
+        if user_id in self._user_cache:
+            return self._user_cache[user_id]
+        name = await self._slack.resolve_user(user_id)
+        self._user_cache[user_id] = name
+        return name
 
     def _update_heat(self, entry: ThreadEntry) -> None:
         entry.heat_score = compute_heat(entry, self._config.heat)

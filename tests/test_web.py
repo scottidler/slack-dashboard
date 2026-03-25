@@ -33,6 +33,7 @@ def _make_thread() -> ThreadEntry:
         channel_name="sre-internal",
         thread_ts="1234567890.123456",
         first_message="Something broke in prod",
+        started_by="U1",
         reply_count=10,
         participants={"U1", "U2", "U3"},
         last_activity=datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC),

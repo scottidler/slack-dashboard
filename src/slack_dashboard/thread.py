@@ -8,6 +8,7 @@ class ThreadEntry:
     channel_name: str
     thread_ts: str
     first_message: str
+    started_by: str
     reply_count: int
     participants: set[str]
     last_activity: datetime

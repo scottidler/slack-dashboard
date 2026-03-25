@@ -37,6 +37,7 @@ def _make_thread(
         channel_name="general",
         thread_ts=thread_ts,
         first_message="test",
+        started_by="U1",
         reply_count=reply_count,
         participants={"U1", "U2"},
         last_activity=datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC),

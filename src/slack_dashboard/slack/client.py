@@ -38,6 +38,21 @@ class SlackClient:
             await asyncio.sleep(1.2)
             return result
 
+    async def resolve_user(self, user_id: str) -> str:
+        if not user_id:
+            return ""
+        try:
+            resp = await self._call_history("users_info", user=user_id)
+            user = resp.get("user", {})
+            name: str = (
+                user.get("profile", {}).get("display_name")
+                or user.get("profile", {}).get("real_name")
+                or user.get("name", user_id)
+            )
+            return name
+        except Exception:
+            return user_id
+
     async def resolve_channels(self, names: list[str]) -> dict[str, str]:
         name_set = set(names)
         result: dict[str, str] = {}

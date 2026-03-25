@@ -18,7 +18,24 @@
             font-weight: bold;
             background: var(--pico-muted-border-color);
         }
-        .thread-meta { font-size: 0.85em; color: var(--pico-muted-color); }
+        .started-by {
+            font-size: 0.8em;
+            color: var(--pico-muted-color);
+            margin-left: 0.3em;
+        }
+        .thread-meta {
+            font-size: 0.85em;
+            color: var(--pico-muted-color);
+            border: none;
+        }
+        .thread-meta summary { cursor: pointer; list-style: none; }
+        .thread-meta summary::marker { display: none; content: ""; }
+        .participant-list {
+            margin: 0.3em 0 0 1em;
+            padding: 0;
+            font-size: 0.9em;
+        }
+        .participant-list li { margin: 0.1em 0; }
         .summary-content { margin-top: 0.5em; padding: 0.5em; background: var(--pico-card-sectioning-background-color); border-radius: 4px; }
     </style>
 </head>
