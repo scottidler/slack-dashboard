@@ -66,21 +66,19 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
         channel_names=channel_names,
     )
 
-    socket_client = None
-    if config.slack.app_token:
-        from slack_sdk.socket_mode.aiohttp import SocketModeClient
-
-        socket_client = SocketModeClient(
-            app_token=config.slack.app_token,
-            web_client=slack_web_client,
-        )
-        socket_client.socket_mode_request_listeners.append(socket_listener.handle_event)
-
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("Starting Slack fetcher...")
         await poller.start()
-        if socket_client:
+        socket_client = None
+        if config.slack.app_token:
+            from slack_sdk.socket_mode.aiohttp import SocketModeClient
+
+            socket_client = SocketModeClient(
+                app_token=config.slack.app_token,
+                web_client=slack_web_client,
+            )
+            socket_client.socket_mode_request_listeners.append(socket_listener.handle_event)
             logger.info("Starting Socket Mode listener...")
             await socket_client.connect()  # type: ignore[no-untyped-call]
         yield
