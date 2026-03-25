@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from slack_dashboard.config import AppConfig
@@ -193,8 +193,12 @@ class SlackPoller:
         self._threads[key] = entry
         logger.debug(
             "Thread %s/%s: %d replies, %d participants, heat=%.1f, last=%s",
-            channel_name, thread_ts, entry.reply_count, len(entry.participants),
-            entry.heat_score, entry.last_activity.isoformat(),
+            channel_name,
+            thread_ts,
+            entry.reply_count,
+            len(entry.participants),
+            entry.heat_score,
+            entry.last_activity.isoformat(),
         )
         reply_texts = [r.get("text", "") for r in replies if r.get("text")]
         self._maybe_trigger_llm(entry, reply_texts)
@@ -210,10 +214,6 @@ class SlackPoller:
         thread_messages = await self._slack.fetch_threads(
             channel_id, min_replies=self._config.fetch.min_replies, oldest=oldest
         )
-        logger.info(
-            "Channel %s: found %d threads (incremental=%s)",
-            channel_name, len(thread_messages), incremental,
-        )
 
         if thread_messages:
             latest_ts = max(msg.get("ts", "0") for msg in thread_messages)
@@ -221,8 +221,22 @@ class SlackPoller:
             if latest_ts > existing_wm:
                 self._channel_watermarks[channel_id] = latest_ts
 
-        thread_messages.sort(key=lambda m: m.get("reply_count", 0), reverse=True)
-        for msg in thread_messages:
+        now = datetime.now(UTC)
+        age_cutoff = (now - timedelta(days=self._config.heat.max_thread_age_days)).timestamp()
+        active = [
+            m
+            for m in thread_messages
+            if float(m.get("latest_reply", m.get("ts", "0"))) >= age_cutoff
+        ]
+        active.sort(key=lambda m: m.get("reply_count", 0), reverse=True)
+        logger.info(
+            "Channel %s: %d threads total, %d active in last %dd",
+            channel_name,
+            len(thread_messages),
+            len(active),
+            self._config.heat.max_thread_age_days,
+        )
+        for msg in active:
             thread_ts = msg.get("thread_ts", msg["ts"])
             await self._fetch_thread(channel_id, channel_name, thread_ts, incremental=incremental)
 
