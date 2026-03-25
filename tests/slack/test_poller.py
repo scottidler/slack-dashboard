@@ -5,6 +5,7 @@ import pytest
 from slack_dashboard.config import AppConfig
 from slack_dashboard.slack.client import SlackClient
 from slack_dashboard.slack.poller import SlackPoller
+from slack_dashboard.slack.queue import PRIORITY_BACKFILL, PRIORITY_SOCKET_EVENT, FetchItem
 
 
 def _make_mock_slack() -> AsyncMock:
@@ -27,12 +28,12 @@ def _make_mock_slack() -> AsyncMock:
 
 
 @pytest.mark.asyncio
-async def test_initial_fetch() -> None:
+async def test_fetch_channel_via_process_item() -> None:
     mock_slack = _make_mock_slack()
     config = AppConfig(channels={"general": "C111"})
     poller = SlackPoller(mock_slack, config)
-    poller._channel_map = {"general": "C111"}
-    await poller._initial_fetch()
+    item = FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    await poller._process_item(item)
     assert len(poller.threads) == 1
     key = ("C111", "1.1")
     assert key in poller.threads
@@ -44,12 +45,31 @@ async def test_initial_fetch() -> None:
 
 
 @pytest.mark.asyncio
+async def test_fetch_thread_via_process_item() -> None:
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    item = FetchItem(
+        priority=PRIORITY_SOCKET_EVENT,
+        channel_id="C111",
+        channel_name="general",
+        thread_ts="1.1",
+    )
+    await poller._process_item(item)
+    assert len(poller.threads) == 1
+    key = ("C111", "1.1")
+    entry = poller.threads[key]
+    assert entry.reply_count == 3
+    assert entry.first_message == "root"
+
+
+@pytest.mark.asyncio
 async def test_ranked_threads() -> None:
     mock_slack = _make_mock_slack()
     config = AppConfig(channels={"general": "C111"})
     poller = SlackPoller(mock_slack, config)
-    poller._channel_map = {"general": "C111"}
-    await poller._initial_fetch()
+    item = FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    await poller._process_item(item)
     ranked = poller.ranked_threads()
     assert len(ranked) == 1
     assert ranked[0].heat_score > 0
@@ -60,9 +80,9 @@ async def test_preserves_existing_title() -> None:
     mock_slack = _make_mock_slack()
     config = AppConfig(channels={"general": "C111"})
     poller = SlackPoller(mock_slack, config)
-    poller._channel_map = {"general": "C111"}
 
-    await poller._initial_fetch()
+    item = FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    await poller._process_item(item)
     key = ("C111", "1.1")
     poller.threads[key].title = "Existing Title"
     poller.threads[key].title_watermark = 3
@@ -70,3 +90,21 @@ async def test_preserves_existing_title() -> None:
     await poller._fetch_channel("C111", "general")
     assert poller.threads[key].title == "Existing Title"
     assert poller.threads[key].title_watermark == 3
+
+
+@pytest.mark.asyncio
+async def test_queue_seeded_on_start() -> None:
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111", "random": "C222"})
+    poller = SlackPoller(mock_slack, config)
+    await poller.start()
+    assert poller.queue.pending_count == 2
+    await poller.stop()
+
+
+@pytest.mark.asyncio
+async def test_queue_property_accessible() -> None:
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    assert poller.queue.pending_count == 0
