@@ -81,9 +81,18 @@ class SlackClient:
         thread_ts: str,
         oldest: str | None = None,
     ) -> list[dict[str, Any]]:
-        kwargs: dict[str, Any] = {"channel": channel_id, "ts": thread_ts, "limit": 1000}
-        if oldest:
-            kwargs["oldest"] = oldest
-        resp = await self._call_replies("conversations_replies", **kwargs)
-        messages: list[dict[str, Any]] = resp.get("messages", [])
-        return messages
+        all_messages: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            kwargs: dict[str, Any] = {"channel": channel_id, "ts": thread_ts, "limit": 1000}
+            if oldest:
+                kwargs["oldest"] = oldest
+            if cursor:
+                kwargs["cursor"] = cursor
+            resp = await self._call_replies("conversations_replies", **kwargs)
+            all_messages.extend(resp.get("messages", []))
+            next_cursor = resp.get("response_metadata", {}).get("next_cursor", "")
+            if not next_cursor:
+                break
+            cursor = next_cursor
+        return all_messages
