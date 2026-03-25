@@ -22,6 +22,7 @@ _REPLY_3 = str(time.time() + 3)
 def _make_mock_slack() -> AsyncMock:
     client = AsyncMock(spec=SlackClient)
     client.resolve_channels = AsyncMock(return_value={"general": "C111"})
+    client.resolve_user = AsyncMock(side_effect=lambda uid: uid)
     client.fetch_threads = AsyncMock(
         return_value=[
             {"ts": _NOW, "text": "Root message", "reply_count": 3, "thread_ts": _NOW},

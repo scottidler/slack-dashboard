@@ -11,7 +11,7 @@ def test_create_thread_entry() -> None:
         first_message="Something broke in prod",
         started_by="U1",
         reply_count=10,
-        participants={"U1", "U2", "U3"},
+        participants={"U1": 3, "U2": 2, "U3": 1},
         last_activity=datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC),
     )
     assert entry.channel_id == "C123"
@@ -33,7 +33,7 @@ def test_thread_entry_defaults() -> None:
         first_message="Hello",
         started_by="U1",
         reply_count=0,
-        participants=set(),
+        participants={},
         last_activity=datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC),
     )
     assert entry.heat_score == 0.0
@@ -50,7 +50,7 @@ def test_display_title_with_llm_title() -> None:
         first_message="This is a very long message that should be truncated",
         started_by="U1",
         reply_count=5,
-        participants={"U1"},
+        participants={"U1": 1},
         last_activity=datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC),
         title="Prod Outage Discussion",
     )
@@ -65,7 +65,7 @@ def test_display_title_fallback() -> None:
         first_message="This is a very long message that should be truncated to a reasonable length",
         started_by="U1",
         reply_count=5,
-        participants={"U1"},
+        participants={"U1": 1},
         last_activity=datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC),
     )
     assert entry.display_title == entry.first_message[:80]
@@ -79,7 +79,7 @@ def test_needs_retitle_no_existing_title() -> None:
         first_message="Hello",
         started_by="U1",
         reply_count=5,
-        participants={"U1"},
+        participants={"U1": 1},
         last_activity=datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC),
     )
     assert entry.needs_retitle(retitle_reply_growth=5, retitle_reply_percent=25)
@@ -93,7 +93,7 @@ def test_needs_retitle_sufficient_growth() -> None:
         first_message="Hello",
         started_by="U1",
         reply_count=30,
-        participants={"U1"},
+        participants={"U1": 1},
         last_activity=datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC),
         title="Existing Title",
         title_watermark=20,
@@ -110,7 +110,7 @@ def test_needs_retitle_insufficient_growth() -> None:
         first_message="Hello",
         started_by="U1",
         reply_count=22,
-        participants={"U1"},
+        participants={"U1": 1},
         last_activity=datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC),
         title="Existing Title",
         title_watermark=20,

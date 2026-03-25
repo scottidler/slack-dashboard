@@ -10,7 +10,7 @@ class ThreadEntry:
     first_message: str
     started_by: str
     reply_count: int
-    participants: set[str]
+    participants: dict[str, int]
     last_activity: datetime
     heat_score: float = 0.0
     heat_tier: str = "cold"

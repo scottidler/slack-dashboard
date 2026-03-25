@@ -70,7 +70,7 @@ class SocketListener:
 
         user = event.get("user")
         if user:
-            existing.participants.add(user)
+            existing.participants[user] = existing.participants.get(user, 0) + 1
 
         existing.reply_count += 1
 

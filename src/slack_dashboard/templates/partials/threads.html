@@ -16,8 +16,8 @@
             <a href="https://slack.com/app_redirect?channel={{ thread.channel_id }}&message_ts={{ thread.thread_ts }}" target="_blank">Open in Slack</a>
         </summary>
         <ul class="participant-list">
-            {% for p in thread.participants %}
-            <li>{{ p }}</li>
+            {% for name, count in thread.participants.items() | sort(attribute='1', reverse=true) %}
+            <li><span class="msg-count">{{ count }}</span> {{ name }}</li>
             {% endfor %}
         </ul>
     </details>

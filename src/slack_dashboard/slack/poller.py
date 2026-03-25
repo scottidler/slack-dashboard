@@ -149,7 +149,10 @@ class SlackPoller:
         existing = self._threads.get(key)
         if incremental and existing and oldest:
             new_replies = [r for r in replies if r["ts"] != thread_ts]
-            existing.participants |= {r["user"] for r in new_replies if "user" in r}
+            for r in new_replies:
+                if "user" in r:
+                    name = await self._resolve_user(r["user"])
+                    existing.participants[name] = existing.participants.get(name, 0) + 1
             existing.reply_count += len(new_replies)
             last_activity = datetime.fromtimestamp(float(latest_ts), tz=UTC)
             if last_activity > existing.last_activity:
@@ -160,7 +163,11 @@ class SlackPoller:
                 self._maybe_trigger_llm(existing, reply_texts)
             return
 
-        participants = {r["user"] for r in replies if "user" in r}
+        participants: dict[str, int] = {}
+        for r in replies:
+            if "user" in r:
+                name = await self._resolve_user(r["user"])
+                participants[name] = participants.get(name, 0) + 1
         last_activity = datetime.fromtimestamp(float(latest_ts), tz=UTC)
         first_message = replies[0].get("text", "") if replies else ""
         started_by_id = replies[0].get("user", "") if replies else ""

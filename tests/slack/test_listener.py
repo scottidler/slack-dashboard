@@ -39,7 +39,7 @@ def _make_thread(
         first_message="test",
         started_by="U1",
         reply_count=reply_count,
-        participants={"U1", "U2"},
+        participants={"U1": 2, "U2": 1},
         last_activity=datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC),
     )
 

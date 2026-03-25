@@ -35,7 +35,7 @@ def _make_thread() -> ThreadEntry:
         first_message="Something broke in prod",
         started_by="U1",
         reply_count=10,
-        participants={"U1", "U2", "U3"},
+        participants={"U1": 3, "U2": 2, "U3": 1},
         last_activity=datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC),
         heat_score=80.0,
         heat_tier="hot",

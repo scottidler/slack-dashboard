@@ -20,7 +20,7 @@ def _make_thread(
         first_message="Test message",
         started_by="U1",
         reply_count=reply_count,
-        participants={f"U{i}" for i in range(participants)},
+        participants={f"U{i}": 1 for i in range(participants)},
         last_activity=now - timedelta(hours=hours_ago),
     )
 
@@ -101,7 +101,7 @@ def test_filter_stale_threads() -> None:
         first_message="Old",
         started_by="U1",
         reply_count=5,
-        participants={"U1"},
+        participants={"U1": 1},
         last_activity=now - timedelta(days=4),
     )
     result = filter_stale_threads([active, stale], config)
