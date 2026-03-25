@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from slack_dashboard.config import AppConfig, load_config
 from slack_dashboard.llm.provider import AnthropicProvider
 from slack_dashboard.slack.client import SlackClient, create_slack_client
+from slack_dashboard.slack.listener import SocketListener
 from slack_dashboard.slack.mrkdwn import strip_mrkdwn
 from slack_dashboard.slack.poller import SlackPoller
 from slack_dashboard.thread import ThreadEntry
@@ -57,12 +58,36 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
         on_summary_needed=on_summary_needed,
     )
 
+    channel_names = {v: k for k, v in config.channels.items()}
+    socket_listener = SocketListener(
+        queue=poller.queue,
+        threads=poller.threads,
+        channel_ids=set(config.channels.values()),
+        channel_names=channel_names,
+    )
+
+    socket_client = None
+    if config.slack.app_token:
+        from slack_sdk.socket_mode.aiohttp import SocketModeClient
+
+        socket_client = SocketModeClient(
+            app_token=config.slack.app_token,
+            web_client=slack_web_client,
+        )
+        socket_client.socket_mode_request_listeners.append(socket_listener.handle_event)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        logger.info("Starting Slack poller...")
+        logger.info("Starting Slack fetcher...")
         await poller.start()
+        if socket_client:
+            logger.info("Starting Socket Mode listener...")
+            await socket_client.connect()  # type: ignore[no-untyped-call]
         yield
-        logger.info("Stopping Slack poller...")
+        if socket_client:
+            logger.info("Stopping Socket Mode listener...")
+            await socket_client.close()  # type: ignore[no-untyped-call]
+        logger.info("Stopping Slack fetcher...")
         await poller.stop()
 
     app = FastAPI(lifespan=lifespan)

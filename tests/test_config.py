@@ -115,6 +115,7 @@ def test_env_var_not_set_leaves_placeholder(tmp_path: Path) -> None:
 def test_defaults() -> None:
     slack = SlackConfig()
     assert slack.token == ""
+    assert slack.app_token == ""
     polling = PollingConfig()
     assert polling.hot_interval_seconds == 30
     assert polling.warm_interval_seconds == 120
