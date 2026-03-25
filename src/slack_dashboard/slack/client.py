@@ -82,13 +82,24 @@ class SlackClient:
         channel_id: str,
         min_replies: int = 3,
         oldest: str | None = None,
+        max_pages: int = 5,
     ) -> list[dict[str, Any]]:
-        kwargs: dict[str, Any] = {"channel": channel_id, "limit": 200}
-        if oldest:
-            kwargs["oldest"] = oldest
-        resp = await self._call_history("conversations_history", **kwargs)
-        messages: list[dict[str, Any]] = resp.get("messages", [])
-        return [m for m in messages if m.get("reply_count", 0) >= min_replies]
+        all_threads: list[dict[str, Any]] = []
+        cursor: str | None = None
+        for _ in range(max_pages):
+            kwargs: dict[str, Any] = {"channel": channel_id, "limit": 200}
+            if oldest:
+                kwargs["oldest"] = oldest
+            if cursor:
+                kwargs["cursor"] = cursor
+            resp = await self._call_history("conversations_history", **kwargs)
+            messages: list[dict[str, Any]] = resp.get("messages", [])
+            all_threads.extend(m for m in messages if m.get("reply_count", 0) >= min_replies)
+            next_cursor = resp.get("response_metadata", {}).get("next_cursor", "")
+            if not next_cursor:
+                break
+            cursor = next_cursor
+        return all_threads
 
     async def fetch_replies(
         self,
