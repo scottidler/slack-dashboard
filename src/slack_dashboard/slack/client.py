@@ -21,6 +21,8 @@ class SlackClient:
         self._client = client
         self._history_semaphore = asyncio.Semaphore(1)
         self._replies_semaphore = asyncio.Semaphore(1)
+        self._users_semaphore = asyncio.Semaphore(1)
+        self._user_cache: dict[str, str] = {}
 
     async def _call_history(self, method: str, **kwargs: Any) -> dict[str, Any]:
         async with self._history_semaphore:
@@ -41,16 +43,26 @@ class SlackClient:
     async def resolve_user(self, user_id: str) -> str:
         if not user_id:
             return ""
+        cached = self._user_cache.get(user_id)
+        if cached is not None:
+            return cached
         try:
-            resp = await self._call_history("users_info", user=user_id)
+            async with self._users_semaphore:
+                response = await self._client.users_info(user=user_id)
+                resp: dict[str, Any] = response.data  # type: ignore[assignment]
+                await asyncio.sleep(0.6)
             user = resp.get("user", {})
             name: str = (
                 user.get("profile", {}).get("display_name")
                 or user.get("profile", {}).get("real_name")
                 or user.get("name", user_id)
             )
+            if not name:
+                name = user_id
+            self._user_cache[user_id] = name
             return name
         except Exception:
+            self._user_cache[user_id] = user_id
             return user_id
 
     async def resolve_channels(self, names: list[str]) -> dict[str, str]:
@@ -82,24 +94,13 @@ class SlackClient:
         channel_id: str,
         min_replies: int = 3,
         oldest: str | None = None,
-        max_pages: int = 5,
     ) -> list[dict[str, Any]]:
-        all_threads: list[dict[str, Any]] = []
-        cursor: str | None = None
-        for _ in range(max_pages):
-            kwargs: dict[str, Any] = {"channel": channel_id, "limit": 200}
-            if oldest:
-                kwargs["oldest"] = oldest
-            if cursor:
-                kwargs["cursor"] = cursor
-            resp = await self._call_history("conversations_history", **kwargs)
-            messages: list[dict[str, Any]] = resp.get("messages", [])
-            all_threads.extend(m for m in messages if m.get("reply_count", 0) >= min_replies)
-            next_cursor = resp.get("response_metadata", {}).get("next_cursor", "")
-            if not next_cursor:
-                break
-            cursor = next_cursor
-        return all_threads
+        kwargs: dict[str, Any] = {"channel": channel_id, "limit": 1000}
+        if oldest:
+            kwargs["oldest"] = oldest
+        resp = await self._call_history("conversations_history", **kwargs)
+        messages: list[dict[str, Any]] = resp.get("messages", [])
+        return [m for m in messages if m.get("reply_count", 0) >= min_replies]
 
     async def fetch_replies(
         self,

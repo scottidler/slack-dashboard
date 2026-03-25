@@ -102,7 +102,7 @@ async def test_fetch_threads_page_size(mock_slack: AsyncMock) -> None:
     client = SlackClient(mock_slack)
     await client.fetch_threads("C111")
     call_kwargs = mock_slack.conversations_history.call_args[1]
-    assert call_kwargs["limit"] == 200
+    assert call_kwargs["limit"] == 1000
 
 
 @pytest.mark.asyncio

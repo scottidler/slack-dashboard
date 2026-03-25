@@ -39,7 +39,6 @@ class SlackPoller:
         self._active_workers: set[asyncio.Task[None]] = set()
         self._channel_watermarks: dict[str, str] = {}
         self._thread_watermarks: dict[tuple[str, str], str] = {}
-        self._user_cache: dict[str, str] = {}
 
     @property
     def threads(self) -> dict[tuple[str, str], ThreadEntry]:
@@ -220,11 +219,7 @@ class SlackPoller:
     async def _resolve_user(self, user_id: str) -> str:
         if not user_id:
             return ""
-        if user_id in self._user_cache:
-            return self._user_cache[user_id]
-        name = await self._slack.resolve_user(user_id)
-        self._user_cache[user_id] = name
-        return name
+        return await self._slack.resolve_user(user_id)
 
     def _update_heat(self, entry: ThreadEntry) -> None:
         entry.heat_score = compute_heat(entry, self._config.heat)
