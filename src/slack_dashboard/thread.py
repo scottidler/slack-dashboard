@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 
@@ -18,6 +18,9 @@ class ThreadEntry:
     title_watermark: int = 0
     summary: str | None = None
     summary_watermark: int = 0
+    reply_timestamps: list[float] = field(default_factory=list)  # rolling window for velocity
+    resurrection_event_ts: float = 0.0  # ts of reviving activity; zombie state computed from this
+    first_seen_ts: float = 0.0  # thread creation time (from thread_ts), for age/resurrection
 
     @property
     def display_title(self) -> str:

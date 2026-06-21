@@ -6,12 +6,15 @@ import pytest
 import yaml
 
 from slack_dashboard.config import (
+    AppConfig,
     FetchConfig,
     HeatConfig,
     LlmConfig,
     ServerConfig,
     SlackConfig,
     load_config,
+    resolve_channel_weight,
+    resolve_min_replies,
 )
 
 
@@ -46,7 +49,7 @@ def test_load_full_config(tmp_path: Path) -> None:
         "heat": {
             "reply-weight": 3,
             "participant-weight": 5,
-            "decay-half-life-hours": 48,
+            "decay-hours": 48,
             "max-thread-age-days": 7,
             "hot-threshold": 80,
             "warm-threshold": 30,
@@ -73,7 +76,7 @@ def test_load_full_config(tmp_path: Path) -> None:
     assert config.fetch.min_replies == 5
     assert config.heat.reply_weight == 3
     assert config.heat.participant_weight == 5
-    assert config.heat.decay_half_life_hours == 48
+    assert config.heat.decay_hours == 48
     assert config.heat.max_thread_age_days == 7
     assert config.heat.hot_threshold == 80
     assert config.heat.retitle_reply_growth == 10
@@ -118,10 +121,18 @@ def test_defaults() -> None:
     fetch = FetchConfig()
     assert fetch.refresh_interval_minutes == 10
     assert fetch.min_replies == 3
+    assert fetch.channel_min_replies == {}
     heat = HeatConfig()
     assert heat.reply_weight == 2
     assert heat.participant_weight == 3
-    assert heat.decay_half_life_hours == 24
+    assert heat.decay_hours == 24
+    assert heat.decay_floor == 0.01
+    assert heat.channel_weights == {}
+    assert heat.velocity_weight == 0.0
+    assert heat.velocity_window_minutes == 30
+    assert heat.resurrection_gap_hours == 24
+    assert heat.resurrection_age_days == 2
+    assert heat.resurrection_display_hours == 24
     assert heat.max_thread_age_days == 3
     assert heat.hot_threshold == 50
     assert heat.warm_threshold == 20
@@ -134,3 +145,66 @@ def test_defaults() -> None:
     assert server.host == "0.0.0.0"
     assert server.port == 8080
     assert server.log_level == "info"
+
+
+def test_decay_half_life_backward_compat(tmp_path: Path) -> None:
+    data = {
+        "channels": {"general": "C111"},
+        "heat": {"decay-half-life-hours": 48},
+    }
+    config_file = write_config(tmp_path, data)
+    config = load_config(config_file)
+    assert config.heat.decay_hours == 48
+
+
+def test_decay_hours_wins_over_legacy(tmp_path: Path) -> None:
+    data = {
+        "channels": {"general": "C111"},
+        "heat": {"decay-hours": 12, "decay-half-life-hours": 48},
+    }
+    config_file = write_config(tmp_path, data)
+    config = load_config(config_file)
+    assert config.heat.decay_hours == 12
+
+
+def test_workspace_config(tmp_path: Path) -> None:
+    data = {"channels": {"general": "C111"}, "workspace": "tatari"}
+    config_file = write_config(tmp_path, data)
+    config = load_config(config_file)
+    assert config.workspace == "tatari"
+    assert AppConfig().workspace == ""
+
+
+def test_resolve_channel_weight_exact() -> None:
+    config = HeatConfig(channel_weights={"sre": 2.0, "proj-*": 0.5})
+    assert resolve_channel_weight("sre", config) == 2.0
+
+
+def test_resolve_channel_weight_glob() -> None:
+    config = HeatConfig(channel_weights={"sre": 2.0, "proj-*": 0.5})
+    assert resolve_channel_weight("proj-atlas", config) == 0.5
+
+
+def test_resolve_channel_weight_exact_wins_over_glob() -> None:
+    config = HeatConfig(channel_weights={"proj-*": 0.5, "proj-atlas": 3.0})
+    assert resolve_channel_weight("proj-atlas", config) == 3.0
+
+
+def test_resolve_channel_weight_default() -> None:
+    config = HeatConfig(channel_weights={"sre": 2.0})
+    assert resolve_channel_weight("random", config) == 1.0
+
+
+def test_resolve_min_replies_default_global() -> None:
+    config = FetchConfig(min_replies=3, channel_min_replies={"incidents": 1})
+    assert resolve_min_replies("random", config) == 3
+
+
+def test_resolve_min_replies_override() -> None:
+    config = FetchConfig(min_replies=3, channel_min_replies={"incidents": 1})
+    assert resolve_min_replies("incidents", config) == 1
+
+
+def test_resolve_min_replies_glob() -> None:
+    config = FetchConfig(min_replies=3, channel_min_replies={"ask-*": 1})
+    assert resolve_min_replies("ask-security", config) == 1

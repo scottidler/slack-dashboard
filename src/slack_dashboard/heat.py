@@ -10,7 +10,7 @@ def compute_heat(thread: ThreadEntry, config: HeatConfig) -> float:
     base = (thread.reply_count * config.reply_weight) + (
         len(thread.participants) * config.participant_weight
     )
-    decay = max(0.01, 1.0 - (hours_since / config.decay_half_life_hours))
+    decay = max(config.decay_floor, 1.0 - (hours_since / config.decay_hours))
     return base * decay
 
 
