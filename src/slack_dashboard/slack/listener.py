@@ -80,8 +80,11 @@ class SocketListener:
 
         ts = event.get("ts", "")
         if ts:
-            event_time = datetime.fromtimestamp(float(ts), tz=UTC)
-            event_ts = event_time.timestamp()
+            # Store the RAW float(ts), not a datetime round-trip: the full fetch records
+            # the same reply as float(r["ts"]), and prune_timestamps dedups by a normalized
+            # key, so both paths must agree on the raw value or velocity double-counts.
+            event_ts = float(ts)
+            event_time = datetime.fromtimestamp(event_ts, tz=UTC)
             # Capture the resurrection gap HERE, before last_activity is overwritten.
             # The listener fires the instant an event arrives, ahead of the enqueued
             # fetch; if the poller read last_activity afterward the prior value would

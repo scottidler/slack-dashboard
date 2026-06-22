@@ -13,6 +13,7 @@ from slack_dashboard.heat import (
     filter_stale_threads,
     is_zombie,
     prune_timestamps,
+    reconstruct_resurrection,
 )
 from slack_dashboard.slack.client import SlackClient
 from slack_dashboard.slack.queue import (
@@ -104,6 +105,46 @@ class SlackPoller:
             del self._threads[key]
         if to_evict:
             logger.debug("_evict_threads: evicted %d entries", len(to_evict))
+
+    async def reconcile(self) -> None:
+        """Catch up after a Socket Mode reconnect (Phase 6).
+
+        Socket Mode does not replay events missed while disconnected, so every gap is a
+        blind window. On reconnect we re-list each channel's threads and re-fetch only the
+        ones whose latest reply moved past our stored per-thread watermark - recovering new
+        replies on old/evicted parents that the watermark-based history poll never surfaces.
+        """
+        logger.info(
+            "reconcile: catching up across %d channels after reconnect", len(self._channel_map)
+        )
+        total = 0
+        for channel_name, channel_id in self._channel_map.items():
+            total += await self._reconcile_channel(channel_id, channel_name)
+        logger.info("reconcile: re-fetched %d changed threads", total)
+
+    async def _reconcile_channel(self, channel_id: str, channel_name: str) -> int:
+        logger.debug("_reconcile_channel: channel=%s", channel_name)
+        # No oldest: we must see OLD parents whose latest_reply moved, not just new parents.
+        min_replies = resolve_min_replies(channel_name, self._config.fetch)
+        thread_messages = await self._slack.fetch_threads(
+            channel_id, min_replies=min_replies, oldest=None
+        )
+        changed = 0
+        for msg in thread_messages:
+            thread_ts = msg.get("thread_ts", msg["ts"])
+            key = (channel_id, thread_ts)
+            latest_reply = msg.get("latest_reply") or msg.get("ts", "0")
+            watermark = self._thread_watermarks.get(key)
+            if watermark is None or latest_reply > watermark:
+                changed += 1
+                await self._fetch_thread(channel_id, channel_name, thread_ts, incremental=False)
+        logger.debug(
+            "_reconcile_channel: channel=%s changed=%d of %d",
+            channel_name,
+            changed,
+            len(thread_messages),
+        )
+        return changed
 
     async def start(self) -> None:
         self._channel_map = self._config.channels
@@ -235,15 +276,21 @@ class SlackPoller:
             if existing and existing.started_by
             else await self._resolve_user(started_by_id)
         )
-        # State merge contract: the full-fetch rebuild must carry forward velocity and
-        # resurrection state, or every periodic full refresh would wipe it. Resurrection
-        # is carried forward (not recomputed here) because the listener/incremental paths
-        # already captured the gap before last_activity was bumped. first_seen_ts is
-        # deterministic from thread_ts. reply_timestamps merges carried-forward + fetched.
+        # State merge contract: the full-fetch rebuild must not silently wipe velocity or
+        # resurrection state. first_seen_ts is deterministic from thread_ts.
+        # reply_timestamps merges carried-forward + fetched (deduped by prune_timestamps).
         carried_ts = list(existing.reply_timestamps) if existing else []
         fetched_ts = [float(r["ts"]) for r in replies if r.get("ts") and r["ts"] != thread_ts]
         reply_timestamps = prune_timestamps(carried_ts + fetched_ts, self._config.heat)
-        resurrection_event_ts = existing.resurrection_event_ts if existing else 0.0
+        # Resurrection is reconstructed state-independently from the full reply timeline
+        # (Phase 6): the prior in-memory state is gone after eviction/restart, so carrying
+        # forward would miss exactly the long-dead-thread case resurrection exists for.
+        # We carry forward an existing event only as a fallback when the reply window is
+        # too short to contain the gap (incremental-built entries with sparse timestamps).
+        all_reply_ts = sorted(float(r["ts"]) for r in replies if r.get("ts"))
+        resurrection_event_ts = reconstruct_resurrection(all_reply_ts, self._config.heat)
+        if resurrection_event_ts == 0.0 and existing:
+            resurrection_event_ts = existing.resurrection_event_ts
         entry = ThreadEntry(
             channel_id=channel_id,
             channel_name=channel_name,

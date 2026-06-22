@@ -1,13 +1,17 @@
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import uvicorn
 from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 
 from slack_dashboard.config import AppConfig, load_config
+from slack_dashboard.connection import ConnectionState
 from slack_dashboard.dismiss import DismissStore
 from slack_dashboard.llm.provider import AnthropicProvider
 from slack_dashboard.slack.client import SlackClient, create_slack_client
@@ -76,22 +80,57 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
         heat_config=config.heat,
     )
 
+    connection = ConnectionState(socket_enabled=bool(config.slack.app_token))
+
+    async def _on_close(_message: Any) -> None:
+        # Disconnect edge: flip the banner immediately (the monitor below catches reconnect).
+        connection.connected = False
+        logger.warning("Socket Mode connection closed; trust banner raised")
+
+    async def _connection_monitor(socket_client: Any) -> None:
+        # slack_sdk exposes on_close_listeners (disconnect) and is_connected(), but no
+        # on-connect callback, so we poll is_connected() to detect the reconnect edge and
+        # reconcile the gap. Auto-reconnect is the SDK's job; truing up missed replies is ours.
+        was_connected = True
+        try:
+            while True:
+                await asyncio.sleep(5)
+                connected = bool(socket_client.is_connected())
+                connection.connected = connected
+                if connected and not was_connected:
+                    logger.info("Socket Mode reconnected; reconciling missed activity")
+                    try:
+                        await poller.reconcile()
+                    except Exception:
+                        logger.exception("reconcile after reconnect failed")
+                was_connected = connected
+        except asyncio.CancelledError:
+            return
+
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("Starting Slack fetcher...")
         await poller.start()
         socket_client = None
+        monitor_task: asyncio.Task[None] | None = None
         if config.slack.app_token:
             from slack_sdk.socket_mode.aiohttp import SocketModeClient
 
             socket_client = SocketModeClient(
                 app_token=config.slack.app_token,
                 web_client=slack_web_client,
+                on_close_listeners=[_on_close],
             )
             socket_client.socket_mode_request_listeners.append(socket_listener.handle_event)
             logger.info("Starting Socket Mode listener...")
             await socket_client.connect()  # type: ignore[no-untyped-call]
+            connection.connected = True
+            monitor_task = asyncio.create_task(_connection_monitor(socket_client))
         yield
+        if monitor_task:
+            monitor_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await monitor_task
         if socket_client:
             logger.info("Stopping Socket Mode listener...")
             await socket_client.close()  # type: ignore[no-untyped-call]
@@ -99,7 +138,7 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
         await poller.stop()
 
     app = FastAPI(lifespan=lifespan)
-    create_routes(app, poller, llm, config)
+    create_routes(app, poller, llm, config, connection)
     return app, poller
 
 

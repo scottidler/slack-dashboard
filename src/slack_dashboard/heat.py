@@ -14,14 +14,22 @@ MAX_REPLY_TIMESTAMPS = 500
 def prune_timestamps(
     timestamps: list[float], config: HeatConfig, now_ts: float | None = None
 ) -> list[float]:
-    """Drop timestamps outside the velocity window and cap the retained count.
+    """Drop timestamps outside the velocity window, deduplicate, and cap the count.
 
-    Returns a new, sorted list of the most recent in-window timestamps.
+    Dedup is by a normalized Slack-ts key (microsecond precision), not exact-float
+    identity: the socket and REST paths can record the same reply with a sub-ulp
+    difference (the listener used to round-trip through datetime), so an exact-float
+    set would not collapse them and velocity would double-count. Returns a new,
+    sorted list of the most recent in-window timestamps.
     """
     if now_ts is None:
         now_ts = datetime.now(UTC).timestamp()
     cutoff = now_ts - config.velocity_window_minutes * 60
-    in_window = sorted(ts for ts in timestamps if ts >= cutoff)
+    deduped: dict[str, float] = {}
+    for ts in timestamps:
+        if ts >= cutoff:
+            deduped[f"{ts:.6f}"] = ts
+    in_window = sorted(deduped.values())
     if len(in_window) > MAX_REPLY_TIMESTAMPS:
         in_window = in_window[-MAX_REPLY_TIMESTAMPS:]
     return in_window
@@ -77,6 +85,26 @@ def detect_resurrection(prior_last_activity_ts: float, event_ts: float, config: 
             config.resurrection_gap_hours,
         )
     return resurrected
+
+
+def reconstruct_resurrection(sorted_reply_ts: list[float], config: HeatConfig) -> float:
+    """Derive the resurrection event from a thread's full reply timeline.
+
+    State-independent: given all reply timestamps (sorted ascending), find the most
+    recent adjacent gap that exceeds resurrection_gap_hours and return the timestamp
+    of the reply that *ended* that gap (i.e. the reviving activity). Returns 0.0 when
+    no such gap exists. This replaces in-memory carry-forward in the full-fetch path so
+    resurrection survives eviction and restart; is_zombie still gates display on age +
+    recency, so this does not need to re-check thread age.
+    """
+    gap_seconds = config.resurrection_gap_hours * 3600
+    event_ts = 0.0
+    for prev, cur in zip(sorted_reply_ts, sorted_reply_ts[1:], strict=False):
+        if cur - prev >= gap_seconds:
+            event_ts = cur  # keep the latest qualifying gap (iteration is ascending)
+    if event_ts:
+        logger.debug("reconstruct_resurrection: event_ts=%.6f from reply gaps", event_ts)
+    return event_ts
 
 
 def is_zombie(thread: ThreadEntry, config: HeatConfig, now_ts: float | None = None) -> bool:

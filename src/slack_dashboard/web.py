@@ -9,6 +9,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
 from slack_dashboard.config import AppConfig
+from slack_dashboard.connection import ConnectionState
 from slack_dashboard.heat import is_zombie, velocity
 from slack_dashboard.llm.provider import LlmProvider
 from slack_dashboard.slack.mrkdwn import strip_mrkdwn
@@ -51,7 +52,15 @@ def _markdown_filter(text: str) -> Markup:
 
 
 def deep_link(workspace: str, channel_id: str, thread_ts: str) -> str:
-    """Slack web deep link for a thread: .../archives/{channel}/p{ts_without_dot}."""
+    """Slack deep link for a thread.
+
+    With a configured workspace, use the fast archives URL
+    (`.../archives/{channel}/p{ts_without_dot}`). When workspace is empty, fall back
+    to the workspace-agnostic `app_redirect` form (prior behavior) rather than emit a
+    broken `https://.slack.com/...` link.
+    """
+    if not workspace:
+        return f"https://slack.com/app_redirect?channel={channel_id}&message_ts={thread_ts}"
     ts = thread_ts.replace(".", "")
     return f"https://{workspace}.slack.com/archives/{channel_id}/p{ts}"
 
@@ -118,6 +127,7 @@ def create_routes(
     poller: SlackPoller,
     llm: LlmProvider,
     config: AppConfig,
+    connection: ConnectionState | None = None,
     templates: Jinja2Templates | None = None,
 ) -> None:
     if templates is None:
@@ -172,6 +182,12 @@ def create_routes(
         poller.dismiss_thread(channel_id, thread_ts)
         # Empty body: HTMX swaps the row out (hx-swap="outerHTML").
         return HTMLResponse("")
+
+    @app.get("/status", response_class=HTMLResponse)
+    async def status(request: Request) -> HTMLResponse:
+        # "connected" suppresses the banner; absent connection state = assume connected.
+        state = connection.status() if connection is not None else "connected"
+        return templates.TemplateResponse(request, "partials/status.html", {"status": state})
 
     @app.get("/health")
     async def health() -> dict[str, str]:

@@ -186,3 +186,42 @@ design doc's "Post-Implementation Review" section. Corrections to earlier notes:
 
 These remedies are recorded as "Confirmed bugs to fix" in the design doc; they are not yet
 implemented in code.
+
+## Phase 6: Post-review fix batch
+
+### Design decisions
+- **Velocity dedup by normalized key** (`heat.py:prune_timestamps`) using `f"{ts:.6f}"`, not
+  exact-float `set()` (Codex's refinement). The listener now stores raw `float(ts)`
+  (`listener.py:_apply_event`) so both paths agree; the normalized key is belt-and-suspenders
+  against any residual float drift.
+- **Resurrection reconstruction** (`heat.py:reconstruct_resurrection`, used in
+  `poller.py:_fetch_thread`): scan the full fetched reply timeline for the most recent adjacent
+  gap exceeding `resurrection_gap_hours`; the reply ending that gap is the event. State-independent,
+  so it fires for evicted and across-restart threads. `is_zombie` still gates display on age +
+  recency, so reconstruction does not re-check age.
+- **Per-thread watermark = the existing `_thread_watermarks`.** No new field was needed; that dict
+  already holds the max reply ts fetched per thread, which is exactly the "latest reply I have"
+  pointer the reconcile compares against.
+- **Reconnect detection by polling `is_connected()`** (`main.py:_connection_monitor`). Verified
+  against slack_sdk 3.41.0: `SocketModeClient` exposes `on_close_listeners` (disconnect edge) and
+  `is_connected()`, but NO on-connect callback - so the disconnect flips the banner immediately via
+  `on_close`, and a 5s poll detects the reconnect edge and triggers `poller.reconcile()`.
+- **Banner** via a `/status` partial the HTMX shell polls every 10s (`index.html`,
+  `partials/status.html`); `ConnectionState.status()` returns connected/disconnected/disabled.
+
+### Deviations
+- Minor: in the full-fetch path, when reconstruction returns 0.0 (no gap in the fetched window)
+  but an `existing` entry carried a resurrection event, the existing value is kept as a fallback
+  (`poller.py:_fetch_thread`). This guards incremental-built entries whose sparse `reply_timestamps`
+  can't reconstruct the gap; it never overrides a reconstructed event.
+
+### Tradeoffs
+- 5s connection poll vs. a callback: slack_sdk gives no on-connect hook, so polling is the
+  pragmatic correct choice. The disconnect edge is still immediate (via `on_close_listeners`).
+- Reconcile re-lists each channel with `oldest=None` (full recent history) rather than a watermark,
+  because the whole point is to catch old parents the watermark would skip; it then re-fetches only
+  the threads whose `latest_reply` moved, keeping replies-fetch cost proportional to actual change.
+
+### Open questions
+- Thread-listing lookback depth bounds how far back a missed reply can be recovered (documented
+  caveat in the doc's Zero-miss "Discovery caveat"); deep pagination deferred.

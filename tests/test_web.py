@@ -159,3 +159,49 @@ def test_dismiss_route_invokes_dismiss_thread() -> None:
     response = client.post("/dismiss/C123/1234567890.123456")
     assert response.status_code == 200
     poller.dismiss_thread.assert_called_once_with("C123", "1234567890.123456")
+
+
+def test_status_banner_disconnected() -> None:
+    from slack_dashboard.connection import ConnectionState
+
+    app = FastAPI()
+    poller = AsyncMock(spec=SlackPoller)
+    poller.ranked_threads.return_value = []
+    poller.threads = {}
+    conn = ConnectionState(socket_enabled=True, connected=False)
+    create_routes(app, poller, MockLlm(), _CONFIG, conn)
+    client = TestClient(app)
+    resp = client.get("/status")
+    assert resp.status_code == 200
+    assert "Live connection lost" in resp.text
+
+
+def test_status_banner_connected_is_empty() -> None:
+    from slack_dashboard.connection import ConnectionState
+
+    app = FastAPI()
+    poller = AsyncMock(spec=SlackPoller)
+    poller.ranked_threads.return_value = []
+    poller.threads = {}
+    conn = ConnectionState(socket_enabled=True, connected=True)
+    create_routes(app, poller, MockLlm(), _CONFIG, conn)
+    client = TestClient(app)
+    resp = client.get("/status")
+    assert resp.status_code == 200
+    assert "Live connection lost" not in resp.text
+    assert "Socket Mode is off" not in resp.text
+
+
+def test_status_banner_disabled() -> None:
+    from slack_dashboard.connection import ConnectionState
+
+    app = FastAPI()
+    poller = AsyncMock(spec=SlackPoller)
+    poller.ranked_threads.return_value = []
+    poller.threads = {}
+    conn = ConnectionState(socket_enabled=False)
+    create_routes(app, poller, MockLlm(), _CONFIG, conn)
+    client = TestClient(app)
+    resp = client.get("/status")
+    assert resp.status_code == 200
+    assert "Socket Mode is off" in resp.text

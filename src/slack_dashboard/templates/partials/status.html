@@ -1,0 +1,9 @@
+{% if status == "disconnected" %}
+<div class="banner banner-error" role="alert">
+    &#9888; Live connection lost -this view may be missing recent activity. Reconnecting and catching up&hellip;
+</div>
+{% elif status == "disabled" %}
+<div class="banner banner-warn">
+    Socket Mode is off (no app token) -REST polling only; new replies on older threads may lag.
+</div>
+{% endif %}

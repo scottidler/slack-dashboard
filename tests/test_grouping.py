@@ -97,3 +97,9 @@ def test_build_row_no_emoji_when_cold_and_not_zombie() -> None:
     config = AppConfig()
     row = _build_row(_thread(heat_tier="cold"), config)
     assert row.emojis == ""
+
+
+def test_deep_link_fallback_when_workspace_empty() -> None:
+    assert deep_link("", "C123", "1718900000.000100") == (
+        "https://slack.com/app_redirect?channel=C123&message_ts=1718900000.000100"
+    )

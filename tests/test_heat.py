@@ -8,7 +8,9 @@ from slack_dashboard.heat import (
     detect_resurrection,
     filter_stale_threads,
     is_zombie,
+    prune_timestamps,
     rank_threads,
+    reconstruct_resurrection,
     velocity,
 )
 from slack_dashboard.thread import ThreadEntry
@@ -234,3 +236,56 @@ def test_decay_rename_equivalence() -> None:
     score = _compute_heat(thread, config)
     # base=29, decay=1-12/24=0.5 -> 14.5
     assert abs(score - 14.5) < 1.0
+
+
+def test_prune_timestamps_dedups_by_normalized_key() -> None:
+    # Same reply recorded twice with a sub-ulp difference (socket round-trip vs raw fetch)
+    config = HeatConfig(velocity_window_minutes=30)
+    now = _time.time()
+    raw = now - 60
+    round_tripped = datetime.fromtimestamp(raw, tz=UTC).timestamp()
+    pruned = prune_timestamps([raw, round_tripped], config, now)
+    assert len(pruned) == 1
+
+
+def test_prune_timestamps_keeps_distinct() -> None:
+    config = HeatConfig(velocity_window_minutes=30)
+    now = _time.time()
+    pruned = prune_timestamps([now - 60, now - 120, now - 180], config, now)
+    assert len(pruned) == 3
+
+
+def test_velocity_not_double_counted_after_socket_plus_fetch() -> None:
+    # Simulates the race: listener appended raw ts, full fetch merges the same ts again.
+    config = HeatConfig(velocity_window_minutes=30)
+    now = _time.time()
+    raw = now - 60
+    merged = prune_timestamps([raw] + [raw], config, now)
+    thread = _make_thread()
+    thread.reply_timestamps = merged
+    assert velocity(thread, config, now) == 1 / 30
+
+
+def test_reconstruct_resurrection_finds_gap() -> None:
+    config = HeatConfig(resurrection_gap_hours=24)
+    now = _time.time()
+    # parent + early replies, then a 48h-quiet gap, then a reviving reply
+    ts = [now - 5 * 86400, now - 5 * 86400 + 60, now - 60]
+    event = reconstruct_resurrection(sorted(ts), config)
+    assert event == now - 60
+
+
+def test_reconstruct_resurrection_no_gap() -> None:
+    config = HeatConfig(resurrection_gap_hours=24)
+    now = _time.time()
+    ts = [now - 180, now - 120, now - 60]
+    assert reconstruct_resurrection(sorted(ts), config) == 0.0
+
+
+def test_reconstruct_resurrection_picks_most_recent_gap() -> None:
+    config = HeatConfig(resurrection_gap_hours=24)
+    now = _time.time()
+    # two qualifying gaps; the most recent reviving reply should win
+    ts = [now - 10 * 86400, now - 8 * 86400, now - 3 * 86400, now - 120]
+    event = reconstruct_resurrection(sorted(ts), config)
+    assert event == now - 120

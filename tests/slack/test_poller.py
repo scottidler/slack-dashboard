@@ -339,3 +339,66 @@ async def test_fetch_channel_uses_per_channel_min_replies() -> None:
     await poller._fetch_channel("C111", "incidents")
     # The high-weight ops channel resolves to min_replies=1, not the global 3
     assert mock_slack.fetch_threads.call_args[1]["min_replies"] == 1
+
+
+@pytest.mark.asyncio
+async def test_resurrection_reconstructed_without_prior_state() -> None:
+    """Phase 6: a long-dead thread that comes back is a zombie even with no in-memory
+    prior state (the eviction/restart case the carry-forward approach missed)."""
+    import time
+
+    from slack_dashboard.heat import is_zombie
+
+    mock_slack = _make_mock_slack()
+    now = time.time()
+    old_parent = str(now - 5 * 86400)
+    revive = str(now - 60)
+    mock_slack.fetch_replies = AsyncMock(
+        return_value=[
+            {"ts": old_parent, "user": "U1", "text": "old root"},
+            {"ts": str(now - 5 * 86400 + 30), "user": "U2", "text": "early reply"},
+            {"ts": revive, "user": "U3", "text": "back from the dead"},
+        ]
+    )
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    # No prior entry in _threads (simulates an evicted/cold thread)
+    await poller._fetch_thread("C111", "general", old_parent, incremental=False)
+    entry = poller.threads[("C111", old_parent)]
+    assert entry.resurrection_event_ts == pytest.approx(float(revive))
+    assert is_zombie(entry, config.heat, now)
+
+
+@pytest.mark.asyncio
+async def test_reconcile_refetches_only_changed_threads() -> None:
+    """Phase 6 reconcile: re-fetch only threads whose latest_reply moved past the watermark."""
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    poller._channel_map = config.channels  # normally set by start(); reconcile iterates it
+    # Seed one known thread via backfill (sets its watermark to _REPLY_3)
+    await poller._process_item(
+        FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    )
+    fetch_calls_before = mock_slack.fetch_replies.call_count
+
+    # Channel listing: the known thread is unchanged (latest_reply == watermark),
+    # plus a brand-new thread that must be picked up.
+    new_ts = str(time.time() + 100)
+    mock_slack.fetch_threads = AsyncMock(
+        return_value=[
+            {"ts": _NOW, "thread_ts": _NOW, "reply_count": 3, "latest_reply": _REPLY_3},
+            {"ts": new_ts, "thread_ts": new_ts, "reply_count": 3, "latest_reply": new_ts},
+        ]
+    )
+    mock_slack.fetch_replies = AsyncMock(
+        return_value=[
+            {"ts": new_ts, "user": "U1", "text": "new root"},
+            {"ts": str(time.time() + 101), "user": "U2", "text": "r"},
+        ]
+    )
+    await poller.reconcile()
+    # Only the new/changed thread triggers a replies fetch; the unchanged one is skipped.
+    assert mock_slack.fetch_replies.call_count == 1
+    assert ("C111", new_ts) in poller.threads
+    assert fetch_calls_before > 0  # sanity: backfill did fetch
