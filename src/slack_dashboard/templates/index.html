@@ -1,5 +1,15 @@
 {% extends "base.html" %}
 {% block content %}
+<nav class="group-controls">
+    <span class="group-label-prefix">Group by:</span>
+    {% for choice in ["channel", "size", "velocity", "participants"] %}
+    <a href="#"
+       class="group-choice"
+       hx-get="/threads?group-by={{ choice }}"
+       hx-target="#thread-list"
+       hx-swap="innerHTML">{{ choice }}</a>
+    {% endfor %}
+</nav>
 <div id="thread-list"
      hx-get="/threads"
      hx-trigger="load, every 30s [document.visibilityState === 'visible'], poll"

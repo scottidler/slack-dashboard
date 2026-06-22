@@ -99,7 +99,7 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
         await poller.stop()
 
     app = FastAPI(lifespan=lifespan)
-    create_routes(app, poller, llm)
+    create_routes(app, poller, llm, config)
     return app, poller
 
 

@@ -5,10 +5,13 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from slack_dashboard.config import AppConfig
 from slack_dashboard.llm.provider import LlmProvider
 from slack_dashboard.slack.poller import SlackPoller
 from slack_dashboard.thread import ThreadEntry
 from slack_dashboard.web import create_routes
+
+_CONFIG = AppConfig(workspace="tatari")
 
 
 class MockLlm(LlmProvider):
@@ -49,7 +52,7 @@ def app_with_threads() -> FastAPI:
     thread = _make_thread()
     poller.ranked_threads.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
-    create_routes(app, poller, MockLlm())
+    create_routes(app, poller, MockLlm(), _CONFIG)
     return app
 
 
@@ -70,7 +73,39 @@ def test_threads_returns_partial(client: TestClient) -> None:
     assert response.status_code == 200
     assert "sre-internal" in response.text
     assert "Something broke in prod" in response.text
-    assert "10 replies" in response.text
+    # Compact counts: "10r" replies, "3p" participants
+    assert "10r" in response.text
+    assert "3p" in response.text
+
+
+def test_threads_renders_deep_link(client: TestClient) -> None:
+    response = client.get("/threads")
+    # Web deep link: thread_ts without the dot, p-prefixed
+    assert "https://tatari.slack.com/archives/C123/p1234567890123456" in response.text
+
+
+def test_threads_renders_fire_emoji_for_hot(client: TestClient) -> None:
+    # The fixture thread is heat_tier="hot"
+    response = client.get("/threads")
+    assert "\N{FIRE}" in response.text
+
+
+def test_threads_has_no_row_cap() -> None:
+    app = FastAPI()
+    poller = AsyncMock(spec=SlackPoller)
+    threads = []
+    for i in range(40):
+        t = _make_thread()
+        t.thread_ts = f"100000000{i}.000000"
+        t.first_message = f"thread number {i}"
+        threads.append(t)
+    poller.ranked_threads.return_value = threads
+    create_routes(app, poller, MockLlm(), _CONFIG)
+    client = TestClient(app)
+    response = client.get("/threads")
+    # All 40 render - the old threads[:15] cap is gone (zero-miss invariant)
+    assert "thread number 39" in response.text
+    assert "thread number 14" in response.text
 
 
 def test_health_returns_ok(client: TestClient) -> None:
@@ -106,7 +141,7 @@ def test_summarize_llm_failure() -> None:
     thread = _make_thread()
     poller.ranked_threads.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
-    create_routes(app, poller, FailingLlm())
+    create_routes(app, poller, FailingLlm(), _CONFIG)
     client = TestClient(app)
     response = client.get("/summarize/C123/1234567890.123456")
     assert response.status_code == 200
@@ -119,7 +154,7 @@ def test_dismiss_route_invokes_dismiss_thread() -> None:
     thread = _make_thread()
     poller.ranked_threads.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
-    create_routes(app, poller, MockLlm())
+    create_routes(app, poller, MockLlm(), _CONFIG)
     client = TestClient(app)
     response = client.post("/dismiss/C123/1234567890.123456")
     assert response.status_code == 200

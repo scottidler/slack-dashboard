@@ -1,26 +1,123 @@
+import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import markdown as md
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
+from slack_dashboard.config import AppConfig
+from slack_dashboard.heat import is_zombie, velocity
 from slack_dashboard.llm.provider import LlmProvider
 from slack_dashboard.slack.mrkdwn import strip_mrkdwn
 from slack_dashboard.slack.poller import SlackPoller
+from slack_dashboard.thread import ThreadEntry
+
+logger = logging.getLogger(__name__)
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
+
+# Glyphs for the emoji state channel (see design doc "Emoji State Channel").
+_ZOMBIE = "\N{ZOMBIE}"
+_FIRE = "\N{FIRE}"
+
+_GROUP_BY_CHOICES = ("channel", "size", "velocity", "participants")
+
+
+@dataclass
+class RowView:
+    channel_id: str
+    channel_name: str
+    thread_ts: str
+    display_title: str
+    reply_count: int
+    participant_count: int
+    heat_tier: str
+    emojis: str
+    deep_link: str
+    summary: str | None
+
+
+@dataclass
+class GroupView:
+    label: str
+    rows: list[RowView] = field(default_factory=list)
 
 
 def _markdown_filter(text: str) -> Markup:
     return Markup(md.markdown(text))
 
 
+def deep_link(workspace: str, channel_id: str, thread_ts: str) -> str:
+    """Slack web deep link for a thread: .../archives/{channel}/p{ts_without_dot}."""
+    ts = thread_ts.replace(".", "")
+    return f"https://{workspace}.slack.com/archives/{channel_id}/p{ts}"
+
+
+def _emojis(thread: ThreadEntry, config: AppConfig) -> str:
+    glyphs = []
+    if is_zombie(thread, config.heat):
+        glyphs.append(_ZOMBIE)
+    if thread.heat_tier == "hot":
+        glyphs.append(_FIRE)
+    return "".join(glyphs)
+
+
+def _build_row(thread: ThreadEntry, config: AppConfig) -> RowView:
+    return RowView(
+        channel_id=thread.channel_id,
+        channel_name=thread.channel_name,
+        thread_ts=thread.thread_ts,
+        display_title=thread.display_title,
+        reply_count=thread.reply_count,
+        participant_count=len(thread.participants),
+        heat_tier=thread.heat_tier,
+        emojis=_emojis(thread, config),
+        deep_link=deep_link(config.workspace, thread.channel_id, thread.thread_ts),
+        summary=thread.summary,
+    )
+
+
+def group_threads(threads: list[ThreadEntry], group_by: str, config: AppConfig) -> list[GroupView]:
+    """Partition globally-ranked threads into display groups.
+
+    group-by=channel produces one group per channel (groups ordered by their
+    hottest thread). The size/velocity/participants modes are a single ordered
+    group sorted by that dimension (v1: sort, not bucket). Every trackable thread
+    is always rendered - there is no cap (see Zero-miss invariant).
+    """
+    logger.debug("group_threads: group_by=%s count=%d", group_by, len(threads))
+    if group_by not in _GROUP_BY_CHOICES:
+        group_by = "channel"
+
+    if group_by == "channel":
+        groups: dict[str, GroupView] = {}
+        for thread in threads:
+            group = groups.get(thread.channel_name)
+            if group is None:
+                group = GroupView(label=thread.channel_name)
+                groups[thread.channel_name] = group
+            group.rows.append(_build_row(thread, config))
+        # Threads arrive heat-ranked, so the first row in each group is its hottest;
+        # order groups by that hottest row's position (preserved by dict insertion).
+        return list(groups.values())
+
+    key_fns = {
+        "size": lambda t: t.reply_count,
+        "velocity": lambda t: velocity(t, config.heat),
+        "participants": lambda t: len(t.participants),
+    }
+    ordered = sorted(threads, key=key_fns[group_by], reverse=True)
+    return [GroupView(label=group_by, rows=[_build_row(t, config) for t in ordered])]
+
+
 def create_routes(
     app: FastAPI,
     poller: SlackPoller,
     llm: LlmProvider,
+    config: AppConfig,
     templates: Jinja2Templates | None = None,
 ) -> None:
     if templates is None:
@@ -32,9 +129,17 @@ def create_routes(
         return templates.TemplateResponse(request, "index.html")
 
     @app.get("/threads", response_class=HTMLResponse)
-    async def threads(request: Request) -> HTMLResponse:
+    async def threads(
+        request: Request,
+        group_by: str = Query("channel", alias="group-by"),
+    ) -> HTMLResponse:
         ranked = poller.ranked_threads()
-        return templates.TemplateResponse(request, "partials/threads.html", {"threads": ranked})
+        groups = group_threads(ranked, group_by, config)
+        return templates.TemplateResponse(
+            request,
+            "partials/threads.html",
+            {"groups": groups, "group_by": group_by},
+        )
 
     @app.get("/summarize/{channel_id}/{thread_ts:path}", response_class=HTMLResponse)
     async def summarize(request: Request, channel_id: str, thread_ts: str) -> HTMLResponse:
