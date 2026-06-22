@@ -1,0 +1,82 @@
+# slack-dashboard example config
+# Copy to ~/.config/slack-dashboard/slack-dashboard.yml and edit.
+# All keys are kebab-case. ${VAR} placeholders are interpolated from the environment.
+
+# Slack credentials. The user token reads history; the app token enables Socket Mode.
+slack:
+  token: ${SLACK_USER_TOKEN}
+  app-token: ${SLACK_APP_TOKEN}
+
+# Workspace subdomain, used to build thread deep links:
+#   https://<workspace>.slack.com/archives/<channel>/p<ts>
+workspace: tatari
+
+# Channels to monitor: name -> channel id.
+channels:
+  sre: C0SRE0000
+  data-platform: C0DATA000
+  incidents: C0INC0000
+  ask-security: C0SEC0000
+  proj-atlas: C0ATLAS00
+
+fetch:
+  refresh-interval-minutes: 10
+  # Global definition of "a thread" (a real conversation, not a lone post).
+  min-replies: 3
+  # Per-channel override (glob-aware, exact keys win over globs). High-stakes ops
+  # channels catch two-reply threads that the global floor would drop.
+  channel-min-replies:
+    incidents: 1
+    ask-security: 1
+    sre: 1
+    data-platform: 1
+
+heat:
+  reply-weight: 2
+  participant-weight: 3
+
+  # Recency: linear ramp from 1.0 down to decay-floor over decay-hours.
+  decay-hours: 24
+  decay-floor: 0.01
+
+  # Dead threads age off after this many days (reversible by resurrection).
+  max-thread-age-days: 3
+
+  # Tier thresholds (drive the :fire: marker via the "hot" tier).
+  hot-threshold: 50
+  warm-threshold: 20
+
+  # The single highest-leverage knob: weight the channels you care about up and
+  # the noise down. Glob-aware; exact keys win over globs; default 1.0.
+  channel-weights:
+    sre: 2.0
+    data-platform: 2.0
+    incidents: 2.0
+    ask-security: 2.0
+    proj-*: 0.5
+
+  # Velocity: boost a thread spiking now over one that accreted replies slowly.
+  # Start at 0 (off) and raise once the channel weights feel right.
+  velocity-weight: 0.0
+  velocity-window-minutes: 30
+
+  # Resurrection: a thread quiet for resurrection-gap-hours, older than
+  # resurrection-age-days, that gets new activity floats back up as a zombie for
+  # resurrection-display-hours.
+  resurrection-gap-hours: 24
+  resurrection-age-days: 2
+  resurrection-display-hours: 24
+
+  # LLM re-titling cadence.
+  retitle-reply-growth: 5
+  retitle-reply-percent: 25
+
+llm:
+  provider: anthropic
+  model: claude-haiku-4-5-20251001
+  api-key: ${ANTHROPIC_API_KEY}
+
+server:
+  host: 0.0.0.0
+  port: 8080
+  log-level: info

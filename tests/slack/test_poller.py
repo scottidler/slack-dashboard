@@ -324,3 +324,18 @@ async def test_evict_threads_removes_dead(tmp_path) -> None:
     poller.threads[key].resurrection_event_ts = 0.0
     poller._evict_threads()
     assert key not in poller.threads
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_uses_per_channel_min_replies() -> None:
+    from slack_dashboard.config import FetchConfig
+
+    mock_slack = _make_mock_slack()
+    config = AppConfig(
+        channels={"incidents": "C111"},
+        fetch=FetchConfig(min_replies=3, channel_min_replies={"incidents": 1}),
+    )
+    poller = SlackPoller(mock_slack, config)
+    await poller._fetch_channel("C111", "incidents")
+    # The high-weight ops channel resolves to min_replies=1, not the global 3
+    assert mock_slack.fetch_threads.call_args[1]["min_replies"] == 1

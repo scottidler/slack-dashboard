@@ -4,7 +4,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from slack_dashboard.config import AppConfig
+from slack_dashboard.config import AppConfig, resolve_min_replies
 from slack_dashboard.dismiss import DismissStore
 from slack_dashboard.heat import (
     classify_tier,
@@ -283,8 +283,9 @@ class SlackPoller:
         incremental: bool = False,
     ) -> None:
         oldest = self._channel_watermarks.get(channel_id) if incremental else None
+        min_replies = resolve_min_replies(channel_name, self._config.fetch)
         thread_messages = await self._slack.fetch_threads(
-            channel_id, min_replies=self._config.fetch.min_replies, oldest=oldest
+            channel_id, min_replies=min_replies, oldest=oldest
         )
 
         if thread_messages:

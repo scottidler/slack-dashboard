@@ -187,12 +187,15 @@ async def test_no_resurrection_on_small_gap() -> None:
 
 @pytest.mark.asyncio
 async def test_appends_reply_timestamp() -> None:
+    import time
+
     thread = _make_thread()
     thread.last_activity = datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC)
     threads = {("C111", "1234.5678"): thread}
     listener, _ = _make_listener(threads=threads)
     client = AsyncMock()
-    ts = "1782086351.070007"
+    # Must be inside the velocity window or prune_timestamps drops it
+    ts = str(time.time())
     req = _make_request(ts=ts)
     await listener.handle_event(client, req)
     assert len(thread.reply_timestamps) == 1
