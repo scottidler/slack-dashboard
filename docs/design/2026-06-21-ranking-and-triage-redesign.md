@@ -125,7 +125,9 @@ The headline promise only holds if every silent-hide path in the current code is
 
 No other gate (heat threshold, tier filter, "hot only" view) may be introduced — those would re-break the invariant.
 
-**Discovery caveat (added post-review, 2026-06-21).** The invariant above governs *hiding* threads that have been discovered. It does **not** by itself guarantee *discovery*: the REST refresh polls `conversations_history` with `oldest=watermark`, which surfaces new *parent* messages, not old parents that receive *new replies*. Coverage of new replies on already-old parents therefore depends on **Socket Mode being enabled and healthy** (`app_token` set; `main.py` makes it optional). Both external reviewers confirmed this is out of scope for this redesign ("No change to the Socket Mode + REST hybrid"), but the zero-miss promise is **scoped to "Socket Mode is running."** Closing the REST-discovery hole (e.g. polling `conversations.replies` for old parents) is deferred follow-up work, not part of v1.
+**Discovery caveat (added post-review, 2026-06-21; addressed in Phase 6).** The invariant above governs *hiding* threads that have been discovered. It does **not** by itself guarantee *discovery*: the REST refresh polls `conversations_history` with `oldest=watermark`, which surfaces new *parent* messages, not old parents that receive *new replies*. Coverage of new replies on already-old parents therefore depends on **Socket Mode being enabled and healthy** (`app_token` set; `main.py` makes it optional), and Socket Mode does not replay events missed while disconnected, so every reconnect is a blind window.
+
+Rather than accept this as a permanent scoping of the promise, **Phase 6 closes it**: a disconnect raises a visible banner (trust is reduced *now*), and on reconnect a per-channel reconcile re-fetches the replies of any thread whose `latest_reply` moved past its stored watermark, truing up whatever landed during the gap. The promise becomes: while Socket Mode is connected, zero-miss holds live; across a disconnect, the banner signals the gap and reconcile-on-reconnect recovers it (bounded by the thread-listing lookback depth). No constant extra polling is added - the catch-up is gated on the reconnect event.
 
 ### Emoji State Channel
 
@@ -192,6 +194,52 @@ GET  /health
 **Model:** sonnet
 - End-to-end render test, dismiss persistence across restart, deep-link format test.
 - Update README and example config with the new knobs and sane starting weights.
+
+#### Phase 6: Post-review fix batch
+**Model:** opus
+Added after the external audit (see "Post-Implementation Review" below). Four fixes; the
+resurrection fix and the reconcile-on-reconnect work share one mechanism and land together.
+
+- **Velocity double-count fix.** Store the raw `float(ts)` in `listener.py:_apply_event` (drop
+  the `datetime` round-trip), and make `prune_timestamps` (`heat.py`) deduplicate by a normalized
+  Slack-ts key (`f"{ts:.6f}"`) before applying `MAX_REPLY_TIMESTAMPS`. Regression test: a socket
+  append followed by a full fetch of the same reply yields one timestamp, not two.
+
+- **Deep-link fallback.** In `web.py:deep_link`, when `workspace` is empty, emit the Slack
+  `app_redirect` form (`https://slack.com/app_redirect?channel={cid}&message_ts={ts}`) instead of
+  the broken `https://.slack.com/...`. Regression test: empty workspace -> app_redirect URL;
+  set workspace -> archives URL.
+
+- **Per-thread reply watermark (the "pointer").** Generalize the existing
+  `_thread_watermarks` into the authoritative "latest reply ts I have for this thread." This is
+  the high-water mark used by both resurrection reconstruction and reconcile. It is per-thread,
+  not a single global pointer: a global "last event" cannot tell you *which* threads changed.
+
+- **State-independent resurrection + reconcile-on-reconnect (closes the discovery hole).**
+  - *Resurrection reconstruction:* in the full-fetch path (`poller.py:_fetch_thread`), sort the
+    fetched reply timestamps, find the most recent adjacent gap exceeding `resurrection_gap_hours`,
+    and set `resurrection_event_ts` to the reply that ended that gap (gated on the thread being
+    older than `resurrection_age_days`). This removes the dependence on in-memory prior state, so
+    resurrection fires for evicted *and* across-restart threads. Supersedes the Phase 2
+    "carry-forward only" decision for the full-fetch path.
+  - *Disconnect banner:* track Socket Mode connection state; expose it (e.g. via `/health` or a
+    small `/status` partial the HTMX shell already polls) and render a prominent banner while
+    disconnected so reduced trust is visible. (Open implementation detail: confirm `slack_sdk`'s
+    `SocketModeClient` exposes a usable connect/disconnect signal; if not, detect via connection
+    state polling. Verify before committing to the hook - do not assume a clean callback exists.)
+  - *Reconcile on reconnect:* when the connection is re-established, run a catch-up per channel.
+    The catch-up is **not** `conversations_history(oldest=pointer)` - that returns only new
+    *parent* messages and would miss new replies on old parents (the exact discovery hole). Instead
+    list the channel's threads with their `latest_reply`, and for every thread whose `latest_reply`
+    is newer than its stored per-thread watermark, re-fetch that thread's replies. This recovers
+    replies that landed during the disconnected window, including on already-evicted (resurrected)
+    threads, which the same scan resurfaces.
+  - *Cost control:* reconcile is gated on the reconnect event (not a constant poll), and only
+    re-fetches threads whose `latest_reply` actually moved, so it stays within the dual-semaphore
+    rate budget. Caveat: the per-channel thread listing has a finite lookback, so a reply on a
+    parent older than that window can still be missed; bounded by scan depth and acceptable for v1.
+  - Regression tests: reconnect after a simulated gap re-fetches only the changed threads; a reply
+    that arrives on an old/evicted parent during the gap is recovered and marked zombie.
 
 ## Alternatives Considered
 
@@ -310,12 +358,11 @@ landed. The two reviewers converged independently on the first two items below.
   reviewers): out of scope for this redesign; the Zero-miss invariant has been amended to state
   the Socket-Mode dependency** (see "Discovery caveat" in the Zero-miss invariant section). REST-
   discovery fallback is deferred follow-up. **Residual judgment call raised to the author below.**
-- [ ] **(for the author)** Both reviewers flagged the one genuine judgment call: if "zero-miss" is
-  treated as the *primary product contract* (not just a hiding guarantee), closing the REST-
-  discovery hole could be deemed in-scope. It changes the discovery + rate-budget model, so the
-  panel recommends documenting the Socket-Mode dependency now (done) and scheduling the REST
-  fallback as separate work. Decision: accept Socket-Mode-scoped zero-miss for v1, or schedule
-  the REST-discovery fix as a follow-up?
+- [x] ~~**(for the author)** accept Socket-Mode-scoped zero-miss, or close the REST-discovery hole?~~
+  **Resolved (author, 2026-06-21): close it in this batch.** Treating zero-miss as the primary
+  product contract, the discovery hole is brought in-scope via the Phase 6 disconnect banner +
+  reconcile-on-reconnect (per-thread `latest_reply` watermark), rather than constant polling. The
+  Zero-miss invariant's Discovery caveat is updated accordingly.
 - [ ] Slack deep link: web URL (`https://{workspace}.slack.com/archives/...`) vs. `slack://` app protocol — which lands Scott in the right place fastest from both desk and laptop?
 - [ ] Default `group-by` — channel, or size/velocity?
 - [ ] Decay shape — keep the linear ramp (just renamed) or switch to true exponential? Renaming is the low-risk default for this pass.
