@@ -1,8 +1,20 @@
+import time as _time
 from datetime import UTC, datetime, timedelta
 
 from slack_dashboard.config import HeatConfig
-from slack_dashboard.heat import classify_tier, compute_heat, filter_stale_threads, rank_threads
+from slack_dashboard.heat import (
+    classify_tier,
+    compute_heat,
+    detect_resurrection,
+    filter_stale_threads,
+    is_zombie,
+    rank_threads,
+    velocity,
+)
 from slack_dashboard.thread import ThreadEntry
+
+# Alias kept for the Phase 2 tests appended below.
+_compute_heat = compute_heat
 
 
 def _make_thread(
@@ -117,3 +129,108 @@ def test_high_reply_old_thread_scores_low() -> None:
     old_score = compute_heat(old_hot, config)
     new_score = compute_heat(new_warm, config)
     assert new_score > old_score
+
+
+def test_channel_weight_orders_threads() -> None:
+    config = HeatConfig(channel_weights={"sre": 2.0, "proj-atlas": 0.5})
+    sre = _make_thread(reply_count=10, participants=3, hours_ago=0.0, channel_name="sre")
+    proj = _make_thread(reply_count=10, participants=3, hours_ago=0.0, channel_name="proj-atlas")
+    neutral = _make_thread(reply_count=10, participants=3, hours_ago=0.0, channel_name="random")
+    sre_score = _compute_heat(sre, config)
+    proj_score = _compute_heat(proj, config)
+    neutral_score = _compute_heat(neutral, config)
+    assert sre_score > neutral_score > proj_score
+    # 2.0x and 0.5x multipliers relative to the neutral 1.0 channel
+    assert abs(sre_score - 2.0 * neutral_score) < 0.01
+    assert abs(proj_score - 0.5 * neutral_score) < 0.01
+
+
+def test_velocity_counts_in_window() -> None:
+    config = HeatConfig(velocity_window_minutes=30)
+    now = _time.time()
+    thread = _make_thread()
+    # 6 replies in the last 30 min, 1 well outside
+    thread.reply_timestamps = [now - 60 * i for i in range(6)] + [now - 60 * 60]
+    vel = velocity(thread, config, now)
+    assert abs(vel - 6 / 30) < 1e-6
+
+
+def test_velocity_boosts_heat() -> None:
+    config = HeatConfig(velocity_weight=10.0, velocity_window_minutes=30)
+    now = _time.time()
+    spiking = _make_thread(reply_count=10, participants=3, hours_ago=0.0)
+    spiking.reply_timestamps = [now - 30 * i for i in range(10)]
+    slow = _make_thread(reply_count=10, participants=3, hours_ago=0.0)
+    slow.reply_timestamps = []
+    assert _compute_heat(spiking, config) > _compute_heat(slow, config)
+
+
+def test_velocity_zero_when_weight_zero() -> None:
+    # Default velocity_weight=0.0 keeps behavior identical to base*recency
+    config = HeatConfig()
+    now = _time.time()
+    thread = _make_thread(reply_count=10, participants=3, hours_ago=0.0)
+    thread.reply_timestamps = [now - 30 * i for i in range(10)]
+    no_velocity = _make_thread(reply_count=10, participants=3, hours_ago=0.0)
+    assert abs(_compute_heat(thread, config) - _compute_heat(no_velocity, config)) < 0.01
+
+
+def test_detect_resurrection_trips_on_large_gap() -> None:
+    config = HeatConfig(resurrection_gap_hours=24)
+    now = _time.time()
+    prior = now - 48 * 3600
+    assert detect_resurrection(prior, now, config) is True
+
+
+def test_detect_resurrection_no_trip_on_small_gap() -> None:
+    config = HeatConfig(resurrection_gap_hours=24)
+    now = _time.time()
+    prior = now - 2 * 3600
+    assert detect_resurrection(prior, now, config) is False
+
+
+def test_detect_resurrection_no_trip_without_prior() -> None:
+    config = HeatConfig(resurrection_gap_hours=24)
+    assert detect_resurrection(0.0, _time.time(), config) is False
+
+
+def test_is_zombie_true_for_recent_revival_of_old_thread() -> None:
+    config = HeatConfig(resurrection_age_days=2, resurrection_display_hours=24)
+    now = _time.time()
+    thread = _make_thread()
+    thread.first_seen_ts = now - 5 * 86400  # 5 days old
+    thread.resurrection_event_ts = now - 1 * 3600  # revived an hour ago
+    assert is_zombie(thread, config, now) is True
+
+
+def test_is_zombie_clears_after_display_window() -> None:
+    config = HeatConfig(resurrection_age_days=2, resurrection_display_hours=24)
+    now = _time.time()
+    thread = _make_thread()
+    thread.first_seen_ts = now - 5 * 86400
+    thread.resurrection_event_ts = now - 48 * 3600  # revived 2 days ago, past display window
+    assert is_zombie(thread, config, now) is False
+
+
+def test_is_zombie_false_for_young_thread() -> None:
+    config = HeatConfig(resurrection_age_days=2, resurrection_display_hours=24)
+    now = _time.time()
+    thread = _make_thread()
+    thread.first_seen_ts = now - 1 * 3600  # young
+    thread.resurrection_event_ts = now - 1 * 3600
+    assert is_zombie(thread, config, now) is False
+
+
+def test_is_zombie_false_without_event() -> None:
+    config = HeatConfig()
+    thread = _make_thread()
+    assert is_zombie(thread, config) is False
+
+
+def test_decay_rename_equivalence() -> None:
+    # decay_hours=24 + decay_floor=0.01 reproduces the prior half-life-named behavior
+    config = HeatConfig(decay_hours=24, decay_floor=0.01)
+    thread = _make_thread(reply_count=10, participants=3, hours_ago=12.0)
+    score = _compute_heat(thread, config)
+    # base=29, decay=1-12/24=0.5 -> 14.5
+    assert abs(score - 14.5) < 1.0

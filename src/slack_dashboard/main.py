@@ -64,6 +64,7 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
         threads=poller.threads,
         channel_ids=set(config.channels.values()),
         channel_names=channel_names,
+        heat_config=config.heat,
     )
 
     @asynccontextmanager

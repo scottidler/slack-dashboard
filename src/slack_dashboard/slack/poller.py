@@ -5,7 +5,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from slack_dashboard.config import AppConfig
-from slack_dashboard.heat import classify_tier, compute_heat, filter_stale_threads
+from slack_dashboard.heat import (
+    classify_tier,
+    compute_heat,
+    detect_resurrection,
+    filter_stale_threads,
+    prune_timestamps,
+)
 from slack_dashboard.slack.client import SlackClient
 from slack_dashboard.slack.queue import (
     PRIORITY_BACKFILL,
@@ -153,7 +159,19 @@ class SlackPoller:
                     name = await self._resolve_user(r["user"])
                     existing.participants[name] = existing.participants.get(name, 0) + 1
             existing.reply_count += len(new_replies)
+            # Capture the resurrection gap BEFORE last_activity is overwritten (see
+            # State merge contract): once we bump last_activity the prior value is gone.
             last_activity = datetime.fromtimestamp(float(latest_ts), tz=UTC)
+            prior_ts = existing.last_activity.timestamp()
+            event_ts = last_activity.timestamp()
+            if detect_resurrection(prior_ts, event_ts, self._config.heat):
+                existing.resurrection_event_ts = event_ts
+            new_ts_values = [float(r["ts"]) for r in new_replies if r.get("ts")]
+            existing.reply_timestamps = prune_timestamps(
+                existing.reply_timestamps + new_ts_values, self._config.heat
+            )
+            if existing.first_seen_ts <= 0:
+                existing.first_seen_ts = float(thread_ts)
             if last_activity > existing.last_activity:
                 existing.last_activity = last_activity
             self._update_heat(existing)
@@ -175,6 +193,15 @@ class SlackPoller:
             if existing and existing.started_by
             else await self._resolve_user(started_by_id)
         )
+        # State merge contract: the full-fetch rebuild must carry forward velocity and
+        # resurrection state, or every periodic full refresh would wipe it. Resurrection
+        # is carried forward (not recomputed here) because the listener/incremental paths
+        # already captured the gap before last_activity was bumped. first_seen_ts is
+        # deterministic from thread_ts. reply_timestamps merges carried-forward + fetched.
+        carried_ts = list(existing.reply_timestamps) if existing else []
+        fetched_ts = [float(r["ts"]) for r in replies if r.get("ts") and r["ts"] != thread_ts]
+        reply_timestamps = prune_timestamps(carried_ts + fetched_ts, self._config.heat)
+        resurrection_event_ts = existing.resurrection_event_ts if existing else 0.0
         entry = ThreadEntry(
             channel_id=channel_id,
             channel_name=channel_name,
@@ -188,6 +215,9 @@ class SlackPoller:
             title_watermark=existing.title_watermark if existing else 0,
             summary=existing.summary if existing else None,
             summary_watermark=existing.summary_watermark if existing else 0,
+            reply_timestamps=reply_timestamps,
+            resurrection_event_ts=resurrection_event_ts,
+            first_seen_ts=float(thread_ts),
         )
         self._update_heat(entry)
         self._threads[key] = entry

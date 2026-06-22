@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from slack_dashboard.config import HeatConfig
 from slack_dashboard.slack.listener import SocketListener
 from slack_dashboard.slack.queue import PRIORITY_SOCKET_EVENT, FetchQueue
 from slack_dashboard.thread import ThreadEntry
@@ -46,6 +47,7 @@ def _make_thread(
 
 def _make_listener(
     threads: dict[tuple[str, str], ThreadEntry] | None = None,
+    heat_config: HeatConfig | None = None,
 ) -> tuple[SocketListener, FetchQueue]:
     queue = FetchQueue()
     if threads is None:
@@ -55,6 +57,7 @@ def _make_listener(
         threads=threads,
         channel_ids={"C111", "C222"},
         channel_names={"C111": "general", "C222": "random"},
+        heat_config=heat_config or HeatConfig(),
     )
     return listener, queue
 
@@ -153,3 +156,45 @@ async def test_new_thread_not_in_store_still_queued() -> None:
     req = _make_request(thread_ts="9999.9999")
     await listener.handle_event(client, req)
     assert queue.pending_count == 1
+
+
+@pytest.mark.asyncio
+async def test_captures_resurrection_on_large_gap() -> None:
+    thread = _make_thread()
+    thread.last_activity = datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC)
+    threads = {("C111", "1234.5678"): thread}
+    listener, _ = _make_listener(threads=threads, heat_config=HeatConfig(resurrection_gap_hours=24))
+    client = AsyncMock()
+    # An event 3 days later trips the gap
+    later = datetime(2026, 3, 27, 12, 0, 0, tzinfo=UTC).timestamp()
+    req = _make_request(ts=str(later))
+    await listener.handle_event(client, req)
+    assert thread.resurrection_event_ts == later
+
+
+@pytest.mark.asyncio
+async def test_no_resurrection_on_small_gap() -> None:
+    thread = _make_thread()
+    thread.last_activity = datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC)
+    threads = {("C111", "1234.5678"): thread}
+    listener, _ = _make_listener(threads=threads, heat_config=HeatConfig(resurrection_gap_hours=24))
+    client = AsyncMock()
+    later = datetime(2026, 3, 24, 13, 0, 0, tzinfo=UTC).timestamp()
+    req = _make_request(ts=str(later))
+    await listener.handle_event(client, req)
+    assert thread.resurrection_event_ts == 0.0
+
+
+@pytest.mark.asyncio
+async def test_appends_reply_timestamp() -> None:
+    thread = _make_thread()
+    thread.last_activity = datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC)
+    threads = {("C111", "1234.5678"): thread}
+    listener, _ = _make_listener(threads=threads)
+    client = AsyncMock()
+    ts = "1782086351.070007"
+    req = _make_request(ts=ts)
+    await listener.handle_event(client, req)
+    assert len(thread.reply_timestamps) == 1
+    assert thread.reply_timestamps[0] == pytest.approx(float(ts))
+    assert thread.first_seen_ts == float("1234.5678")

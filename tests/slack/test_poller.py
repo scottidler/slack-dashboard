@@ -213,3 +213,63 @@ async def test_incremental_merge_adds_participants() -> None:
     assert poller.threads[key].reply_count == 4
     assert "U_NEW" in poller.threads[key].participants
     assert len(poller.threads[key].participants) == 4
+
+
+@pytest.mark.asyncio
+async def test_full_refresh_preserves_velocity_and_resurrection_state() -> None:
+    """State merge contract: a full-fetch rebuild must carry forward velocity and
+    resurrection fields, or every periodic refresh would silently reset them."""
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    item = FetchItem(
+        priority=PRIORITY_BACKFILL,
+        channel_id="C111",
+        channel_name="general",
+        thread_ts=_NOW,
+    )
+    await poller._process_item(item)
+    key = ("C111", _NOW)
+    entry = poller.threads[key]
+    assert entry.first_seen_ts == float(_NOW)
+
+    # Simulate accumulated velocity history + a resurrection event
+    marker = time.time() - 100
+    entry.resurrection_event_ts = marker
+    entry.reply_timestamps = [time.time() - 5]
+
+    # A full (non-incremental) refresh rebuilds the ThreadEntry from scratch
+    await poller._fetch_thread("C111", "general", _NOW, incremental=False)
+    rebuilt = poller.threads[key]
+    assert rebuilt.resurrection_event_ts == marker
+    assert rebuilt.first_seen_ts == float(_NOW)
+    assert rebuilt.reply_timestamps  # carried forward + merged, not wiped
+
+
+@pytest.mark.asyncio
+async def test_incremental_merge_populates_reply_timestamps() -> None:
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    item = FetchItem(
+        priority=PRIORITY_BACKFILL,
+        channel_id="C111",
+        channel_name="general",
+        thread_ts=_NOW,
+    )
+    await poller._process_item(item)
+    key = ("C111", _NOW)
+    before = len(poller.threads[key].reply_timestamps)
+
+    new_reply_ts = str(time.time() + 10)
+    mock_slack.fetch_replies = AsyncMock(
+        return_value=[{"ts": new_reply_ts, "user": "U_NEW", "text": "new reply"}]
+    )
+    refresh_item = FetchItem(
+        priority=PRIORITY_REFRESH,
+        channel_id="C111",
+        channel_name="general",
+        thread_ts=_NOW,
+    )
+    await poller._process_item(refresh_item)
+    assert len(poller.threads[key].reply_timestamps) == before + 1
