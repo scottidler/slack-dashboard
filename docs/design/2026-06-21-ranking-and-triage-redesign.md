@@ -125,6 +125,8 @@ The headline promise only holds if every silent-hide path in the current code is
 
 No other gate (heat threshold, tier filter, "hot only" view) may be introduced — those would re-break the invariant.
 
+**Discovery caveat (added post-review, 2026-06-21).** The invariant above governs *hiding* threads that have been discovered. It does **not** by itself guarantee *discovery*: the REST refresh polls `conversations_history` with `oldest=watermark`, which surfaces new *parent* messages, not old parents that receive *new replies*. Coverage of new replies on already-old parents therefore depends on **Socket Mode being enabled and healthy** (`app_token` set; `main.py` makes it optional). Both external reviewers confirmed this is out of scope for this redesign ("No change to the Socket Mode + REST hybrid"), but the zero-miss promise is **scoped to "Socket Mode is running."** Closing the REST-discovery hole (e.g. polling `conversations.replies` for old parents) is deferred follow-up work, not part of v1.
+
 ### Emoji State Channel
 
 Emoji encode thread state at one glyph per signal — the densest possible encoding for a compact row:
@@ -254,8 +256,66 @@ Local-only; ship behind the existing config. All new knobs default to current be
 | UI scope creep repeats the previous abandonment | Med | High | v1 hard-capped at compact rows + click-through; all rich actions are v2 |
 | Velocity reply-timestamp window grows memory | Low | Low | Window-pruned and hard-capped per thread |
 
+## Post-Implementation Review (2026-06-21)
+
+External audit by the Architect (Gemini) and Staff Engineer (Codex) after Phases 1-5
+landed. The two reviewers converged independently on the first two items below.
+
+### Confirmed bugs to fix (remedies agreed by both reviewers)
+- **Resurrection never fires for long-dead threads (HIGH, visible in default config).**
+  The Phase 3 eviction step (`poller.py:_evict_threads`) deletes dead entries, but the
+  recreate path (`poller.py:_fetch_thread`, `existing else 0.0`) and the listener early-return
+  on unknown threads (`listener.py:_apply_event`) mean an evicted thread that gets fresh
+  activity comes back as a *normal* thread, not a `:zombie:`. The eviction requirement and the
+  resurrection requirement conflict and the design never reconciled them. The zombie glyph is
+  independent of `velocity_weight`, so this is broken in the default config, not just when tuned.
+  **Agreed remedy:** make resurrection *state-independent* - in the full-fetch path, sort the
+  fetched reply timestamps, find the most recent adjacent gap exceeding `resurrection_gap_hours`,
+  and set `resurrection_event_ts` to the reply that ended that gap (gated on the thread being old
+  enough). This fixes both the eviction case and the across-restart case in one place; both
+  reviewers rejected tombstones as added brittle state. (O(N) over replies is negligible.)
+- **Velocity double-counts socket replies (MEDIUM, latent until `velocity_weight > 0`).**
+  The listener appends an event's timestamp and the socket-triggered full fetch re-fetches the
+  same reply and concatenates it again; `prune_timestamps` sorts and caps but does not dedup.
+  The listener also stores a `datetime`-round-tripped float while the fetch stores the raw
+  `float(ts)`, so they differ in the last digit and an exact-float `set()` dedup would not
+  catch them. **Agreed remedy:** store the raw `float(ts)` in the listener (no `datetime`
+  round-trip) *and* dedup in `prune_timestamps` by a **normalized Slack-ts key** (e.g.
+  `f"{ts:.6f}"` / microsecond integer), returning floats - not exact-float `set()`. (The
+  implementation-notes claim that pruning "collapses" the overlap was wrong.)
+- **Deep links break when `workspace` is unset (MEDIUM, operability regression).**
+  `workspace` defaults to `""`, so `web.py:deep_link` emits `https://.slack.com/...`. The prior
+  template used Slack's `app_redirect` form, which needed no workspace. **Agreed remedy:** fall
+  back to the `app_redirect` form when `workspace` is empty (graceful degradation to prior
+  behavior), rather than fail-fast at startup. Minor accepted tradeoff: `app_redirect` links
+  launch slightly slower on desktop than the workspace web URL.
+
+### Accepted deviations (no change planned)
+- `first_seen_ts` derived deterministically from `float(thread_ts)` in every write path instead
+  of carried forward - functionally sound and safer than carry-forward.
+- Resurrection captured by in-place mutation of the shared `_threads` entry rather than carried
+  on `FetchItem` - achieves the same outcome via shared memory.
+- `group-by={size|velocity|participants}` is sort-only (one ordered group), not bucketed
+  sub-groups - preserves zero-miss; bucketing deferred to v2.
+
 ## Open Questions
 
+- [x] ~~Resurrection fix approach: reconstruct from REST gaps vs. tombstone?~~ **Resolved (both
+  reviewers): reconstruct the quiet-gap from the full-fetch reply timestamps (state-independent);
+  tombstones rejected as brittle added state.** See "Confirmed bugs to fix" above for the remedy.
+- [x] ~~Deep-link fallback when `workspace` is unset: app_redirect vs. fail-fast?~~ **Resolved
+  (both reviewers): fall back to `app_redirect` (graceful degradation); fail-fast rejected as too
+  harsh for a convenience config.**
+- [x] ~~Zero-miss vs. watermark discovery: in-scope, and amend the invariant?~~ **Resolved (both
+  reviewers): out of scope for this redesign; the Zero-miss invariant has been amended to state
+  the Socket-Mode dependency** (see "Discovery caveat" in the Zero-miss invariant section). REST-
+  discovery fallback is deferred follow-up. **Residual judgment call raised to the author below.**
+- [ ] **(for the author)** Both reviewers flagged the one genuine judgment call: if "zero-miss" is
+  treated as the *primary product contract* (not just a hiding guarantee), closing the REST-
+  discovery hole could be deemed in-scope. It changes the discovery + rate-budget model, so the
+  panel recommends documenting the Socket-Mode dependency now (done) and scheduling the REST
+  fallback as separate work. Decision: accept Socket-Mode-scoped zero-miss for v1, or schedule
+  the REST-discovery fix as a follow-up?
 - [ ] Slack deep link: web URL (`https://{workspace}.slack.com/archives/...`) vs. `slack://` app protocol — which lands Scott in the right place fastest from both desk and laptop?
 - [ ] Default `group-by` — channel, or size/velocity?
 - [ ] Decay shape — keep the linear ramp (just renamed) or switch to true exponential? Renaming is the low-risk default for this pass.

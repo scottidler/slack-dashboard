@@ -166,3 +166,23 @@ prior entries.
 - Remaining doc open questions (default group-by, decay shape, velocity starting values,
   dismiss undo, config hot-reload, per-signal rank observability) are deferred tuning/v2
   decisions, not implementation blockers.
+
+## Post-review corrections (2026-06-21)
+
+External audit (Architect/Gemini + Staff Engineer/Codex), consensus round folded into the
+design doc's "Post-Implementation Review" section. Corrections to earlier notes:
+
+- **Phase 2 tradeoff note was wrong.** The claim that the carried-forward + fetched
+  `reply_timestamps` overlap is "a tiny dedup-less overlap that pruning collapses anyway" is
+  false: `prune_timestamps` sorts and caps but does not deduplicate, so socket+REST race
+  double-counts each live reply and inflates velocity once `velocity_weight > 0`. Agreed fix:
+  store raw `float(ts)` in the listener and dedup by a normalized Slack-ts key in
+  `prune_timestamps`.
+- **Resurrection eviction interaction is a real bug, not just a restart limitation.** The
+  Phase 3 `_evict_threads` step removes the prior state that resurrection detection relied on,
+  so the headline zombie feature does not fire for its main case. Agreed fix: reconstruct the
+  quiet-gap from the full-fetch reply timestamps (state-independent), superseding the Phase 2
+  "carry-forward only" decision for the full-fetch path.
+
+These remedies are recorded as "Confirmed bugs to fix" in the design doc; they are not yet
+implemented in code.
