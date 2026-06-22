@@ -9,5 +9,11 @@
     </button>
 </div>
 {% else %}
-<div class="summary-content">{{ summary | markdown }}</div>
+<div class="summary-content">
+    {% if quote %}
+    {# The thread's first message is its real title: quote it, attributed to the author. #}
+    <blockquote class="thread-quote">{{ quote }}<cite class="thread-quote-author">- {{ author }}</cite></blockquote>
+    {% endif %}
+    <div class="summary-bullets">{{ summary | markdown }}</div>
+</div>
 {% endif %}

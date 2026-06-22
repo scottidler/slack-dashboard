@@ -54,35 +54,65 @@ def test_group_by_channel_partitions() -> None:
     assert len(groups[1].rows) == 1
 
 
-def test_group_by_size_sorts_descending() -> None:
+def test_group_by_none_single_unlabeled_group() -> None:
+    # group-by=none: one label-less group in heat (input) order, no headers.
     config = AppConfig()
     threads = [
-        _thread(thread_ts="1", reply_count=3),
-        _thread(thread_ts="2", reply_count=30),
-        _thread(thread_ts="3", reply_count=10),
+        _thread(channel_name="sre", thread_ts="1"),
+        _thread(channel_name="data", thread_ts="2"),
+    ]
+    groups = group_threads(threads, "none", config)
+    assert len(groups) == 1
+    assert groups[0].label == ""
+    assert len(groups[0].rows) == 2
+
+
+def test_group_by_size_buckets() -> None:
+    config = AppConfig()
+    threads = [
+        _thread(thread_ts="1", reply_count=120),  # huge
+        _thread(thread_ts="2", reply_count=60),  # large
+        _thread(thread_ts="3", reply_count=30),  # medium
+        _thread(thread_ts="4", reply_count=10),  # small
+        _thread(thread_ts="5", reply_count=3),  # small
     ]
     groups = group_threads(threads, "size", config)
-    assert len(groups) == 1
-    counts = [r.reply_count for r in groups[0].rows]
-    assert counts == [30, 10, 3]
-
-
-def test_group_by_participants_sorts_descending() -> None:
-    config = AppConfig()
-    threads = [
-        _thread(thread_ts="1", participants=2),
-        _thread(thread_ts="2", participants=5),
+    assert [g.label for g in groups] == [
+        "huge (100+)",
+        "large (50-99)",
+        "medium (25-49)",
+        "small (3-24)",
     ]
-    groups = group_threads(threads, "participants", config)
-    counts = [r.participant_count for r in groups[0].rows]
-    assert counts == [5, 2]
+    # Heat (input) order is preserved within a bucket.
+    assert [r.reply_count for r in groups[-1].rows] == [10, 3]
 
 
-def test_group_by_invalid_falls_back_to_channel() -> None:
+def test_group_by_size_drops_empty_buckets() -> None:
+    config = AppConfig()
+    threads = [_thread(thread_ts="1", reply_count=5), _thread(thread_ts="2", reply_count=8)]
+    groups = group_threads(threads, "size", config)
+    assert [g.label for g in groups] == ["small (3-24)"]
+
+
+def test_group_by_velocity_buckets() -> None:
+    config = AppConfig()
+    now = time.time()
+    spiking = _thread(thread_ts="1")
+    spiking.reply_timestamps = [now - i for i in range(20)]  # 20 replies in-window
+    active = _thread(thread_ts="2")
+    active.reply_timestamps = [now - 60, now - 120, now - 180]  # 3 in-window
+    idle = _thread(thread_ts="3")
+    idle.reply_timestamps = []
+    groups = group_threads([spiking, active, idle], "velocity", config)
+    assert [g.label for g in groups] == ["spiking (15+)", "active (1-14)", "idle (0)"]
+
+
+def test_group_by_invalid_falls_back_to_none() -> None:
     config = AppConfig()
     threads = [_thread(channel_name="sre")]
     groups = group_threads(threads, "bogus", config)
-    assert groups[0].label == "sre"
+    assert groups[0].label == ""
+    assert len(groups[0].rows) == 1
 
 
 def test_build_row_emits_fire_for_hot() -> None:

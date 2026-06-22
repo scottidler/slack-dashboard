@@ -1,34 +1,43 @@
 {% if groups and groups[0].rows %}
 {% for group in groups %}
 <section class="thread-group">
-    <h3 class="group-label">{{ group.label }}</h3>
+    {% if group.label %}
+    <h3 class="group-label">{{ ('#' ~ group.label|lower) if group_by == 'channel' else group.label }}</h3>
+    {% endif %}
     {% for row in group.rows %}
     {% set row_id = "row-" ~ row.channel_id ~ "-" ~ (row.thread_ts | replace('.', '-')) %}
-    <div class="thread-row"
-         id="{{ row_id }}"
-         hx-get="/summarize/{{ row.channel_id }}/{{ row.thread_ts }}"
-         hx-trigger="mouseenter once"
-         hx-target="#summary-{{ row.channel_id }}-{{ row.thread_ts | replace('.', '-') }}"
-         hx-swap="innerHTML">
+    {% set sid = row.channel_id ~ "-" ~ (row.thread_ts | replace('.', '-')) %}
+    <div class="thread-row" id="{{ row_id }}">
         <button class="dismiss-btn"
                 title="Dismiss permanently"
                 hx-post="/dismiss/{{ row.channel_id }}/{{ row.thread_ts }}"
                 hx-target="#{{ row_id }}"
                 hx-swap="outerHTML"
                 hx-trigger="click consume">&#10005;</button>
-        {# slack:// hands off to the desktop app in place; only web links need a new tab. #}
-        <a class="row-link" href="{{ row.deep_link }}"{% if not row.deep_link.startswith('slack://') %} target="_blank" rel="noopener"{% endif %}>
-            <span class="channel-badge">{{ row.channel_name }}</span>
-            <span class="row-title heat-{{ row.heat_tier }}">{{ row.display_title }}</span>
-        </a>
-        <span class="row-counts">{{ row.reply_count }}r &middot; {{ row.participant_count }}p</span>
+        <span class="row-counts"><span class="count-replies" title="{{ row.reply_count }} response{{ '' if row.reply_count == 1 else 's' }}">{{ row.reply_count }}r</span><span class="count-sep">|</span><span class="count-people" title="{{ row.participant_count }} {{ 'person' if row.participant_count == 1 else 'people' }}">{{ row.participant_count }}p</span></span>
+        {% if group_by != 'channel' %}
+        {# Hover the channel handle to see all of that channel's threads, ranked. #}
+        <span class="channel-cell"
+              hx-get="/channel/{{ row.channel_id }}"
+              hx-trigger="mouseenter once"
+              hx-target="#chan-{{ sid }}"
+              hx-swap="innerHTML">
+            <a class="channel-badge" href="{{ row.channel_link }}"{% if not row.channel_link.startswith('slack://') %} target="_blank" rel="noopener"{% endif %}>#{{ row.channel_name|lower }}</a>
+            <span class="channel-pop"><span id="chan-{{ sid }}" class="channel-pop-body">&hellip;</span></span>
+        </span>
+        {% endif %}
+        {# Summary detail loads/shows only on hovering the title, not the whole row. #}
+        <span class="thread-main"
+              hx-get="/summarize/{{ row.channel_id }}/{{ row.thread_ts }}"
+              hx-trigger="mouseenter once"
+              hx-target="#summary-{{ sid }}"
+              hx-swap="innerHTML">
+            <a class="row-link" href="{{ row.deep_link }}"{% if not row.deep_link.startswith('slack://') %} target="_blank" rel="noopener"{% endif %}>
+                <span class="row-title heat-{{ row.heat_tier }}">{{ row.display_title }}</span>
+            </a>
+            <span class="row-summary"><span id="summary-{{ sid }}" class="row-summary-body"><span class="summary-hint">Hover to summarize&hellip;</span></span></span>
+        </span>
         {% if row.emojis %}<span class="row-emoji">{{ row.emojis }}</span>{% endif %}
-        <div class="row-summary">
-            <div id="summary-{{ row.channel_id }}-{{ row.thread_ts | replace('.', '-') }}">
-                {% if row.summary %}<div class="summary-content">{{ row.summary | markdown }}</div>
-                {% else %}<span class="summary-hint">Hover to summarize&hellip;</span>{% endif %}
-            </div>
-        </div>
     </div>
     {% endfor %}
 </section>

@@ -4,16 +4,17 @@
      hx-get="/status"
      hx-trigger="load, every 10s"
      hx-swap="innerHTML"></div>
-<nav class="group-controls">
+<div class="group-controls">
     <span class="group-label-prefix">Group by:</span>
-    {% for choice in ["channel", "size", "velocity", "participants"] %}
+    {% for choice in ["none", "channel", "size", "velocity"] %}
+    {% if not loop.first %}<span class="group-sep">|</span>{% endif %}
     <a href="#"
        class="group-choice"
        hx-get="/threads?group-by={{ choice }}"
        hx-target="#thread-list"
        hx-swap="innerHTML">{{ choice }}</a>
     {% endfor %}
-</nav>
+</div>
 <div id="thread-list"
      hx-get="/threads"
      hx-trigger="load, every 30s [document.visibilityState === 'visible'], poll"

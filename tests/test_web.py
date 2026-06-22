@@ -99,6 +99,53 @@ def test_threads_app_link_has_no_target_blank() -> None:
     assert 'target="_blank"' not in response.text
 
 
+def test_summarize_quotes_first_message_and_author(client: TestClient) -> None:
+    # The detail header quotes the thread's first message and attributes it to the author.
+    response = client.get("/summarize/C123/1234567890.123456")
+    assert "Something broke in prod" in response.text
+    assert "U1" in response.text
+    assert "Mock summary" in response.text  # bullets still render below the quote
+
+
+def test_channel_route_lists_ranked_threads(client: TestClient) -> None:
+    response = client.get("/channel/C123")
+    assert response.status_code == 200
+    assert "#sre-internal" in response.text
+    assert "Something broke in prod" in response.text
+    # Each listing is a clickable Slack link (web form here: no team id configured).
+    assert "https://tatari.slack.com/archives/C123" in response.text
+
+
+def test_channel_route_app_links_when_team_id_set() -> None:
+    app = FastAPI()
+    poller = AsyncMock(spec=SlackPoller)
+    poller.ranked_threads.return_value = [_make_thread()]
+    config = AppConfig(slack=SlackConfig(team_id="T999"))
+    create_routes(app, poller, MockLlm(), config)
+    response = TestClient(app).get("/channel/C123")
+    # Both the channel header and each thread listing hand off to the desktop app.
+    # (& renders HTML-escaped as &amp; in the href attribute; the browser decodes it.)
+    assert "slack://channel?team=T999&amp;id=C123" in response.text
+
+
+def test_threads_channel_name_is_link(client: TestClient) -> None:
+    # The #channel handle in the MAIN view is itself a link to the channel (web form
+    # here: workspace set, no team id).
+    response = client.get("/threads")
+    assert '<a class="channel-badge" href="https://tatari.slack.com/archives/C123"' in response.text
+
+
+def test_threads_channel_link_uses_app_scheme_when_team_id_set() -> None:
+    app = FastAPI()
+    poller = AsyncMock(spec=SlackPoller)
+    poller.ranked_threads.return_value = [_make_thread()]
+    config = AppConfig(slack=SlackConfig(team_id="T999"))
+    create_routes(app, poller, MockLlm(), config)
+    response = TestClient(app).get("/threads")
+    # Channel handle opens the channel root in the desktop app (no &message=).
+    assert 'href="slack://channel?team=T999&amp;id=C123"' in response.text
+
+
 def test_threads_renders_fire_emoji_for_hot(client: TestClient) -> None:
     # The fixture thread is heat_tier="hot"
     response = client.get("/threads")

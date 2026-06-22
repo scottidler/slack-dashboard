@@ -10,40 +10,76 @@
         .heat-hot { color: #e74c3c; }
         .heat-warm { color: #f39c12; }
         .heat-cold { color: #3498db; }
+        /* Slack-like channel handle: lowercase, #-prefixed, regular weight, no pill.
+           Fixed-width column so the titles to its right line up. */
         .channel-badge {
+            flex: 0 0 auto;
             display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 0.8em;
-            font-weight: bold;
-            background: var(--pico-muted-border-color);
+            width: 11em;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-size: 1em;
+            font-weight: 400;
+            color: var(--pico-muted-color);
+            text-decoration: none;
         }
+        .channel-badge:hover { text-decoration: underline; color: var(--pico-color); }
         .started-by {
             font-size: 0.8em;
             color: var(--pico-muted-color);
             margin-left: 0.3em;
         }
-        .summary-content { margin-top: 0.25em; padding: 0.5em; background: var(--pico-card-sectioning-background-color); border-radius: 4px; font-size: 0.9em; }
+        .summary-content { margin-top: 0.25em; padding: 0.5em; background: var(--pico-card-background-color); border: 1px solid var(--pico-muted-border-color); box-shadow: 0 6px 18px rgba(0,0,0,0.45); border-radius: 6px; font-size: 0.9em; }
         .banner { padding: 0.5em 0.75em; border-radius: 4px; margin-bottom: 0.75em; font-size: 0.9em; font-weight: bold; }
         .banner-error { background: #e74c3c; color: #fff; }
         .banner-warn { background: #f39c12; color: #1a1a1a; }
         /* Compact rows: one line per thread, density over filtering. */
-        .group-controls { font-size: 0.85em; margin-bottom: 0.75em; }
-        .group-label-prefix { color: var(--pico-muted-color); margin-right: 0.5em; }
-        .group-choice { margin-right: 0.75em; }
+        /* Compact, left-justified group-by control (not Pico's full-width nav spread). */
+        .group-controls { font-size: 0.85em; margin-bottom: 0.75em; display: flex; justify-content: flex-start; align-items: baseline; gap: 0.5em; }
+        .group-label-prefix { color: var(--pico-muted-color); margin-right: 0.25em; }
+        .group-choice { margin: 0; }
+        .group-sep { color: var(--pico-muted-color); opacity: 0.6; }
         .thread-group { margin-bottom: 1em; }
-        .group-label { font-size: 0.8em; text-transform: uppercase; letter-spacing: 0.05em; color: var(--pico-muted-color); margin: 0.5em 0 0.25em; border-bottom: 1px solid var(--pico-muted-border-color); }
-        .thread-row { display: flex; align-items: baseline; gap: 0.5em; padding: 0.15em 0; line-height: 1.4; flex-wrap: wrap; }
+        .group-label { font-size: 0.9em; color: var(--pico-muted-color); margin: 0.5em 0 0.25em; border-bottom: 1px solid var(--pico-muted-border-color); }
+        /* One font size across the row, and center-align: Firefox synthesizes a wrong
+           baseline for the title cell (a block flex item with overflow:hidden), which
+           dropped the title below the counts/channel. Centering single-line cells is
+           level in every engine. The hover summary is an absolute overlay (below) so the
+           row stays one line tall and the centering never shifts. */
+        .thread-row { display: flex; align-items: center; gap: 0.4em; padding: 0.15em 0; line-height: 1.4; font-size: 0.92rem; }
         .thread-row:hover { background: var(--pico-card-sectioning-background-color); }
-        .dismiss-btn { flex: 0 0 auto; background: none; border: none; color: var(--pico-muted-color); cursor: pointer; padding: 0 0.25em; width: auto; margin: 0; font-size: 0.85em; }
+        /* Dismiss is the far-left control, ahead of the counts. */
+        .dismiss-btn { flex: 0 0 auto; background: none; border: none; color: var(--pico-muted-color); cursor: pointer; padding: 0 0.15em; width: auto; margin: 0; font-size: 0.85em; }
         .dismiss-btn:hover { color: #e74c3c; }
-        .row-link { flex: 1 1 auto; min-width: 0; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .row-title { margin-left: 0.4em; }
-        .row-counts { flex: 0 0 auto; font-size: 0.8em; color: var(--pico-muted-color); white-space: nowrap; }
+        /* Counts: compact column (Nr|Np); tabular figures keep the digits aligned. */
+        .row-counts { flex: 0 0 auto; min-width: 3.4em; font-size: 1em; color: var(--pico-muted-color); white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .count-replies, .count-people { cursor: help; }
+        .count-sep { opacity: 0.45; margin: 0 0.1em; }
+        /* Channel handle + its hover popover (all of the channel's threads, ranked). */
+        /* Center the badge inside its cell via flex so the inline-block+overflow:hidden
+           baseline (reported as the bottom edge) can't float the handle up off the row. */
+        .channel-cell { flex: 0 0 auto; position: relative; display: flex; align-items: center; }
+        .channel-pop { display: none; position: absolute; top: 100%; left: 0; z-index: 30; min-width: 30em; max-width: 44em; max-height: 24em; overflow-y: auto; padding: 0.4em 0.6em; background: var(--pico-card-background-color); border: 1px solid var(--pico-muted-border-color); border-radius: 6px; box-shadow: 0 6px 18px rgba(0,0,0,0.45); white-space: normal; }
+        .channel-cell:hover .channel-pop { display: block; }
+        .chan-head { display: block; font-weight: 600; margin-bottom: 0.3em; text-decoration: none; }
+        .chan-row { display: flex; gap: 0.5em; align-items: baseline; padding: 0.1em 0; text-decoration: none; }
+        .chan-row:hover { background: var(--pico-card-sectioning-background-color); }
+        .chan-counts { flex: 0 0 auto; min-width: 3.4em; font-size: 0.8em; color: var(--pico-muted-color); font-variant-numeric: tabular-nums; }
+        .chan-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .chan-empty { color: var(--pico-muted-color); font-style: italic; }
+        /* Title cell: title on one line; summary detail loads/shows only on ITS hover. */
+        .thread-main { flex: 1 1 auto; min-width: 0; position: relative; }
+        .row-link { display: block; min-width: 0; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .row-title { margin-left: 0; }
         .row-emoji { flex: 0 0 auto; }
-        .row-summary { display: none; flex: 1 1 100%; }
-        .thread-row:hover .row-summary { display: block; }
+        .row-summary { display: none; position: absolute; top: 100%; left: 0; z-index: 30; min-width: 26em; max-width: 44em; max-height: 24em; overflow-y: auto; margin-top: 0.15em; }
+        .thread-main:hover .row-summary { display: block; }
         .summary-hint { font-size: 0.8em; color: var(--pico-muted-color); font-style: italic; }
+        /* Quoted first message (the thread's real title) atop the summary detail. */
+        .thread-quote { margin: 0 0 0.4em; padding: 0.2em 0.6em; border-left: 3px solid var(--pico-muted-border-color); font-style: italic; }
+        .thread-quote-author { display: block; font-style: normal; font-size: 0.85em; color: var(--pico-muted-color); margin-top: 0.2em; }
+        .summary-bullets :is(ul, ol) { margin: 0; padding-left: 1.1em; }
     </style>
 </head>
 <body>

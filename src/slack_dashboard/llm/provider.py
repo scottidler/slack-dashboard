@@ -58,7 +58,7 @@ class AnthropicProvider(LlmProvider):
                 max_tokens=500,
                 system="You are a Slack thread summarizer. "
                 "The user message contains raw Slack messages. "
-                "Output format: one sentence summary, then a bulleted list of key points. "
+                "Output ONLY a bulleted list of key points - no preamble, no lead sentence. "
                 "Use markdown: start each bullet with '- '. "
                 "Keep it concise - max 5 bullets. "
                 "Focus on: decisions, action items, open questions, and anything urgent. "

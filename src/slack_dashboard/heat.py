@@ -35,15 +35,21 @@ def prune_timestamps(
     return in_window
 
 
+def replies_in_window(thread: ThreadEntry, config: HeatConfig, now_ts: float | None = None) -> int:
+    """Count of replies within the velocity window (the raw count, not per-minute)."""
+    if config.velocity_window_minutes <= 0:
+        return 0
+    if now_ts is None:
+        now_ts = datetime.now(UTC).timestamp()
+    cutoff = now_ts - config.velocity_window_minutes * 60
+    return sum(1 for ts in thread.reply_timestamps if ts >= cutoff)
+
+
 def velocity(thread: ThreadEntry, config: HeatConfig, now_ts: float | None = None) -> float:
     """Replies within the velocity window per minute."""
     if config.velocity_window_minutes <= 0:
         return 0.0
-    if now_ts is None:
-        now_ts = datetime.now(UTC).timestamp()
-    cutoff = now_ts - config.velocity_window_minutes * 60
-    recent = sum(1 for ts in thread.reply_timestamps if ts >= cutoff)
-    return recent / config.velocity_window_minutes
+    return replies_in_window(thread, config, now_ts) / config.velocity_window_minutes
 
 
 def compute_heat(thread: ThreadEntry, config: HeatConfig) -> float:

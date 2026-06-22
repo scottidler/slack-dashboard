@@ -1,0 +1,15 @@
+{# Hover popover: every thread in this channel, heat-ranked. Each row is a link that
+   opens that thread in the Slack desktop app (slack://); the header opens the channel. #}
+<div class="channel-pop-inner">
+    <a class="chan-head"
+       href="{{ channel_link }}"{% if not channel_link.startswith('slack://') %} target="_blank" rel="noopener"{% endif %}>#{{ channel_name|lower }}</a>
+    {% for row in rows %}
+    <a class="chan-row"
+       href="{{ row.deep_link }}"{% if not row.deep_link.startswith('slack://') %} target="_blank" rel="noopener"{% endif %}>
+        <span class="chan-counts">{{ row.reply_count }}r|{{ row.participant_count }}p</span>
+        <span class="chan-title heat-{{ row.heat_tier }}">{{ row.display_title }}</span>
+    </a>
+    {% else %}
+    <span class="chan-empty">No active threads.</span>
+    {% endfor %}
+</div>

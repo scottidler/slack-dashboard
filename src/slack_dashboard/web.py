@@ -10,7 +10,7 @@ from markupsafe import Markup
 
 from slack_dashboard.config import AppConfig
 from slack_dashboard.connection import ConnectionState
-from slack_dashboard.heat import is_zombie, velocity
+from slack_dashboard.heat import is_zombie, replies_in_window
 from slack_dashboard.llm.provider import LlmProvider
 from slack_dashboard.slack.mrkdwn import strip_mrkdwn
 from slack_dashboard.slack.poller import SlackPoller
@@ -24,7 +24,29 @@ _TEMPLATE_DIR = Path(__file__).parent / "templates"
 _ZOMBIE = "\N{ZOMBIE}"
 _FIRE = "\N{FIRE}"
 
-_GROUP_BY_CHOICES = ("channel", "size", "velocity", "participants")
+_GROUP_BY_CHOICES = ("none", "channel", "size", "velocity")
+
+# Bucket tiers for the size/velocity grouping modes. Each is (label, inclusive lower
+# bound), ordered high-to-low; the first tier a value clears wins. The last tier is the
+# catch-all floor. Labels carry their range so the group header is self-explanatory.
+_SIZE_TIERS = (
+    ("huge (100+)", 100),
+    ("large (50-99)", 50),
+    ("medium (25-49)", 25),
+    ("small (3-24)", 0),
+)
+_VELOCITY_TIERS = (
+    ("spiking (15+)", 15),
+    ("active (1-14)", 1),
+    ("idle (0)", 0),
+)
+
+
+def _tier_label(value: int, tiers: tuple[tuple[str, int], ...]) -> str:
+    for label, lower in tiers:
+        if value >= lower:
+            return label
+    return tiers[-1][0]
 
 
 @dataclass
@@ -38,6 +60,7 @@ class RowView:
     heat_tier: str
     emojis: str
     deep_link: str
+    channel_link: str
     summary: str | None
 
 
@@ -70,6 +93,16 @@ def deep_link(workspace: str, channel_id: str, thread_ts: str, team_id: str = ""
     return f"https://{workspace}.slack.com/archives/{channel_id}/p{ts}"
 
 
+def channel_link(workspace: str, channel_id: str, team_id: str = "") -> str:
+    """Deep link to a channel's root (no specific message). Same desktop-vs-web rules
+    as `deep_link`: slack:// when a team id is set, else a web fallback."""
+    if team_id:
+        return f"slack://channel?team={team_id}&id={channel_id}"
+    if not workspace:
+        return f"https://slack.com/app_redirect?channel={channel_id}"
+    return f"https://{workspace}.slack.com/archives/{channel_id}"
+
+
 def _emojis(thread: ThreadEntry, config: AppConfig) -> str:
     glyphs = []
     if is_zombie(thread, config.heat):
@@ -92,6 +125,7 @@ def _build_row(thread: ThreadEntry, config: AppConfig) -> RowView:
         deep_link=deep_link(
             config.workspace, thread.channel_id, thread.thread_ts, config.slack.team_id
         ),
+        channel_link=channel_link(config.workspace, thread.channel_id, config.slack.team_id),
         summary=thread.summary,
     )
 
@@ -99,14 +133,19 @@ def _build_row(thread: ThreadEntry, config: AppConfig) -> RowView:
 def group_threads(threads: list[ThreadEntry], group_by: str, config: AppConfig) -> list[GroupView]:
     """Partition globally-ranked threads into display groups.
 
+    group-by=none is a single label-less group in pure heat order (no headers).
     group-by=channel produces one group per channel (groups ordered by their
-    hottest thread). The size/velocity/participants modes are a single ordered
-    group sorted by that dimension (v1: sort, not bucket). Every trackable thread
-    is always rendered - there is no cap (see Zero-miss invariant).
+    hottest thread). size/velocity bucket threads into fixed tier ranges, ordered
+    high-to-low, dropping empty tiers. Threads arrive heat-ranked, so rows stay in
+    heat order within every group. Every trackable thread is always rendered - there
+    is no cap (see Zero-miss invariant).
     """
     logger.debug("group_threads: group_by=%s count=%d", group_by, len(threads))
     if group_by not in _GROUP_BY_CHOICES:
-        group_by = "channel"
+        group_by = "none"
+
+    if group_by == "none":
+        return [GroupView(label="", rows=[_build_row(t, config) for t in threads])]
 
     if group_by == "channel":
         groups: dict[str, GroupView] = {}
@@ -120,13 +159,17 @@ def group_threads(threads: list[ThreadEntry], group_by: str, config: AppConfig) 
         # order groups by that hottest row's position (preserved by dict insertion).
         return list(groups.values())
 
-    key_fns = {
-        "size": lambda t: t.reply_count,
-        "velocity": lambda t: velocity(t, config.heat),
-        "participants": lambda t: len(t.participants),
-    }
-    ordered = sorted(threads, key=key_fns[group_by], reverse=True)
-    return [GroupView(label=group_by, rows=[_build_row(t, config) for t in ordered])]
+    if group_by == "size":
+        buckets = {label: GroupView(label=label) for label, _ in _SIZE_TIERS}
+        for thread in threads:
+            label = _tier_label(thread.reply_count, _SIZE_TIERS)
+            buckets[label].rows.append(_build_row(thread, config))
+    else:  # velocity
+        buckets = {label: GroupView(label=label) for label, _ in _VELOCITY_TIERS}
+        for thread in threads:
+            label = _tier_label(replies_in_window(thread, config.heat), _VELOCITY_TIERS)
+            buckets[label].rows.append(_build_row(thread, config))
+    return [group for group in buckets.values() if group.rows]
 
 
 def create_routes(
@@ -148,7 +191,7 @@ def create_routes(
     @app.get("/threads", response_class=HTMLResponse)
     async def threads(
         request: Request,
-        group_by: str = Query("channel", alias="group-by"),
+        group_by: str = Query("none", alias="group-by"),
     ) -> HTMLResponse:
         ranked = poller.ranked_threads()
         groups = group_threads(ranked, group_by, config)
@@ -168,9 +211,12 @@ def create_routes(
                 "partials/summary.html",
                 {"error": True, "channel_id": channel_id, "thread_ts": thread_ts},
             )
+        # The detail header quotes the thread's first message (its real "title") and
+        # attributes it to the author; bullets summarizing the thread render below.
+        detail = {"quote": strip_mrkdwn(entry.first_message), "author": entry.started_by}
         if entry.summary and entry.summary_watermark >= entry.reply_count:
             return templates.TemplateResponse(
-                request, "partials/summary.html", {"summary": entry.summary}
+                request, "partials/summary.html", {"summary": entry.summary, **detail}
             )
         messages = [strip_mrkdwn(entry.first_message)]
         summary = await llm.generate_summary(messages)
@@ -182,7 +228,23 @@ def create_routes(
             )
         entry.summary = summary
         entry.summary_watermark = entry.reply_count
-        return templates.TemplateResponse(request, "partials/summary.html", {"summary": summary})
+        return templates.TemplateResponse(
+            request, "partials/summary.html", {"summary": summary, **detail}
+        )
+
+    @app.get("/channel/{channel_id}", response_class=HTMLResponse)
+    async def channel(request: Request, channel_id: str) -> HTMLResponse:
+        # Hover popover: every thread in this channel, in the same heat ranking as the
+        # main list (ranked_threads is already sorted; we just filter to this channel).
+        ranked = poller.ranked_threads()
+        rows = [_build_row(t, config) for t in ranked if t.channel_id == channel_id]
+        name = next((t.channel_name for t in ranked if t.channel_id == channel_id), channel_id)
+        link = channel_link(config.workspace, channel_id, config.slack.team_id)
+        return templates.TemplateResponse(
+            request,
+            "partials/channel.html",
+            {"rows": rows, "channel_name": name, "channel_link": link},
+        )
 
     @app.post("/dismiss/{channel_id}/{thread_ts:path}", response_class=HTMLResponse)
     async def dismiss(request: Request, channel_id: str, thread_ts: str) -> HTMLResponse:
