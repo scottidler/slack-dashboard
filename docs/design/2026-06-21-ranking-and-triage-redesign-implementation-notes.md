@@ -225,3 +225,25 @@ implemented in code.
 ### Open questions
 - Thread-listing lookback depth bounds how far back a missed reply can be recovered (documented
   caveat in the doc's Zero-miss "Discovery caveat"); deep pagination deferred.
+
+## Phase 6 follow-up: reconnect-race fix (post-verification)
+
+The Phase 6 verification round (Architect + Staff Engineer) confirmed fixes 1-3 and the reconcile
+logic, but Codex caught a real bug in the reconnect *trigger* that the Architect missed:
+
+- **Reconnect-race fix.** The original monitor decided reconcile off a private `was_connected`
+  derived from the 5s `is_connected()` poll, while `_on_close` updated a separate field - so a
+  disconnect+reconnect entirely between two polls was never reconciled (the poll only ever saw
+  "connected"). Fixed by composing both edges through `ConnectionState.reconcile_pending`:
+  `_on_close` calls `mark_disconnected()` (arms the flag); the monitor calls `observe(connected)`,
+  which fires reconcile on the first `connected` poll while the flag is armed, then clears it.
+  Driven by the reliable on_close edge, not poll timing. Regression tests in `test_connection.py`
+  cover the short-disconnect, fire-once, and pending-survives-polls cases.
+- **Monitor hardening.** The monitor loop body is now wrapped so a transient `is_connected()`
+  (or other) exception logs and continues instead of killing the task (which would silence all
+  future reconnect catch-up). `CancelledError` is re-raised for clean shutdown.
+
+Not changed (accepted): the reviewers' "reconnect cost" RISKY note - reconcile lists every channel
+with `oldest=None` on reconnect, but `client.py`'s history semaphore + 1.2s sleep serializes those
+calls under the rate ceiling, so it is bounded latency, not a rate-limit violation. The deep-
+pagination lookback caveat remains documented in the Zero-miss "Discovery caveat".
