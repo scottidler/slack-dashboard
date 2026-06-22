@@ -6,8 +6,11 @@
 slack:
   token: ${SLACK_USER_TOKEN}
   app-token: ${SLACK_APP_TOKEN}
+  # Workspace team id (T...). When set, row clicks open the native desktop app via
+  # the slack:// scheme instead of a browser tab. Takes precedence over `workspace`.
+  team-id: ${SLACK_TEAM_ID}
 
-# Workspace subdomain, used to build thread deep links:
+# Workspace subdomain, used to build web thread deep links when team-id is unset:
 #   https://<workspace>.slack.com/archives/<channel>/p<ts>
 workspace: tatari
 

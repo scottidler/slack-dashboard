@@ -16,7 +16,8 @@
                 hx-target="#{{ row_id }}"
                 hx-swap="outerHTML"
                 hx-trigger="click consume">&#10005;</button>
-        <a class="row-link" href="{{ row.deep_link }}" target="_blank" rel="noopener">
+        {# slack:// hands off to the desktop app in place; only web links need a new tab. #}
+        <a class="row-link" href="{{ row.deep_link }}"{% if not row.deep_link.startswith('slack://') %} target="_blank" rel="noopener"{% endif %}>
             <span class="channel-badge">{{ row.channel_name }}</span>
             <span class="row-title heat-{{ row.heat_tier }}">{{ row.display_title }}</span>
         </a>

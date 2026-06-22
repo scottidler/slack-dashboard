@@ -22,6 +22,7 @@ class _KebabModel(BaseModel):
 class SlackConfig(_KebabModel):
     token: str = ""
     app_token: str = ""
+    team_id: str = ""
 
 
 class FetchConfig(_KebabModel):

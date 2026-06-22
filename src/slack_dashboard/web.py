@@ -51,14 +51,19 @@ def _markdown_filter(text: str) -> Markup:
     return Markup(md.markdown(text))
 
 
-def deep_link(workspace: str, channel_id: str, thread_ts: str) -> str:
+def deep_link(workspace: str, channel_id: str, thread_ts: str, team_id: str = "") -> str:
     """Slack deep link for a thread.
 
-    With a configured workspace, use the fast archives URL
-    (`.../archives/{channel}/p{ts_without_dot}`). When workspace is empty, fall back
-    to the workspace-agnostic `app_redirect` form (prior behavior) rather than emit a
-    broken `https://.slack.com/...` link.
+    With a team id configured, emit the `slack://` URL scheme so the click hands
+    off to the native desktop (Electron) app instead of opening a browser tab. The
+    `message` param carries the dotted ts so the app lands on the exact thread.
+
+    Without a team id, fall back to a web link: the fast archives URL when a workspace
+    subdomain is set, else the workspace-agnostic `app_redirect` form (prior behavior)
+    rather than emit a broken `https://.slack.com/...` link.
     """
+    if team_id:
+        return f"slack://channel?team={team_id}&id={channel_id}&message={thread_ts}"
     if not workspace:
         return f"https://slack.com/app_redirect?channel={channel_id}&message_ts={thread_ts}"
     ts = thread_ts.replace(".", "")
@@ -84,7 +89,9 @@ def _build_row(thread: ThreadEntry, config: AppConfig) -> RowView:
         participant_count=len(thread.participants),
         heat_tier=thread.heat_tier,
         emojis=_emojis(thread, config),
-        deep_link=deep_link(config.workspace, thread.channel_id, thread.thread_ts),
+        deep_link=deep_link(
+            config.workspace, thread.channel_id, thread.thread_ts, config.slack.team_id
+        ),
         summary=thread.summary,
     )
 

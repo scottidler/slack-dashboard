@@ -32,6 +32,14 @@ def test_deep_link_strips_dot() -> None:
     )
 
 
+def test_deep_link_uses_app_scheme_when_team_id_set() -> None:
+    # A team id wins over the web forms: open the native desktop app, keeping the
+    # dotted ts so it lands on the exact thread.
+    assert deep_link("tatari", "C123", "1718900000.000100", "T999") == (
+        "slack://channel?team=T999&id=C123&message=1718900000.000100"
+    )
+
+
 def test_group_by_channel_partitions() -> None:
     config = AppConfig()
     threads = [

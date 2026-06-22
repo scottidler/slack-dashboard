@@ -5,7 +5,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from slack_dashboard.config import AppConfig
+from slack_dashboard.config import AppConfig, SlackConfig
 from slack_dashboard.llm.provider import LlmProvider
 from slack_dashboard.slack.poller import SlackPoller
 from slack_dashboard.thread import ThreadEntry
@@ -82,6 +82,21 @@ def test_threads_renders_deep_link(client: TestClient) -> None:
     response = client.get("/threads")
     # Web deep link: thread_ts without the dot, p-prefixed
     assert "https://tatari.slack.com/archives/C123/p1234567890123456" in response.text
+    # Web links open in a new tab.
+    assert 'target="_blank"' in response.text
+
+
+def test_threads_app_link_has_no_target_blank() -> None:
+    # With a team id the row link is a slack:// app handoff; it opens in place, so no
+    # target="_blank" (which would otherwise orphan an empty browser tab on every click).
+    app = FastAPI()
+    poller = AsyncMock(spec=SlackPoller)
+    poller.ranked_threads.return_value = [_make_thread()]
+    config = AppConfig(slack=SlackConfig(team_id="T999"))
+    create_routes(app, poller, MockLlm(), config)
+    response = TestClient(app).get("/threads")
+    assert "slack://channel?team=T999" in response.text
+    assert 'target="_blank"' not in response.text
 
 
 def test_threads_renders_fire_emoji_for_hot(client: TestClient) -> None:
