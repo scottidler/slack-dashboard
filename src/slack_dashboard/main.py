@@ -11,7 +11,7 @@ from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 
 from slack_dashboard.config import AppConfig, load_config
-from slack_dashboard.connection import ConnectionState
+from slack_dashboard.connection import ConnectionState, monitor_connection
 from slack_dashboard.dismiss import DismissStore
 from slack_dashboard.llm.provider import AnthropicProvider
 from slack_dashboard.slack.client import SlackClient, create_slack_client
@@ -85,30 +85,9 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
     async def _on_close(_message: Any) -> None:
         # Disconnect edge: flip the banner immediately AND arm a reconcile. Arming here (not
         # off the poll's prior value) is what catches a disconnect+reconnect that happens
-        # entirely between two 5s polls - the poll would otherwise only ever see "connected".
+        # entirely between two polls - the poll would otherwise only ever see "connected".
         connection.mark_disconnected()
         logger.warning("Socket Mode connection closed; trust banner raised, reconcile armed")
-
-    async def _connection_monitor(socket_client: Any) -> None:
-        # slack_sdk exposes on_close_listeners (disconnect) and is_connected(), but no
-        # on-connect callback, so we poll is_connected() to detect the reconnect edge and
-        # reconcile the gap. Auto-reconnect is the SDK's job; truing up missed replies is ours.
-        # The whole body is guarded so a transient is_connected() failure logs and continues
-        # rather than killing the monitor (which would silence all future reconnect catch-up).
-        try:
-            while True:
-                await asyncio.sleep(5)
-                try:
-                    connected = bool(socket_client.is_connected())
-                    if connection.observe(connected):
-                        logger.info("Socket Mode reconnected; reconciling missed activity")
-                        await poller.reconcile()
-                except asyncio.CancelledError:
-                    raise
-                except Exception:
-                    logger.exception("connection monitor iteration failed; continuing")
-        except asyncio.CancelledError:
-            return
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -128,7 +107,9 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
             logger.info("Starting Socket Mode listener...")
             await socket_client.connect()  # type: ignore[no-untyped-call]
             connection.connected = True
-            monitor_task = asyncio.create_task(_connection_monitor(socket_client))
+            monitor_task = asyncio.create_task(
+                monitor_connection(socket_client.is_connected, connection, poller.reconcile)
+            )
         yield
         if monitor_task:
             monitor_task.cancel()

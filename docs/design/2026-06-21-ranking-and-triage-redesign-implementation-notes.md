@@ -247,3 +247,26 @@ Not changed (accepted): the reviewers' "reconnect cost" RISKY note - reconcile l
 with `oldest=None` on reconnect, but `client.py`'s history semaphore + 1.2s sleep serializes those
 calls under the rate ceiling, so it is bounded latency, not a rate-limit violation. The deep-
 pagination lookback caveat remains documented in the Zero-miss "Discovery caveat".
+
+## Phase 6 follow-up: test coverage for the integration seams
+
+Closed the three coverage gaps surfaced when asked "do we have tests to prove this works?":
+
+- **Discovery-hole proof** (`test_reconcile_refetches_old_parent_with_new_reply`): a KNOWN old
+  parent whose `latest_reply` advanced past its watermark is re-fetched on reconcile - the literal
+  case the feature exists for, previously only covered via the new-thread path.
+- **Cross-component velocity dedup** (`test_velocity_not_double_counted_across_listener_and_fetch`):
+  drives `listener._apply_event` then `poller._fetch_thread` on the same reply and asserts one
+  timestamp survives, not two.
+- **Monitor loop glue**: extracted the connection monitor from `main.py` into a typed, testable
+  `connection.monitor_connection(...)`. Two tests: reconcile fires once on the reconnect edge, and
+  the loop survives a transient `is_connected()` exception and still reconciles.
+
+The extraction immediately caught a latent bug mypy had been unable to see while the loop was a
+closure: `SocketModeClient.is_connected` is an **async** method, so the original `bool(is_connected())`
+coerced a coroutine (always truthy) - it would have cleared the disconnect banner on the next poll
+and never awaited. `monitor_connection` now takes `Callable[[], Awaitable[bool]]` and awaits it.
+
+Still not unit-tested (genuine glue / external): the one line registering `_on_close` on the real
+`SocketModeClient`, and a real Socket Mode disconnect (requires Slack). Both halves each connects
+are covered.

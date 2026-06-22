@@ -402,3 +402,84 @@ async def test_reconcile_refetches_only_changed_threads() -> None:
     assert mock_slack.fetch_replies.call_count == 1
     assert ("C111", new_ts) in poller.threads
     assert fetch_calls_before > 0  # sanity: backfill did fetch
+
+
+@pytest.mark.asyncio
+async def test_reconcile_refetches_old_parent_with_new_reply() -> None:
+    """The literal discovery-hole case: a KNOWN old parent whose latest_reply advanced past
+    its watermark must be re-fetched on reconcile (not just brand-new parents)."""
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    poller._channel_map = config.channels
+    # Seed the thread; watermark becomes _REPLY_3
+    await poller._process_item(
+        FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    )
+    assert poller.thread_watermarks[("C111", _NOW)] == _REPLY_3
+
+    # The SAME old parent now reports an advanced latest_reply (a new reply landed during a gap)
+    advanced = str(time.time() + 500)
+    mock_slack.fetch_threads = AsyncMock(
+        return_value=[
+            {"ts": _NOW, "thread_ts": _NOW, "reply_count": 4, "latest_reply": advanced},
+        ]
+    )
+    mock_slack.fetch_replies = AsyncMock(
+        return_value=[
+            {"ts": _NOW, "user": "U1", "text": "root"},
+            {"ts": advanced, "user": "U9", "text": "new reply on old parent"},
+        ]
+    )
+    await poller.reconcile()
+    # The old parent was re-fetched because latest_reply > watermark, and the watermark advanced
+    assert mock_slack.fetch_replies.call_count == 1
+    assert poller.thread_watermarks[("C111", _NOW)] == advanced
+
+
+@pytest.mark.asyncio
+async def test_velocity_not_double_counted_across_listener_and_fetch() -> None:
+    """Integration: a socket append followed by a full fetch of the SAME reply must leave one
+    timestamp, not two (the cross-component half of the velocity dedup fix)."""
+    import time
+
+    from slack_dashboard.config import HeatConfig
+    from slack_dashboard.slack.listener import SocketListener
+
+    now = time.time()
+    parent = str(now - 7200)  # old parent, outside the velocity window
+    reply = str(now - 60)  # recent reply, inside the window
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"}, heat=HeatConfig(velocity_window_minutes=30))
+    poller = SlackPoller(mock_slack, config)
+
+    # Seed the entry via a first full fetch (parent only)
+    mock_slack.fetch_replies = AsyncMock(
+        return_value=[{"ts": parent, "user": "U1", "text": "root"}]
+    )
+    await poller._fetch_thread("C111", "general", parent, incremental=False)
+
+    # Socket event for the new reply: listener appends raw float(ts)
+    listener = SocketListener(
+        queue=poller.queue,
+        threads=poller.threads,
+        channel_ids={"C111"},
+        channel_names={"C111": "general"},
+        heat_config=config.heat,
+    )
+    listener._apply_event("C111", "general", parent, {"user": "U9", "ts": reply})
+    entry = poller.threads[("C111", parent)]
+    matches = [t for t in entry.reply_timestamps if abs(t - float(reply)) < 1e-6]
+    assert len(matches) == 1
+
+    # The socket-triggered full fetch returns the parent + the SAME reply again
+    mock_slack.fetch_replies = AsyncMock(
+        return_value=[
+            {"ts": parent, "user": "U1", "text": "root"},
+            {"ts": reply, "user": "U9", "text": "same reply via REST"},
+        ]
+    )
+    await poller._fetch_thread("C111", "general", parent, incremental=False)
+    entry = poller.threads[("C111", parent)]
+    matches = [t for t in entry.reply_timestamps if abs(t - float(reply)) < 1e-6]
+    assert len(matches) == 1  # deduped across listener + fetch, not double-counted
