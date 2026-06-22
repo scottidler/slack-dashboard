@@ -5,11 +5,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from slack_dashboard.config import AppConfig
+from slack_dashboard.dismiss import DismissStore
 from slack_dashboard.heat import (
     classify_tier,
     compute_heat,
     detect_resurrection,
     filter_stale_threads,
+    is_zombie,
     prune_timestamps,
 )
 from slack_dashboard.slack.client import SlackClient
@@ -31,11 +33,13 @@ class SlackPoller:
         config: AppConfig,
         on_title_needed: Any | None = None,
         on_summary_needed: Any | None = None,
+        dismiss: DismissStore | None = None,
     ) -> None:
         self._slack = slack_client
         self._config = config
         self._on_title_needed = on_title_needed
         self._on_summary_needed = on_summary_needed
+        self._dismiss = dismiss
         self._threads: dict[tuple[str, str], ThreadEntry] = {}
         self._channel_map: dict[str, str] = {}
         self._queue = FetchQueue()
@@ -63,11 +67,43 @@ class SlackPoller:
         return self._thread_watermarks
 
     def ranked_threads(self) -> list[ThreadEntry]:
-        threads = filter_stale_threads(list(self._threads.values()), self._config.heat)
+        live = [
+            t
+            for t in self._threads.values()
+            if self._dismiss is None or not self._dismiss.is_dismissed(t.channel_id, t.thread_ts)
+        ]
+        threads = filter_stale_threads(live, self._config.heat)
         for t in threads:
             t.heat_score = compute_heat(t, self._config.heat)
             t.heat_tier = classify_tier(t.heat_score, self._config.heat)
         return sorted(threads, key=lambda t: t.heat_score, reverse=True)
+
+    def dismiss_thread(self, channel_id: str, thread_ts: str) -> None:
+        logger.debug("dismiss_thread: channel=%s thread=%s", channel_id, thread_ts)
+        if self._dismiss is not None:
+            self._dismiss.dismiss(channel_id, thread_ts)
+        # Evict the live entry: it already exists in memory from before the dismiss.
+        self._threads.pop((channel_id, thread_ts), None)
+
+    def _evict_threads(self) -> None:
+        """Drop entries that should never render again: dismissed keys, and dead
+        threads (past max_thread_age_days) that are not currently zombie-eligible.
+        Without this, self._threads grows unbounded since nothing else deletes."""
+        now = datetime.now(UTC)
+        cutoff = now - timedelta(days=self._config.heat.max_thread_age_days)
+        now_ts = now.timestamp()
+        to_evict: list[tuple[str, str]] = []
+        for key, entry in self._threads.items():
+            if self._dismiss is not None and self._dismiss.is_dismissed(*key):
+                to_evict.append(key)
+                continue
+            dead = entry.last_activity <= cutoff
+            if dead and not is_zombie(entry, self._config.heat, now_ts):
+                to_evict.append(key)
+        for key in to_evict:
+            del self._threads[key]
+        if to_evict:
+            logger.debug("_evict_threads: evicted %d entries", len(to_evict))
 
     async def start(self) -> None:
         self._channel_map = self._config.channels
@@ -112,6 +148,7 @@ class SlackPoller:
             while True:
                 await asyncio.sleep(interval)
                 logger.info("Periodic refresh: re-queuing all channels")
+                self._evict_threads()
                 self._queue.seed_channels(self._channel_map, priority=PRIORITY_REFRESH)
         except asyncio.CancelledError:
             return
@@ -143,6 +180,11 @@ class SlackPoller:
         incremental: bool = False,
     ) -> None:
         key = (channel_id, thread_ts)
+        # Short-circuit dismissed threads BEFORE the REST call: checking only at
+        # insert still burns a rate-limited fetch for a thread we'd discard.
+        if self._dismiss is not None and self._dismiss.is_dismissed(channel_id, thread_ts):
+            logger.debug("Skipping dismissed thread %s/%s", channel_name, thread_ts)
+            return
         oldest = self._thread_watermarks.get(key) if incremental else None
         replies = await self._slack.fetch_replies(channel_id, thread_ts, oldest=oldest)
         if not replies:

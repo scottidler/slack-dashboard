@@ -62,6 +62,12 @@ def create_routes(
         entry.summary_watermark = entry.reply_count
         return templates.TemplateResponse(request, "partials/summary.html", {"summary": summary})
 
+    @app.post("/dismiss/{channel_id}/{thread_ts:path}", response_class=HTMLResponse)
+    async def dismiss(request: Request, channel_id: str, thread_ts: str) -> HTMLResponse:
+        poller.dismiss_thread(channel_id, thread_ts)
+        # Empty body: HTMX swaps the row out (hx-swap="outerHTML").
+        return HTMLResponse("")
+
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}

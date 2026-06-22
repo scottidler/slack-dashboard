@@ -273,3 +273,54 @@ async def test_incremental_merge_populates_reply_timestamps() -> None:
     )
     await poller._process_item(refresh_item)
     assert len(poller.threads[key].reply_timestamps) == before + 1
+
+
+@pytest.mark.asyncio
+async def test_dismiss_thread_evicts_and_filters(tmp_path) -> None:
+    from slack_dashboard.dismiss import DismissStore
+
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    store = DismissStore(tmp_path / "dismissed.jsonl")
+    poller = SlackPoller(mock_slack, config, dismiss=store)
+    item = FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    await poller._process_item(item)
+    key = ("C111", _NOW)
+    assert key in poller.threads
+
+    poller.dismiss_thread("C111", _NOW)
+    assert key not in poller.threads
+    assert store.is_dismissed("C111", _NOW)
+    assert poller.ranked_threads() == []
+
+
+@pytest.mark.asyncio
+async def test_fetch_thread_skips_dismissed_before_fetch(tmp_path) -> None:
+    from slack_dashboard.dismiss import DismissStore
+
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    store = DismissStore(tmp_path / "dismissed.jsonl")
+    store.dismiss("C111", _NOW)
+    poller = SlackPoller(mock_slack, config, dismiss=store)
+    await poller._fetch_thread("C111", "general", _NOW, incremental=False)
+    # Dismissed: no thread created and no REST fetch burned
+    assert ("C111", _NOW) not in poller.threads
+    mock_slack.fetch_replies.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_evict_threads_removes_dead(tmp_path) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    item = FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    await poller._process_item(item)
+    key = ("C111", _NOW)
+    # Age the thread past max_thread_age_days with no resurrection
+    poller.threads[key].last_activity = datetime.now(UTC) - timedelta(days=10)
+    poller.threads[key].resurrection_event_ts = 0.0
+    poller._evict_threads()
+    assert key not in poller.threads

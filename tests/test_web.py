@@ -111,3 +111,16 @@ def test_summarize_llm_failure() -> None:
     response = client.get("/summarize/C123/1234567890.123456")
     assert response.status_code == 200
     assert "Retry" in response.text
+
+
+def test_dismiss_route_invokes_dismiss_thread() -> None:
+    app = FastAPI()
+    poller = AsyncMock(spec=SlackPoller)
+    thread = _make_thread()
+    poller.ranked_threads.return_value = [thread]
+    poller.threads = {("C123", "1234567890.123456"): thread}
+    create_routes(app, poller, MockLlm())
+    client = TestClient(app)
+    response = client.post("/dismiss/C123/1234567890.123456")
+    assert response.status_code == 200
+    poller.dismiss_thread.assert_called_once_with("C123", "1234567890.123456")

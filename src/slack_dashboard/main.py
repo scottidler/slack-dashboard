@@ -8,6 +8,7 @@ from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 
 from slack_dashboard.config import AppConfig, load_config
+from slack_dashboard.dismiss import DismissStore
 from slack_dashboard.llm.provider import AnthropicProvider
 from slack_dashboard.slack.client import SlackClient, create_slack_client
 from slack_dashboard.slack.listener import SocketListener
@@ -31,6 +32,11 @@ def _resolve_config_path() -> Path:
     return _CONFIG_PATH
 
 
+def _resolve_dismiss_path() -> Path:
+    # The permanent dismiss record lives alongside the config.
+    return _resolve_config_path().parent / "dismissed.jsonl"
+
+
 def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
     slack_web_client = create_slack_client(config.slack.token)
     slack_client = SlackClient(slack_web_client)
@@ -51,11 +57,14 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
             entry.summary = summary
             entry.summary_watermark = entry.reply_count
 
+    dismiss_store = DismissStore(_resolve_dismiss_path())
+    dismiss_store.load()
     poller = SlackPoller(
         slack_client,
         config,
         on_title_needed=on_title_needed,
         on_summary_needed=on_summary_needed,
+        dismiss=dismiss_store,
     )
 
     channel_names = {v: k for k, v in config.channels.items()}
