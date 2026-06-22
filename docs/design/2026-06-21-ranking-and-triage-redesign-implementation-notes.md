@@ -270,3 +270,15 @@ and never awaited. `monitor_connection` now takes `Callable[[], Awaitable[bool]]
 Still not unit-tested (genuine glue / external): the one line registering `_on_close` on the real
 `SocketModeClient`, and a real Socket Mode disconnect (requires Slack). Both halves each connects
 are covered.
+
+## Phase 6 follow-up: end-to-end reconnect simulation (live Slack is work-hours-only)
+
+Live Socket Mode behavior can realistically only be exercised M-F during working hours (when
+channels actually have traffic and connections actually drop), so the suite has to stand in for
+manual live verification. Added `test_reconnect_recovers_reply_missed_during_disconnect`
+(`tests/test_e2e.py`): with a fake Slack, it reproduces the full failure mode deterministically -
+backfill a thread, drop the connection (`mark_disconnected`), land a new reply on the OLD parent
+during the gap, then reconnect and let the real `monitor_connection` -> `observe` -> `poller.reconcile`
+-> `_fetch_thread` chain run, asserting the missed reply is recovered (watermark advanced, reply
+count grew) and the banner clears. This is the closest CI-runnable proxy for the work-hours-only
+live path; the only thing it cannot exercise is the literal `SocketModeClient` socket I/O.

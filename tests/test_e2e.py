@@ -87,3 +87,76 @@ async def test_e2e_render_dismiss_and_persist_across_restart(tmp_path: Path) -> 
     )
     assert ("C111", _NOW) not in poller2.threads
     assert poller2.ranked_threads() == []
+
+
+@pytest.mark.asyncio
+async def test_reconnect_recovers_reply_missed_during_disconnect() -> None:
+    """End-to-end stand-in for live Socket Mode (which can only be exercised during work
+    hours): a reply that lands on an OLD parent while disconnected is recovered on reconnect,
+    driven through the real ConnectionState + monitor + poller.reconcile + _fetch_thread."""
+    import asyncio
+    import contextlib
+
+    from slack_dashboard.connection import ConnectionState, monitor_connection
+
+    now = time.time()
+    parent = str(now - 3600)
+    r1 = str(now - 1800)
+    r2_missed = str(now - 30)  # arrives during the disconnect window
+
+    mock_slack = AsyncMock(spec=SlackClient)
+    mock_slack.resolve_user = AsyncMock(side_effect=lambda uid: uid)
+    # Phase A - backfill sees the parent + one reply
+    mock_slack.fetch_threads = AsyncMock(
+        return_value=[{"ts": parent, "thread_ts": parent, "reply_count": 1, "latest_reply": r1}]
+    )
+    mock_slack.fetch_replies = AsyncMock(
+        return_value=[
+            {"ts": parent, "user": "U1", "text": "root"},
+            {"ts": r1, "user": "U2", "text": "first"},
+        ]
+    )
+    config = AppConfig(channels={"sre": "C1"})
+    poller = SlackPoller(mock_slack, config)
+    poller._channel_map = config.channels
+    await poller._fetch_channel("C1", "sre")
+    key = ("C1", parent)
+    assert poller.thread_watermarks[key] == r1
+    replies_before = poller.threads[key].reply_count
+
+    # The connection drops (on_close edge): banner shows disconnected, reconcile armed
+    conn = ConnectionState(socket_enabled=True, connected=True)
+    conn.mark_disconnected()
+    assert conn.status() == "disconnected"
+
+    # While disconnected, a new reply lands on the OLD parent - Socket Mode never delivered it
+    mock_slack.fetch_threads = AsyncMock(
+        return_value=[
+            {"ts": parent, "thread_ts": parent, "reply_count": 2, "latest_reply": r2_missed}
+        ]
+    )
+    mock_slack.fetch_replies = AsyncMock(
+        return_value=[
+            {"ts": parent, "user": "U1", "text": "root"},
+            {"ts": r1, "user": "U2", "text": "first"},
+            {"ts": r2_missed, "user": "U3", "text": "landed during the outage"},
+        ]
+    )
+
+    # Reconnect: the monitor observes connected with a pending reconcile and trues up the gap
+    seq = iter([True])
+
+    async def is_connected() -> bool:
+        return next(seq, True)
+
+    task = asyncio.create_task(
+        monitor_connection(is_connected, conn, poller.reconcile, interval=0.01)
+    )
+    await asyncio.sleep(0.08)
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+    assert conn.status() == "connected"  # banner cleared
+    assert poller.thread_watermarks[key] == r2_missed  # watermark advanced past the gap
+    assert poller.threads[key].reply_count > replies_before  # the missed reply was recovered
