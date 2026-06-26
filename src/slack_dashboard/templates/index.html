@@ -9,16 +9,32 @@
     {% for choice in ["none", "channel", "size", "velocity"] %}
     {% if not loop.first %}<span class="group-sep">|</span>{% endif %}
     <a href="#"
-       class="group-choice"
-       hx-get="/threads?group-by={{ choice }}"
-       hx-target="#thread-list"
-       hx-swap="innerHTML">{{ choice }}</a>
+       class="group-choice{{ ' active' if loop.first }}"
+       data-group-by="{{ choice }}">{{ choice }}</a>
     {% endfor %}
 </div>
+{# The selected grouping lives in a JS global re-sent via hx-vals on EVERY request
+   (load, the 30s poll, and the focus-driven poll), so the periodic refresh can no
+   longer revert the view to the default. The group-by links only update that global
+   and re-trigger the container; they no longer issue their own request. #}
 <div id="thread-list"
      hx-get="/threads"
+     hx-vals='js:{"group-by": window.slackDashGroupBy || "none"}'
      hx-trigger="load, every 30s [document.visibilityState === 'visible'], poll"
      hx-swap="innerHTML">
     <p>Loading threads...</p>
 </div>
+<script>
+    window.slackDashGroupBy = window.slackDashGroupBy || "none";
+    document.querySelectorAll(".group-choice").forEach(function(link) {
+        link.addEventListener("click", function(evt) {
+            evt.preventDefault();
+            window.slackDashGroupBy = link.dataset.groupBy;
+            document.querySelectorAll(".group-choice").forEach(function(other) {
+                other.classList.toggle("active", other === link);
+            });
+            htmx.trigger(document.getElementById("thread-list"), "poll");
+        });
+    });
+</script>
 {% endblock %}
