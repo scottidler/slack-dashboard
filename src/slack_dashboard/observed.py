@@ -45,7 +45,8 @@ class ObservedStore:
 
     def load(self) -> None:
         """Open/create the db and hydrate the in-memory mirror. On any sqlite
-        error, log WARN and fall back to in-memory-only (degraded) mode."""
+        error OR an OS error creating the directory/file, log WARN and fall back
+        to in-memory-only (degraded) mode."""
         logger.debug("ObservedStore.load: path=%s", self._path)
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -58,8 +59,10 @@ class ObservedStore:
                 self._mirror[(channel_id, thread_ts)] = first_observed
             self._conn = conn
             logger.debug("ObservedStore.load: loaded %d observed keys", len(self._mirror))
-        except sqlite3.Error as exc:
-            logger.warning("ObservedStore.load: sqlite error, degrading to in-memory only: %s", exc)
+        except (sqlite3.Error, OSError) as exc:
+            # OSError covers an uncreatable/un-permissioned config dir (mkdir above):
+            # startup degrades to in-memory-only rather than raising out of load().
+            logger.warning("ObservedStore.load: open error, degrading to in-memory only: %s", exc)
             self._conn = None
 
     def stamp(self, channel_id: str, thread_ts: str, now: float) -> float:

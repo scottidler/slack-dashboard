@@ -78,6 +78,11 @@ heat:
   # group-by tier so the glyph and grouping agree).
   spiking-threshold: 15
 
+  # New glyph (✨): a thread is "new to your view" for this many minutes after the
+  # dashboard first observes it (proxy for "since I last looked"). 60 min survives a
+  # coffee-break gap without reading as stale.
+  new-window-minutes: 60
+
   # Unanswered proxy glyph (❓): arithmetic proxy for a dropped-ball question.
   # Disabled by default; flip unanswered-enabled: true in your private ~/.config to
   # observe. The proxy fires when the first message contains "?" AND reply count is at
