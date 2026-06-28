@@ -1,3 +1,4 @@
+import time as _time
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
@@ -5,11 +6,11 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from slack_dashboard.config import AppConfig, SlackConfig
+from slack_dashboard.config import AppConfig, HeatConfig, SlackConfig
 from slack_dashboard.llm.provider import LlmProvider
 from slack_dashboard.slack.poller import SlackPoller
 from slack_dashboard.thread import ThreadEntry
-from slack_dashboard.web import create_routes
+from slack_dashboard.web import _emojis, create_routes
 
 _CONFIG = AppConfig(workspace="tatari")
 
@@ -309,3 +310,83 @@ def test_status_banner_disabled() -> None:
     resp = client.get("/status")
     assert resp.status_code == 200
     assert "Socket Mode is off" in resp.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: Spiking glyph tests
+# ---------------------------------------------------------------------------
+
+
+def _make_spiking_thread(replies_in_window: int, heat_tier: str = "cold") -> ThreadEntry:
+    """Thread with the given number of recent replies in the velocity window."""
+    now = _time.time()
+    t = ThreadEntry(
+        channel_id="C123",
+        channel_name="sre",
+        thread_ts="1234567890.123456",
+        first_message="Something is happening",
+        started_by="U1",
+        reply_count=replies_in_window,
+        participants={"U1": 1},
+        last_activity=datetime.now(UTC),
+        heat_tier=heat_tier,
+    )
+    # Place all reply timestamps within the last minute so they are in the window.
+    t.reply_timestamps = [now - i for i in range(replies_in_window)]
+    return t
+
+
+def test_spiking_glyph_fires_at_threshold() -> None:
+    config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
+    thread = _make_spiking_thread(replies_in_window=15)
+    emojis = _emojis(thread, config)
+    assert "\N{HIGH VOLTAGE SIGN}" in emojis
+
+
+def test_spiking_glyph_fires_above_threshold() -> None:
+    config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
+    thread = _make_spiking_thread(replies_in_window=20)
+    emojis = _emojis(thread, config)
+    assert "\N{HIGH VOLTAGE SIGN}" in emojis
+
+
+def test_spiking_glyph_absent_below_threshold() -> None:
+    config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
+    thread = _make_spiking_thread(replies_in_window=14)
+    emojis = _emojis(thread, config)
+    assert "\N{HIGH VOLTAGE SIGN}" not in emojis
+
+
+def test_spiking_glyph_absent_with_zero_replies() -> None:
+    config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
+    thread = _make_spiking_thread(replies_in_window=0)
+    emojis = _emojis(thread, config)
+    assert "\N{HIGH VOLTAGE SIGN}" not in emojis
+
+
+def test_spiking_glyph_distinct_from_fire() -> None:
+    # A spiking thread that is NOT hot should show ⚡ but not 🔥.
+    config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
+    thread = _make_spiking_thread(replies_in_window=20, heat_tier="cold")
+    emojis = _emojis(thread, config)
+    assert "\N{HIGH VOLTAGE SIGN}" in emojis
+    assert "\N{FIRE}" not in emojis
+
+
+def test_spiking_and_fire_can_coexist() -> None:
+    # A thread can be both spiking and hot; both glyphs should appear.
+    config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
+    thread = _make_spiking_thread(replies_in_window=20, heat_tier="hot")
+    emojis = _emojis(thread, config)
+    assert "\N{HIGH VOLTAGE SIGN}" in emojis
+    assert "\N{FIRE}" in emojis
+
+
+def test_spiking_glyph_precedes_fire_in_render_order() -> None:
+    # Glyph order: vip, spiking, fire, zombie. Spiking must appear before fire.
+    config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
+    thread = _make_spiking_thread(replies_in_window=20, heat_tier="hot")
+    emojis = _emojis(thread, config)
+    spiking_pos = emojis.index("\N{HIGH VOLTAGE SIGN}")
+    fire_pos = emojis.index("\N{FIRE}")
+    assert spiking_pos < fire_pos

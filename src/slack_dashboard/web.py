@@ -21,9 +21,11 @@ logger = logging.getLogger(__name__)
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 # Glyphs for the emoji state channel (see design doc "Emoji State Channel").
+# Render order in the row: spiking, vip, fire, zombie (new/unanswered come in later phases).
 _ZOMBIE = "\N{ZOMBIE}"
 _FIRE = "\N{FIRE}"
 _VIP = "\N{CROWN}"
+_SPIKING = "\N{HIGH VOLTAGE SIGN}"
 
 _GROUP_BY_CHOICES = ("none", "channel", "size", "velocity")
 
@@ -114,13 +116,28 @@ def _has_vip(thread: ThreadEntry, config: AppConfig) -> bool:
 
 
 def _emojis(thread: ThreadEntry, config: AppConfig) -> str:
+    """Build the glyph string for a thread row.
+
+    Render order: vip, spiking, fire, zombie (new added in Phase 3; unanswered in Phase 4).
+    Each glyph is a single Unicode character that signals thread state at a glance.
+    """
+    riw = replies_in_window(thread, config.heat)
+    logger.debug(
+        "_emojis: channel=%s thread_ts=%s replies_in_window=%d tier=%s",
+        thread.channel_name,
+        thread.thread_ts,
+        riw,
+        thread.heat_tier,
+    )
     glyphs = []
-    if is_zombie(thread, config.heat):
-        glyphs.append(_ZOMBIE)
     if _has_vip(thread, config):
         glyphs.append(_VIP)
+    if riw >= config.heat.spiking_threshold:
+        glyphs.append(_SPIKING)
     if thread.heat_tier == "hot":
         glyphs.append(_FIRE)
+    if is_zombie(thread, config.heat):
+        glyphs.append(_ZOMBIE)
     return "".join(glyphs)
 
 

@@ -53,6 +53,9 @@ class HeatConfig(_KebabModel):
     people_weight_cap: float = 0.0
     velocity_weight: float = 0.0
     velocity_window_minutes: int = 30
+    # Replies-in-window count that marks a thread as spiking (⚡). Aligned with the
+    # velocity group-by "spiking (15+)" tier so the glyph and grouping agree.
+    spiking_threshold: int = 15
     resurrection_gap_hours: int = 24
     resurrection_age_days: int = 2
     resurrection_display_hours: int = 24

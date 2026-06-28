@@ -69,9 +69,14 @@ heat:
   people-weight-cap: 30
 
   # Velocity: boost a thread spiking now over one that accreted replies slowly.
-  # Start at 0 (off) and raise once the channel weights feel right.
-  velocity-weight: 0.0
+  # The spiking glyph (⚡) fires when replies-in-window >= spiking-threshold; keeping
+  # velocity-weight materially non-zero here ensures the score and the glyph agree.
+  # Tune the real value in your private ~/.config file.
+  velocity-weight: 5.0
   velocity-window-minutes: 30
+  # Replies in the velocity window that qualify as "spiking" (matches the spiking (15+)
+  # group-by tier so the glyph and grouping agree).
+  spiking-threshold: 15
 
   # Resurrection: a thread quiet for resurrection-gap-hours, older than
   # resurrection-age-days, that gets new activity floats back up as a zombie for
