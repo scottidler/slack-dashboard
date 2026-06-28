@@ -56,6 +56,9 @@ class HeatConfig(_KebabModel):
     # Replies-in-window count that marks a thread as spiking (⚡). Aligned with the
     # velocity group-by "spiking (15+)" tier so the glyph and grouping agree.
     spiking_threshold: int = 15
+    # Minutes after first observation that the ✨ new glyph stays visible. 60 min
+    # is long enough to survive a coffee-break gap, short enough not to read as stale.
+    new_window_minutes: int = 60
     resurrection_gap_hours: int = 24
     resurrection_age_days: int = 2
     resurrection_display_hours: int = 24

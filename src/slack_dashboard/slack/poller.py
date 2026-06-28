@@ -53,6 +53,19 @@ class SlackPoller:
         self._active_workers: set[asyncio.Task[None]] = set()
         self._channel_watermarks: dict[str, str] = {}
         self._thread_watermarks: dict[tuple[str, str], str] = {}
+        # Captured once in start() so the render path can suppress the new glyph
+        # for the first new_window after poller start (app-start storm suppressor, M2).
+        self._app_start_at: float = 0.0
+
+    @property
+    def app_start_at(self) -> float:
+        """Wall-clock epoch captured once when the poller starts.
+
+        The render path uses this to suppress the new glyph for all threads
+        within ``new_window_minutes`` of start (app-start storm suppressor, M2).
+        Zero until ``start()`` is called.
+        """
+        return self._app_start_at
 
     @property
     def threads(self) -> dict[tuple[str, str], ThreadEntry]:
@@ -157,9 +170,12 @@ class SlackPoller:
         return changed
 
     async def start(self) -> None:
+        self._app_start_at = datetime.now(UTC).timestamp()
         self._channel_map = self._config.channels
         logger.info(
-            "Loaded %d channels from config, seeding fetch queue...", len(self._channel_map)
+            "Loaded %d channels from config, seeding fetch queue... app_start_at=%.3f",
+            len(self._channel_map),
+            self._app_start_at,
         )
         self._queue.seed_channels(self._channel_map, priority=PRIORITY_BACKFILL)
         self._consumer_task = asyncio.create_task(self._consume_loop())

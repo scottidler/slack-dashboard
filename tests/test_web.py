@@ -1,6 +1,6 @@
 import time as _time
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, PropertyMock
 
 import pytest
 from fastapi import FastAPI
@@ -11,6 +11,12 @@ from slack_dashboard.llm.provider import LlmProvider
 from slack_dashboard.slack.poller import SlackPoller
 from slack_dashboard.thread import ThreadEntry
 from slack_dashboard.web import _emojis, create_routes
+
+# A far-past app_start_at so the storm suppressor window (new_window_minutes * 60)
+# is already expired for all Phase 1 and Phase 3 tests that want the storm suppressor
+# out of the way. 7200 seconds = 2 hours, well past a 60-min window.
+_FAR_PAST_APP_START = _time.time() - 7200
+_NOW = _time.time()
 
 _CONFIG = AppConfig(workspace="tatari")
 
@@ -46,10 +52,22 @@ def _make_thread() -> ThreadEntry:
     )
 
 
+def _make_mock_poller(threads: list[ThreadEntry] | None = None) -> AsyncMock:
+    """Create a mock SlackPoller with app_start_at set far in the past (storm suppressor clear)."""
+    poller = AsyncMock(spec=SlackPoller)
+    # app_start_at is a property; set it as a plain attribute on the mock instance
+    # so the storm suppressor (now - app_start_at >= new_window) is always satisfied
+    # in route-level tests that are not specifically testing the suppressor.
+    type(poller).app_start_at = PropertyMock(return_value=_FAR_PAST_APP_START)
+    if threads is not None:
+        poller.ranked_threads.return_value = threads
+    return poller
+
+
 @pytest.fixture
 def app_with_threads() -> FastAPI:
     app = FastAPI()
-    poller = AsyncMock(spec=SlackPoller)
+    poller = _make_mock_poller()
     thread = _make_thread()
     poller.ranked_threads.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
@@ -91,8 +109,7 @@ def test_threads_app_link_has_no_target_blank() -> None:
     # With a team id the row link is a slack:// app handoff; it opens in place, so no
     # target="_blank" (which would otherwise orphan an empty browser tab on every click).
     app = FastAPI()
-    poller = AsyncMock(spec=SlackPoller)
-    poller.ranked_threads.return_value = [_make_thread()]
+    poller = _make_mock_poller([_make_thread()])
     config = AppConfig(slack=SlackConfig(team_id="T999"))
     create_routes(app, poller, MockLlm(), config)
     response = TestClient(app).get("/threads")
@@ -119,8 +136,7 @@ def test_channel_route_lists_ranked_threads(client: TestClient) -> None:
 
 def test_channel_route_app_links_when_team_id_set() -> None:
     app = FastAPI()
-    poller = AsyncMock(spec=SlackPoller)
-    poller.ranked_threads.return_value = [_make_thread()]
+    poller = _make_mock_poller([_make_thread()])
     config = AppConfig(slack=SlackConfig(team_id="T999"))
     create_routes(app, poller, MockLlm(), config)
     response = TestClient(app).get("/channel/C123")
@@ -138,8 +154,7 @@ def test_threads_channel_name_is_link(client: TestClient) -> None:
 
 def test_threads_channel_link_uses_app_scheme_when_team_id_set() -> None:
     app = FastAPI()
-    poller = AsyncMock(spec=SlackPoller)
-    poller.ranked_threads.return_value = [_make_thread()]
+    poller = _make_mock_poller([_make_thread()])
     config = AppConfig(slack=SlackConfig(team_id="T999"))
     create_routes(app, poller, MockLlm(), config)
     response = TestClient(app).get("/threads")
@@ -155,14 +170,13 @@ def test_threads_renders_fire_emoji_for_hot(client: TestClient) -> None:
 
 def _client_with_n_threads(n: int) -> TestClient:
     app = FastAPI()
-    poller = AsyncMock(spec=SlackPoller)
     threads = []
     for i in range(n):
         t = _make_thread()
         t.thread_ts = f"100000000{i}.000000"
         t.first_message = f"thread number {i}"
         threads.append(t)
-    poller.ranked_threads.return_value = threads
+    poller = _make_mock_poller(threads)
     create_routes(app, poller, MockLlm(), _CONFIG)
     return TestClient(app)
 
@@ -242,7 +256,7 @@ def test_summarize_not_found(client: TestClient) -> None:
 
 def test_summarize_llm_failure() -> None:
     app = FastAPI()
-    poller = AsyncMock(spec=SlackPoller)
+    poller = _make_mock_poller()
     thread = _make_thread()
     poller.ranked_threads.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
@@ -255,7 +269,7 @@ def test_summarize_llm_failure() -> None:
 
 def test_dismiss_route_invokes_dismiss_thread() -> None:
     app = FastAPI()
-    poller = AsyncMock(spec=SlackPoller)
+    poller = _make_mock_poller()
     thread = _make_thread()
     poller.ranked_threads.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
@@ -270,8 +284,7 @@ def test_status_banner_disconnected() -> None:
     from slack_dashboard.connection import ConnectionState
 
     app = FastAPI()
-    poller = AsyncMock(spec=SlackPoller)
-    poller.ranked_threads.return_value = []
+    poller = _make_mock_poller([])
     poller.threads = {}
     conn = ConnectionState(socket_enabled=True, connected=False)
     create_routes(app, poller, MockLlm(), _CONFIG, conn)
@@ -285,8 +298,7 @@ def test_status_banner_connected_is_empty() -> None:
     from slack_dashboard.connection import ConnectionState
 
     app = FastAPI()
-    poller = AsyncMock(spec=SlackPoller)
-    poller.ranked_threads.return_value = []
+    poller = _make_mock_poller([])
     poller.threads = {}
     conn = ConnectionState(socket_enabled=True, connected=True)
     create_routes(app, poller, MockLlm(), _CONFIG, conn)
@@ -301,8 +313,7 @@ def test_status_banner_disabled() -> None:
     from slack_dashboard.connection import ConnectionState
 
     app = FastAPI()
-    poller = AsyncMock(spec=SlackPoller)
-    poller.ranked_threads.return_value = []
+    poller = _make_mock_poller([])
     poller.threads = {}
     conn = ConnectionState(socket_enabled=False)
     create_routes(app, poller, MockLlm(), _CONFIG, conn)
@@ -339,28 +350,28 @@ def _make_spiking_thread(replies_in_window: int, heat_tier: str = "cold") -> Thr
 def test_spiking_glyph_fires_at_threshold() -> None:
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=15)
-    emojis = _emojis(thread, config)
+    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
     assert "\N{HIGH VOLTAGE SIGN}" in emojis
 
 
 def test_spiking_glyph_fires_above_threshold() -> None:
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=20)
-    emojis = _emojis(thread, config)
+    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
     assert "\N{HIGH VOLTAGE SIGN}" in emojis
 
 
 def test_spiking_glyph_absent_below_threshold() -> None:
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=14)
-    emojis = _emojis(thread, config)
+    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
     assert "\N{HIGH VOLTAGE SIGN}" not in emojis
 
 
 def test_spiking_glyph_absent_with_zero_replies() -> None:
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=0)
-    emojis = _emojis(thread, config)
+    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
     assert "\N{HIGH VOLTAGE SIGN}" not in emojis
 
 
@@ -368,7 +379,7 @@ def test_spiking_glyph_distinct_from_fire() -> None:
     # A spiking thread that is NOT hot should show ⚡ but not 🔥.
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=20, heat_tier="cold")
-    emojis = _emojis(thread, config)
+    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
     assert "\N{HIGH VOLTAGE SIGN}" in emojis
     assert "\N{FIRE}" not in emojis
 
@@ -377,16 +388,162 @@ def test_spiking_and_fire_can_coexist() -> None:
     # A thread can be both spiking and hot; both glyphs should appear.
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=20, heat_tier="hot")
-    emojis = _emojis(thread, config)
+    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
     assert "\N{HIGH VOLTAGE SIGN}" in emojis
     assert "\N{FIRE}" in emojis
 
 
 def test_spiking_glyph_precedes_fire_in_render_order() -> None:
-    # Glyph order: vip, spiking, fire, zombie. Spiking must appear before fire.
+    # Glyph order: new, vip, spiking, fire, zombie. Spiking must appear before fire.
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=20, heat_tier="hot")
-    emojis = _emojis(thread, config)
+    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
     spiking_pos = emojis.index("\N{HIGH VOLTAGE SIGN}")
     fire_pos = emojis.index("\N{FIRE}")
     assert spiking_pos < fire_pos
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: New glyph tests
+# ---------------------------------------------------------------------------
+
+
+def _make_new_thread(
+    first_observed_at: float,
+    heat_tier: str = "cold",
+    resurrection_event_ts: float = 0.0,
+    first_seen_ts: float = 0.0,
+) -> ThreadEntry:
+    """Thread with the given first_observed_at for testing the new glyph."""
+    return ThreadEntry(
+        channel_id="C123",
+        channel_name="sre",
+        thread_ts="1234567890.123456",
+        first_message="Brand new thread",
+        started_by="U1",
+        reply_count=5,
+        participants={"U1": 3},
+        last_activity=datetime.now(UTC),
+        heat_tier=heat_tier,
+        first_observed_at=first_observed_at,
+        resurrection_event_ts=resurrection_event_ts,
+        first_seen_ts=first_seen_ts,
+    )
+
+
+def test_new_glyph_fires_inside_window() -> None:
+    # first_observed 30 min ago, window 60 min, app started 2 hours ago - glyph fires.
+    now = _time.time()
+    app_start_at = now - 7200  # 2 hours ago - storm suppressor clear
+    first_observed_at = now - 1800  # 30 min ago - inside 60-min window
+    config = AppConfig(heat=HeatConfig(new_window_minutes=60))
+    thread = _make_new_thread(first_observed_at=first_observed_at)
+    emojis = _emojis(thread, config, now, app_start_at)
+    assert "\N{SPARKLES}" in emojis
+
+
+def test_new_glyph_absent_outside_window() -> None:
+    # first_observed 90 min ago, window 60 min - glyph absent.
+    now = _time.time()
+    app_start_at = now - 7200  # storm suppressor clear
+    first_observed_at = now - 5400  # 90 min ago - outside 60-min window
+    config = AppConfig(heat=HeatConfig(new_window_minutes=60))
+    thread = _make_new_thread(first_observed_at=first_observed_at)
+    emojis = _emojis(thread, config, now, app_start_at)
+    assert "\N{SPARKLES}" not in emojis
+
+
+def test_new_glyph_absent_when_first_observed_zero() -> None:
+    # first_observed_at == 0 means degraded/unknown - glyph must not fire.
+    now = _time.time()
+    app_start_at = now - 7200
+    config = AppConfig(heat=HeatConfig(new_window_minutes=60))
+    thread = _make_new_thread(first_observed_at=0.0)
+    emojis = _emojis(thread, config, now, app_start_at)
+    assert "\N{SPARKLES}" not in emojis
+
+
+def test_new_glyph_absent_when_zombie() -> None:
+    # Thread inside the new window but is a zombie - glyph must not fire (B2 guard).
+    now = _time.time()
+    app_start_at = now - 7200
+    first_observed_at = now - 1800  # 30 min ago - inside window
+    # Make it a zombie: resurrection_event_ts recent, first_seen_ts old
+    resurrection_event_ts = now - 3600  # 1 hour ago - within display window (24h default)
+    first_seen_ts = now - (3 * 86400)  # 3 days ago - older than resurrection_age_days=2
+    config = AppConfig(heat=HeatConfig(new_window_minutes=60))
+    thread = _make_new_thread(
+        first_observed_at=first_observed_at,
+        resurrection_event_ts=resurrection_event_ts,
+        first_seen_ts=first_seen_ts,
+    )
+    emojis = _emojis(thread, config, now, app_start_at)
+    assert "\N{SPARKLES}" not in emojis
+    assert "\N{ZOMBIE}" in emojis
+
+
+def test_new_glyph_absent_within_app_start_window() -> None:
+    # App started 30 min ago, window is 60 min - storm suppressor active, glyph absent.
+    now = _time.time()
+    app_start_at = now - 1800  # 30 min ago - within 60-min suppressor window
+    first_observed_at = now - 60  # 1 min ago - definitely inside observation window
+    config = AppConfig(heat=HeatConfig(new_window_minutes=60))
+    thread = _make_new_thread(first_observed_at=first_observed_at)
+    emojis = _emojis(thread, config, now, app_start_at)
+    assert "\N{SPARKLES}" not in emojis
+
+
+def test_new_glyph_storm_suppressor_lifts_after_window() -> None:
+    # App started exactly new_window_minutes ago - suppressor just expired, glyph fires.
+    now = _time.time()
+    new_window_minutes = 60
+    new_window = new_window_minutes * 60
+    app_start_at = now - new_window  # exactly at the boundary - suppressor done
+    first_observed_at = now - 1800  # 30 min ago - inside observation window
+    config = AppConfig(heat=HeatConfig(new_window_minutes=new_window_minutes))
+    thread = _make_new_thread(first_observed_at=first_observed_at)
+    emojis = _emojis(thread, config, now, app_start_at)
+    assert "\N{SPARKLES}" in emojis
+
+
+def test_new_glyph_precedes_vip_in_render_order() -> None:
+    # Glyph order: new, vip, spiking, fire, zombie. New must lead.
+    now = _time.time()
+    app_start_at = now - 7200
+    first_observed_at = now - 1800
+    # Set up a VIP thread: use a people_weights config
+    config = AppConfig(
+        heat=HeatConfig(
+            new_window_minutes=60,
+            people_weights={"U1": 10.0},
+            participant_weight=3,
+        )
+    )
+    thread = _make_new_thread(first_observed_at=first_observed_at)
+    emojis = _emojis(thread, config, now, app_start_at)
+    assert "\N{SPARKLES}" in emojis
+    assert "\N{CROWN}" in emojis
+    new_pos = emojis.index("\N{SPARKLES}")
+    vip_pos = emojis.index("\N{CROWN}")
+    assert new_pos < vip_pos
+
+
+def test_new_glyph_suppressed_for_all_threads_in_storm_window() -> None:
+    # All threads within new_window of app_start must not show new, regardless of
+    # their first_observed_at. Simulates the app-start storm suppressor (M2).
+    now = _time.time()
+    new_window_minutes = 60
+    new_window = new_window_minutes * 60
+    app_start_at = now - (new_window / 2)  # 30 min after start - suppressor still active
+    config = AppConfig(heat=HeatConfig(new_window_minutes=new_window_minutes))
+    # Several threads with varying first_observed_at all inside the observation window
+    threads = [
+        _make_new_thread(first_observed_at=now - 60),  # 1 min ago
+        _make_new_thread(first_observed_at=now - 600),  # 10 min ago
+        _make_new_thread(first_observed_at=now - 1800),  # 30 min ago
+    ]
+    for t in threads:
+        emojis = _emojis(t, config, now, app_start_at)
+        assert "\N{SPARKLES}" not in emojis, (
+            f"storm suppressor should block new glyph; first_observed_at={t.first_observed_at}"
+        )

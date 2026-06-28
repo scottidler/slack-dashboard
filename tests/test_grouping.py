@@ -5,6 +5,11 @@ from slack_dashboard.config import AppConfig
 from slack_dashboard.thread import ThreadEntry
 from slack_dashboard.web import _build_row, deep_link, group_threads
 
+# A consistent now/app_start_at pair for all grouping tests: storm suppressor is
+# clear (app_start_at 2 hours before now) so the new glyph can fire when expected.
+_NOW = time.time()
+_FAR_PAST_APP_START = _NOW - 7200
+
 
 def _thread(
     channel_name: str = "general",
@@ -47,7 +52,7 @@ def test_group_by_channel_partitions() -> None:
         _thread(channel_name="sre", thread_ts="2"),
         _thread(channel_name="data", thread_ts="3"),
     ]
-    groups = group_threads(threads, "channel", config)
+    groups = group_threads(threads, "channel", config, _NOW, _FAR_PAST_APP_START)
     labels = [g.label for g in groups]
     assert labels == ["sre", "data"]
     assert len(groups[0].rows) == 2
@@ -63,7 +68,7 @@ def test_group_by_channel_orders_by_weight() -> None:
         _thread(channel_name="backstage", thread_ts="1", reply_count=99),  # loudest
         _thread(channel_name="data-platform-internal", thread_ts="2", reply_count=3),
     ]
-    groups = group_threads(threads, "channel", config)
+    groups = group_threads(threads, "channel", config, _NOW, _FAR_PAST_APP_START)
     assert [g.label for g in groups] == ["data-platform-internal", "backstage"]
 
 
@@ -78,7 +83,7 @@ def test_group_by_channel_clusters_families() -> None:
         _thread(channel_name="sre-internal", thread_ts="3"),
         _thread(channel_name="data-platform-internal", thread_ts="4"),
     ]
-    labels = [g.label for g in group_threads(threads, "channel", config)]
+    labels = [g.label for g in group_threads(threads, "channel", config, _NOW, _FAR_PAST_APP_START)]
     assert labels == ["sre-sec", "sre-internal", "data-platform", "data-platform-internal"]
 
 
@@ -89,7 +94,7 @@ def test_group_by_channel_equal_weight_keeps_heat_order() -> None:
         _thread(channel_name="alpha", thread_ts="1"),
         _thread(channel_name="beta", thread_ts="2"),
     ]
-    groups = group_threads(threads, "channel", config)
+    groups = group_threads(threads, "channel", config, _NOW, _FAR_PAST_APP_START)
     assert [g.label for g in groups] == ["alpha", "beta"]
 
 
@@ -100,7 +105,7 @@ def test_group_by_none_single_unlabeled_group() -> None:
         _thread(channel_name="sre", thread_ts="1"),
         _thread(channel_name="data", thread_ts="2"),
     ]
-    groups = group_threads(threads, "none", config)
+    groups = group_threads(threads, "none", config, _NOW, _FAR_PAST_APP_START)
     assert len(groups) == 1
     assert groups[0].label == ""
     assert len(groups[0].rows) == 2
@@ -115,7 +120,7 @@ def test_group_by_size_buckets() -> None:
         _thread(thread_ts="4", reply_count=10),  # small
         _thread(thread_ts="5", reply_count=3),  # small
     ]
-    groups = group_threads(threads, "size", config)
+    groups = group_threads(threads, "size", config, _NOW, _FAR_PAST_APP_START)
     assert [g.label for g in groups] == [
         "huge (100+)",
         "large (50-99)",
@@ -129,7 +134,7 @@ def test_group_by_size_buckets() -> None:
 def test_group_by_size_drops_empty_buckets() -> None:
     config = AppConfig()
     threads = [_thread(thread_ts="1", reply_count=5), _thread(thread_ts="2", reply_count=8)]
-    groups = group_threads(threads, "size", config)
+    groups = group_threads(threads, "size", config, _NOW, _FAR_PAST_APP_START)
     assert [g.label for g in groups] == ["small (3-24)"]
 
 
@@ -142,21 +147,21 @@ def test_group_by_velocity_buckets() -> None:
     active.reply_timestamps = [now - 60, now - 120, now - 180]  # 3 in-window
     idle = _thread(thread_ts="3")
     idle.reply_timestamps = []
-    groups = group_threads([spiking, active, idle], "velocity", config)
+    groups = group_threads([spiking, active, idle], "velocity", config, _NOW, _FAR_PAST_APP_START)
     assert [g.label for g in groups] == ["spiking (15+)", "active (1-14)", "idle (0)"]
 
 
 def test_group_by_invalid_falls_back_to_none() -> None:
     config = AppConfig()
     threads = [_thread(channel_name="sre")]
-    groups = group_threads(threads, "bogus", config)
+    groups = group_threads(threads, "bogus", config, _NOW, _FAR_PAST_APP_START)
     assert groups[0].label == ""
     assert len(groups[0].rows) == 1
 
 
 def test_build_row_emits_fire_for_hot() -> None:
     config = AppConfig()
-    row = _build_row(_thread(heat_tier="hot"), config)
+    row = _build_row(_thread(heat_tier="hot"), config, _NOW, _FAR_PAST_APP_START)
     assert "\N{FIRE}" in row.emojis
 
 
@@ -166,13 +171,13 @@ def test_build_row_emits_zombie_for_resurrected() -> None:
     now = time.time()
     thread.first_seen_ts = now - 5 * 86400
     thread.resurrection_event_ts = now - 3600
-    row = _build_row(thread, config)
+    row = _build_row(thread, config, now, now - 7200)
     assert "\N{ZOMBIE}" in row.emojis
 
 
 def test_build_row_no_emoji_when_cold_and_not_zombie() -> None:
     config = AppConfig()
-    row = _build_row(_thread(heat_tier="cold"), config)
+    row = _build_row(_thread(heat_tier="cold"), config, _NOW, _FAR_PAST_APP_START)
     assert row.emojis == ""
 
 
@@ -180,14 +185,14 @@ def test_build_row_emits_crown_for_vip_participant() -> None:
     # A participant with an above-default people-weight flags the row with the VIP crown.
     config = AppConfig()
     config.heat.people_weights = {"U0": 50}
-    row = _build_row(_thread(heat_tier="cold", participants=2), config)
+    row = _build_row(_thread(heat_tier="cold", participants=2), config, _NOW, _FAR_PAST_APP_START)
     assert "\N{CROWN}" in row.emojis
 
 
 def test_build_row_no_crown_without_vip() -> None:
     config = AppConfig()
     config.heat.people_weights = {"Uother": 50}
-    row = _build_row(_thread(heat_tier="cold", participants=2), config)
+    row = _build_row(_thread(heat_tier="cold", participants=2), config, _NOW, _FAR_PAST_APP_START)
     assert "\N{CROWN}" not in row.emojis
 
 
@@ -197,7 +202,7 @@ def test_below_fold_tags_by_global_heat_rank() -> None:
     config = AppConfig()
     config.display.compact_rows = 3
     threads = [_thread(thread_ts=str(i)) for i in range(5)]
-    rows = group_threads(threads, "none", config)[0].rows
+    rows = group_threads(threads, "none", config, _NOW, _FAR_PAST_APP_START)[0].rows
     assert [r.below_fold for r in rows] == [False, False, False, True, True]
 
 
@@ -206,7 +211,7 @@ def test_below_fold_disabled_when_compact_rows_zero() -> None:
     config = AppConfig()
     config.display.compact_rows = 0
     threads = [_thread(thread_ts=str(i)) for i in range(5)]
-    rows = group_threads(threads, "none", config)[0].rows
+    rows = group_threads(threads, "none", config, _NOW, _FAR_PAST_APP_START)[0].rows
     assert all(not r.below_fold for r in rows)
 
 
@@ -221,7 +226,7 @@ def test_below_fold_pins_to_global_rank_under_grouping() -> None:
         _thread(channel_name="sre", thread_ts="3"),  # rank 2 - below
         _thread(channel_name="data", thread_ts="4"),  # rank 3 - below
     ]
-    groups = group_threads(threads, "channel", config)
+    groups = group_threads(threads, "channel", config, _NOW, _FAR_PAST_APP_START)
     below = {(r.channel_name, r.thread_ts): r.below_fold for g in groups for r in g.rows}
     assert below == {
         ("sre", "1"): False,

@@ -1,5 +1,6 @@
 import logging
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 
 import markdown as md
@@ -21,11 +22,12 @@ logger = logging.getLogger(__name__)
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 # Glyphs for the emoji state channel (see design doc "Emoji State Channel").
-# Render order in the row: spiking, vip, fire, zombie (new/unanswered come in later phases).
+# Render order in the row: new, vip, spiking, fire, zombie (unanswered leads when on in Phase 4).
 _ZOMBIE = "\N{ZOMBIE}"
 _FIRE = "\N{FIRE}"
 _VIP = "\N{CROWN}"
 _SPIKING = "\N{HIGH VOLTAGE SIGN}"
+_NEW = "\N{SPARKLES}"  # ✨ recently entered the dashboard's view
 
 _GROUP_BY_CHOICES = ("none", "channel", "size", "velocity")
 
@@ -115,21 +117,39 @@ def _has_vip(thread: ThreadEntry, config: AppConfig) -> bool:
     return any(resolve_person_weight(uid, config.heat) > default for uid in thread.participants)
 
 
-def _emojis(thread: ThreadEntry, config: AppConfig) -> str:
+def _emojis(thread: ThreadEntry, config: AppConfig, now: float, app_start_at: float) -> str:
     """Build the glyph string for a thread row.
 
-    Render order: vip, spiking, fire, zombie (new added in Phase 3; unanswered in Phase 4).
+    Render order: new, vip, spiking, fire, zombie (unanswered leads when on in Phase 4).
     Each glyph is a single Unicode character that signals thread state at a glance.
+
+    ``now`` and ``app_start_at`` are passed in (not read from the wall clock here) so the
+    caller can capture them once per request and all rows use a consistent timestamp.
     """
     riw = replies_in_window(thread, config.heat)
+    new_window = config.heat.new_window_minutes * 60
     logger.debug(
-        "_emojis: channel=%s thread_ts=%s replies_in_window=%d tier=%s",
+        "_emojis: channel=%s thread_ts=%s replies_in_window=%d tier=%s"
+        " first_observed_at=%.3f now=%.3f app_start_at=%.3f new_window=%ds",
         thread.channel_name,
         thread.thread_ts,
         riw,
         thread.heat_tier,
+        thread.first_observed_at,
+        now,
+        app_start_at,
+        new_window,
     )
     glyphs = []
+    # ✨ new: recently entered the dashboard's view (not a zombie; not within the
+    # app-start suppressor window that masks the first-run / degraded-mode storm).
+    if (
+        thread.first_observed_at > 0
+        and now - thread.first_observed_at < new_window
+        and not is_zombie(thread, config.heat)
+        and now - app_start_at >= new_window
+    ):
+        glyphs.append(_NEW)
     if _has_vip(thread, config):
         glyphs.append(_VIP)
     if riw >= config.heat.spiking_threshold:
@@ -141,7 +161,13 @@ def _emojis(thread: ThreadEntry, config: AppConfig) -> str:
     return "".join(glyphs)
 
 
-def _build_row(thread: ThreadEntry, config: AppConfig, below_fold: bool = False) -> RowView:
+def _build_row(
+    thread: ThreadEntry,
+    config: AppConfig,
+    now: float,
+    app_start_at: float,
+    below_fold: bool = False,
+) -> RowView:
     return RowView(
         channel_id=thread.channel_id,
         channel_name=thread.channel_name,
@@ -150,7 +176,7 @@ def _build_row(thread: ThreadEntry, config: AppConfig, below_fold: bool = False)
         reply_count=thread.reply_count,
         participant_count=len(thread.participants),
         heat_tier=thread.heat_tier,
-        emojis=_emojis(thread, config),
+        emojis=_emojis(thread, config, now, app_start_at),
         deep_link=deep_link(
             config.workspace, thread.channel_id, thread.thread_ts, config.slack.team_id
         ),
@@ -160,7 +186,13 @@ def _build_row(thread: ThreadEntry, config: AppConfig, below_fold: bool = False)
     )
 
 
-def group_threads(threads: list[ThreadEntry], group_by: str, config: AppConfig) -> list[GroupView]:
+def group_threads(
+    threads: list[ThreadEntry],
+    group_by: str,
+    config: AppConfig,
+    now: float,
+    app_start_at: float,
+) -> list[GroupView]:
     """Partition globally-ranked threads into display groups.
 
     group-by=none is a single label-less group in pure heat order (no headers).
@@ -170,6 +202,9 @@ def group_threads(threads: list[ThreadEntry], group_by: str, config: AppConfig) 
     fixed tier ranges, ordered high-to-low, dropping empty tiers. Threads arrive
     heat-ranked, so rows stay in heat order within every group. Every trackable
     thread is always rendered - there is no cap (see Zero-miss invariant).
+
+    ``now`` and ``app_start_at`` are passed in so every row uses a consistent
+    timestamp (captured once per request, not per-row).
     """
     logger.debug("group_threads: group_by=%s count=%d", group_by, len(threads))
     if group_by not in _GROUP_BY_CHOICES:
@@ -188,7 +223,10 @@ def group_threads(threads: list[ThreadEntry], group_by: str, config: AppConfig) 
         return [
             GroupView(
                 label="",
-                rows=[_build_row(t, config, below_fold=_below(i)) for i, t in enumerate(threads)],
+                rows=[
+                    _build_row(t, config, now, app_start_at, below_fold=_below(i))
+                    for i, t in enumerate(threads)
+                ],
             )
         ]
 
@@ -199,7 +237,9 @@ def group_threads(threads: list[ThreadEntry], group_by: str, config: AppConfig) 
             if group is None:
                 group = GroupView(label=thread.channel_name)
                 groups[thread.channel_name] = group
-            group.rows.append(_build_row(thread, config, below_fold=_below(index)))
+            group.rows.append(
+                _build_row(thread, config, now, app_start_at, below_fold=_below(index))
+            )
 
         # Cluster channel groups by family (the first hyphen-delimited token, so all
         # `sre-*` sit together and all `data-platform-*` sit together) and order the
@@ -234,12 +274,16 @@ def group_threads(threads: list[ThreadEntry], group_by: str, config: AppConfig) 
         buckets = {label: GroupView(label=label) for label, _ in _SIZE_TIERS}
         for index, thread in enumerate(threads):
             label = _tier_label(thread.reply_count, _SIZE_TIERS)
-            buckets[label].rows.append(_build_row(thread, config, below_fold=_below(index)))
+            buckets[label].rows.append(
+                _build_row(thread, config, now, app_start_at, below_fold=_below(index))
+            )
     else:  # velocity
         buckets = {label: GroupView(label=label) for label, _ in _VELOCITY_TIERS}
         for index, thread in enumerate(threads):
             label = _tier_label(replies_in_window(thread, config.heat), _VELOCITY_TIERS)
-            buckets[label].rows.append(_build_row(thread, config, below_fold=_below(index)))
+            buckets[label].rows.append(
+                _build_row(thread, config, now, app_start_at, below_fold=_below(index))
+            )
     return [group for group in buckets.values() if group.rows]
 
 
@@ -265,8 +309,12 @@ def create_routes(
         group_by: str = Query("none", alias="group-by"),
         compact: bool = Query(True),
     ) -> HTMLResponse:
+        # Capture now and app_start_at once per request so every row uses a
+        # consistent timestamp (avoids per-row clock drift across many threads).
+        now = datetime.now(UTC).timestamp()
+        app_start_at = poller.app_start_at
         ranked = poller.ranked_threads()
-        groups = group_threads(ranked, group_by, config)
+        groups = group_threads(ranked, group_by, config, now, app_start_at)
         # Disclosure contract: every ranked thread is always server-rendered (groups carry
         # the full set); compact mode only hides the below-fold tail via CSS. The visible
         # hidden count tells the user how much sits past the fold.
@@ -321,8 +369,13 @@ def create_routes(
     async def channel(request: Request, channel_id: str) -> HTMLResponse:
         # Hover popover: every thread in this channel, in the same heat ranking as the
         # main list (ranked_threads is already sorted; we just filter to this channel).
+        # Capture now/app_start_at once so all rows use a consistent timestamp.
+        now = datetime.now(UTC).timestamp()
+        app_start_at = poller.app_start_at
         ranked = poller.ranked_threads()
-        rows = [_build_row(t, config) for t in ranked if t.channel_id == channel_id]
+        rows = [
+            _build_row(t, config, now, app_start_at) for t in ranked if t.channel_id == channel_id
+        ]
         name = next((t.channel_name for t in ranked if t.channel_id == channel_id), channel_id)
         link = channel_link(config.workspace, channel_id, config.slack.team_id)
         return templates.TemplateResponse(
