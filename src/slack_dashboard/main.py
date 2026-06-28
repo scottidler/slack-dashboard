@@ -14,6 +14,7 @@ from slack_dashboard.config import AppConfig, load_config
 from slack_dashboard.connection import ConnectionState, monitor_connection
 from slack_dashboard.dismiss import DismissStore
 from slack_dashboard.llm.provider import AnthropicProvider
+from slack_dashboard.observed import ObservedStore
 from slack_dashboard.slack.client import SlackClient, create_slack_client
 from slack_dashboard.slack.listener import SocketListener
 from slack_dashboard.slack.mrkdwn import strip_mrkdwn
@@ -41,6 +42,12 @@ def _resolve_dismiss_path() -> Path:
     return _resolve_config_path().parent / "dismissed.jsonl"
 
 
+def _resolve_observed_path() -> Path:
+    # The observation store (first-observed timestamps) lives alongside the config,
+    # mirroring the dismiss log (honors XDG_CONFIG_HOME via _resolve_config_path).
+    return _resolve_config_path().parent / "observed.db"
+
+
 def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
     slack_web_client = create_slack_client(config.slack.token)
     slack_client = SlackClient(slack_web_client)
@@ -63,12 +70,15 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
 
     dismiss_store = DismissStore(_resolve_dismiss_path())
     dismiss_store.load()
+    observed_store = ObservedStore(_resolve_observed_path())
+    observed_store.load()
     poller = SlackPoller(
         slack_client,
         config,
         on_title_needed=on_title_needed,
         on_summary_needed=on_summary_needed,
         dismiss=dismiss_store,
+        observed=observed_store,
     )
 
     channel_names = {v: k for k, v in config.channels.items()}

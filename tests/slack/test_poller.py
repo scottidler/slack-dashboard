@@ -504,3 +504,98 @@ async def test_velocity_not_double_counted_across_listener_and_fetch() -> None:
     entry = poller.threads[("C111", parent)]
     matches = [t for t in entry.reply_timestamps if abs(t - float(reply)) < 1e-6]
     assert len(matches) == 1  # deduped across listener + fetch, not double-counted
+
+
+@pytest.mark.asyncio
+async def test_evict_prunes_observed_by_horizon_not_age(tmp_path) -> None:
+    """B1 regression: _evict_threads deletes observed rows for the EXACT evicted
+    keys (last_activity horizon), and leaves a long-lived ACTIVE thread (old
+    first_observed, recent last_activity) in the store. Pruning by a static
+    first_observed age would purge the active thread and re-stamp it as falsely New."""
+    from datetime import UTC, datetime, timedelta
+
+    from slack_dashboard.observed import ObservedStore
+    from slack_dashboard.thread import ThreadEntry
+
+    observed = ObservedStore(tmp_path / "observed.db")
+    observed.load()
+
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config, observed=observed)
+
+    # Active thread: stamped long ago (old first_observed) but recently active.
+    active_key = ("C111", "active-old")
+    observed.stamp(*active_key, now=1.0)
+    poller.threads[active_key] = poller.threads.get(
+        active_key,
+        ThreadEntry(
+            channel_id="C111",
+            channel_name="general",
+            thread_ts="active-old",
+            first_message="m",
+            started_by="U1",
+            reply_count=3,
+            participants={"U1": 3},
+            last_activity=datetime.now(UTC),  # recent activity -> not evicted
+            first_observed_at=1.0,
+        ),
+    )
+
+    # Dead thread: also old first_observed, but no recent activity -> evicted.
+    dead_key = ("C111", "dead-old")
+    observed.stamp(*dead_key, now=2.0)
+    poller.threads[dead_key] = ThreadEntry(
+        channel_id="C111",
+        channel_name="general",
+        thread_ts="dead-old",
+        first_message="m",
+        started_by="U1",
+        reply_count=3,
+        participants={"U1": 3},
+        last_activity=datetime.now(UTC) - timedelta(days=99),
+        resurrection_event_ts=0.0,
+        first_observed_at=2.0,
+    )
+
+    poller._evict_threads()
+
+    # Dead thread evicted from memory AND its observed row deleted (re-stamp is fresh).
+    assert dead_key not in poller.threads
+    assert observed.stamp(*dead_key, now=500.0) == 500.0
+    # Active thread untouched: still in memory, observed row preserved (no re-stamp).
+    assert active_key in poller.threads
+    assert observed.stamp(*active_key, now=500.0) == 1.0
+
+
+@pytest.mark.asyncio
+async def test_hot_path_does_no_sqlite_io(tmp_path) -> None:
+    """The render hot path (ranked_threads) reads first_observed_at off ThreadEntry
+    and never touches sqlite. Swap in a tripwire connection that fails on any query
+    to prove zero sqlite I/O on the read path."""
+    from slack_dashboard.observed import ObservedStore
+
+    observed = ObservedStore(tmp_path / "observed.db")
+    observed.load()
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config, observed=observed)
+
+    # Populate threads (this DOES write to sqlite, on the creation chokepoint).
+    item = FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    await poller._process_item(item)
+
+    class _TripwireConn:
+        def execute(self, *args: object, **kwargs: object) -> None:
+            raise AssertionError("hot path issued a sqlite query")
+
+        def executemany(self, *args: object, **kwargs: object) -> None:
+            raise AssertionError("hot path issued a sqlite query")
+
+        def commit(self) -> None:
+            raise AssertionError("hot path committed to sqlite")
+
+    # sqlite3.Connection.execute is read-only, so swap the whole connection.
+    observed._conn = _TripwireConn()  # type: ignore[assignment]
+    ranked = poller.ranked_threads()
+    assert ranked  # the threads still rank, with no sqlite touched

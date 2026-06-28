@@ -15,6 +15,7 @@ from slack_dashboard.heat import (
     prune_timestamps,
     reconstruct_resurrection,
 )
+from slack_dashboard.observed import ObservedStore
 from slack_dashboard.slack.client import SlackClient
 from slack_dashboard.slack.queue import (
     PRIORITY_BACKFILL,
@@ -35,12 +36,14 @@ class SlackPoller:
         on_title_needed: Any | None = None,
         on_summary_needed: Any | None = None,
         dismiss: DismissStore | None = None,
+        observed: ObservedStore | None = None,
     ) -> None:
         self._slack = slack_client
         self._config = config
         self._on_title_needed = on_title_needed
         self._on_summary_needed = on_summary_needed
         self._dismiss = dismiss
+        self._observed = observed
         self._threads: dict[tuple[str, str], ThreadEntry] = {}
         self._channel_map: dict[str, str] = {}
         self._queue = FetchQueue()
@@ -105,6 +108,13 @@ class SlackPoller:
             del self._threads[key]
         if to_evict:
             logger.debug("_evict_threads: evicted %d entries", len(to_evict))
+            # B1: prune the observation store by the SAME last_activity horizon the
+            # in-memory map uses (the exact evicted keys), never a static
+            # first_observed age. A long-lived active thread (old first_observed,
+            # recent last_activity) is not evicted here, so its observed row is
+            # never purged-then-restamped and never falsely flagged New.
+            if self._observed is not None:
+                self._observed.delete(to_evict)
 
     async def reconcile(self) -> None:
         """Catch up after a Socket Mode reconnect (Phase 6).
@@ -296,6 +306,14 @@ class SlackPoller:
         resurrection_event_ts = reconstruct_resurrection(all_reply_ts, self._config.heat)
         if resurrection_event_ts == 0.0 and existing:
             resurrection_event_ts = existing.resurrection_event_ts
+        # The single thread-creation chokepoint: stamp first-observed once (write-once
+        # via the store). Degraded/absent store falls back to thread_ts (creation time),
+        # which is the cheapest "New" proxy when no observation timestamp is available.
+        first_observed_at = (
+            self._observed.stamp(channel_id, thread_ts, datetime.now(UTC).timestamp())
+            if self._observed
+            else float(thread_ts)
+        )
         entry = ThreadEntry(
             channel_id=channel_id,
             channel_name=channel_name,
@@ -312,6 +330,7 @@ class SlackPoller:
             reply_timestamps=reply_timestamps,
             resurrection_event_ts=resurrection_event_ts,
             first_seen_ts=float(thread_ts),
+            first_observed_at=first_observed_at,
         )
         self._update_heat(entry)
         self._threads[key] = entry

@@ -22,6 +22,8 @@ class ThreadEntry:
     reply_timestamps: list[float] = field(default_factory=list)  # rolling window for velocity
     resurrection_event_ts: float = 0.0  # ts of reviving activity; zombie state computed from this
     first_seen_ts: float = 0.0  # thread creation time (from thread_ts), for age/resurrection
+    first_observed_at: float = 0.0  # wall-clock epoch the dashboard FIRST saw this thread
+    # (observation time, not thread creation time); from ObservedStore
 
     @property
     def display_title(self) -> str:

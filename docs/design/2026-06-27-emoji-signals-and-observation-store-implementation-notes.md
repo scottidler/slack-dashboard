@@ -26,3 +26,28 @@ Design doc: `docs/design/2026-06-27-emoji-signals-and-observation-store.md`
 ### Open questions
 
 - None.
+
+## Phase 2: Observation store (sqlite3) + first_observed_at
+
+### Design decisions
+
+- `ObservedStore` (`observed.py`) holds a sqlite connection plus an in-memory `_mirror: dict[(channel_id, thread_ts), float]`. `load()` hydrates the mirror fully, so a `stamp()` hit is answered from the mirror and never touches sqlite -- `observed.py:ObservedStore.load`
+- `stamp()` on a mirror miss does `INSERT OR IGNORE` then reads the stored row back, so a concurrent writer that won the insert is honored (the read-back, not the supplied `now`, becomes the returned/mirrored value) -- `observed.py:ObservedStore.stamp`
+- `_BUSY_TIMEOUT_MS = 100`: a deliberately low `PRAGMA busy_timeout` so a locked db fails fast into the trap-and-degrade path rather than stalling the poller event loop -- `observed.py`
+- B1 prune wired by having `_evict_threads` pass its exact `to_evict` key list to `ObservedStore.delete(keys)`, so the observed store is pruned by the same `last_activity` horizon the in-memory map uses, never a static `first_observed` age -- `poller.py:_evict_threads`
+- Stamp at the single `_fetch_thread` creation chokepoint; degraded/absent store falls back to `float(thread_ts)` (creation time), the cheapest "New" proxy when no observation timestamp exists -- `poller.py:_fetch_thread`
+- `_resolve_observed_path()` returns `<config-dir>/observed.db`, mirroring `_resolve_dismiss_path()` and honoring `XDG_CONFIG_HOME` via `_resolve_config_path()` -- `main.py:_resolve_observed_path`
+- Wiring mirrors DismissStore exactly: construct in `_build_app`, call `.load()`, pass `observed=` into `SlackPoller` -- `main.py:_build_app`
+
+### Deviations
+
+- None. The schema, API surface, and integration points match the design doc's Data Model / API Design sections verbatim.
+
+### Tradeoffs
+
+- `stamp()` reads the row back after `INSERT OR IGNORE` (one extra SELECT on the miss path) vs trusting the supplied `now` - the read-back is correct under a concurrent winner and the miss path is rare (once per new thread), so the cost is negligible.
+- Single sqlite connection on the event-loop thread (no `run_in_executor`) - the design doc validated this (one event-loop thread, no executor offload), and a single-row insert briefly occupying the loop is cheaper than executor offload overhead.
+
+### Open questions
+
+- None.
