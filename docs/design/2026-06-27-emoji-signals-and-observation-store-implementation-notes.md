@@ -81,3 +81,32 @@ Design doc: `docs/design/2026-06-27-emoji-signals-and-observation-store.md`
 ### Open questions
 
 - None.
+
+## Phase 4: Unanswered proxy glyph
+
+### Design decisions
+
+- `HeatConfig.unanswered_enabled: bool = False`, `unanswered_max_replies: int = 2`, `unanswered_min_age_hours: int = 2` added via the auto-kebab alias generator (`_snake_to_kebab`), which maps them to `unanswered-enabled`, `unanswered-max-replies`, `unanswered-min-age-hours` in YAML with no explicit `Field(alias=...)` needed -- `config.py:HeatConfig`
+- `_UNANSWERED = "\N{BLACK QUESTION MARK ORNAMENT}"` constant added in `web.py` alongside the existing glyph constants; the render-order comment updated to reflect "unanswered (when on, leads)" -- `web.py`
+- `_emojis` computes `min_age = config.heat.unanswered_min_age_hours * 3600` and `thread_age = now - float(thread.thread_ts)` once at the top of the function, reusing the already-passed `now` parameter (no wall-clock call inside the function); both values are included in the existing DEBUG log entry -- `web.py:_emojis`
+- Contains-? chosen over ends-with-?: the predicate uses `"?" in thread.first_message` (broader reading). This catches questions embedded mid-message (e.g. "see above, can we fix this? let me know") that ends-with would miss. The doc said "ends with/contains ?" without mandating one; contains is implemented and documented here as the choice -- `web.py:_emojis`
+- ❓ glyph leads (placed before ✨ new in the `glyphs.append` sequence) as specified by the doc's glyph order: "unanswered, when on, LEADS" -- `web.py:_emojis`
+- Legend tooltip in `index.html` updated with `&#x2753;` (BLACK QUESTION MARK ORNAMENT) as the first entry; the icon string in the legend span also prepends `&#x2753;` so the resting legend icon reflects all six glyphs in order -- `templates/index.html`
+- Three knobs added to `slack-dashboard.example.yml` under a comment block in the `heat:` section, following the existing spiking-threshold and new-window-minutes precedent; defaults match the spec (`unanswered-enabled: false`) -- `slack-dashboard.example.yml`
+- Test helper `_make_unanswered_thread` accepts an optional `base_time` parameter so tests can pass their captured `now` as the epoch anchor, making `thread_age = now - float(thread_ts) = age_seconds` exactly; age_seconds defaults to `7300` (just over 2 hours) to avoid floating-point truncation in the 6-decimal `thread_ts` format causing an off-by-epsilon miss at the exact 7200s boundary -- `tests/test_web.py:_make_unanswered_thread`
+
+### Deviations
+
+- Contains-? used instead of a strict ends-with-? check. The doc listed "ends with/contains ?" without picking one; contains is the broader reading and more useful in practice. Documented above and in the code comment.
+- LLM-judged variant not built, as specified: arithmetic proxy only.
+
+### Tradeoffs
+
+- Contains-? vs ends-with-?: contains fires on "see above, can we fix this? let me know" (mid-message question), which ends-with would miss; ends-with would have fewer false positives on messages that happen to contain a "?" in a link or code snippet. Given the glyph is opt-in and the ops-channel scope already constrains candidates, contains is the better starting point for Monday observation.
+- Exact-boundary `7200 >= 7200` test values vs `7300`: floating-point truncation in `f"{ts:.6f}"` format can produce a thread_ts that rounds up by one ULP, making the computed thread_age slightly less than 7200. Using 7300 (100s headroom) in all fire-expected tests avoids a flaky boundary without weakening what the test exercises (the predicate is about "older than 2 hours," not "exactly 2 hours").
+- `min_age` computed from `unanswered_min_age_hours` vs passing `unanswered_min_age_hours` directly to the comparison - pre-computing to seconds is consistent with how `new_window = new_window_minutes * 60` is handled in the same function.
+
+### Open questions
+
+- Ops-channel-only effective scope: standard channels run `min-replies: 3`, so a thread needs 3+ replies to appear; `unanswered_max_replies: 2` can never fire there. The glyph effectively works only in channels running `channel-min-replies: 1` (sre, ask-security, data-platform, incidents). This is the known proxy limitation documented in the design doc (Q4). Monday observation will confirm whether this scope is acceptable or whether `max_replies` should be raised to trade coverage for false positives.
+- Noise from non-question "?" in links and code: `"?" in first_message` will fire on URLs with query strings and inline code snippets containing `?`. Under Monday observation, check whether such false positives are common enough to warrant a heuristic (e.g. strip URLs before checking).

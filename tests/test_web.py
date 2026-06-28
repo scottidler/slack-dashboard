@@ -547,3 +547,161 @@ def test_new_glyph_suppressed_for_all_threads_in_storm_window() -> None:
         assert "\N{SPARKLES}" not in emojis, (
             f"storm suppressor should block new glyph; first_observed_at={t.first_observed_at}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: Unanswered proxy glyph tests
+# ---------------------------------------------------------------------------
+
+
+def _make_unanswered_thread(
+    first_message: str = "Is this still broken?",
+    reply_count: int = 1,
+    age_seconds: float = 7300.0,  # just over 2 hours by default (avoids fp boundary)
+    base_time: float | None = None,
+) -> ThreadEntry:
+    """Thread aged by age_seconds relative to base_time (or now if unset).
+
+    Pass base_time=now when the test also calls _emojis(thread, config, now, ...) so
+    the age computation uses a consistent epoch: thread_age = now - thread_ts ~= age_seconds.
+    Use age_seconds slightly above the threshold (e.g. 7300 instead of 7200) to avoid
+    floating-point truncation from the 6-decimal thread_ts format causing an off-by-epsilon
+    miss at the exact boundary.
+    """
+    ts = base_time if base_time is not None else _time.time()
+    # thread_ts encodes thread creation time; age it back by age_seconds
+    thread_ts_epoch = ts - age_seconds
+    thread_ts = f"{thread_ts_epoch:.6f}"
+    return ThreadEntry(
+        channel_id="C123",
+        channel_name="ask-security",
+        thread_ts=thread_ts,
+        first_message=first_message,
+        started_by="U1",
+        reply_count=reply_count,
+        participants={"U1": 1},
+        last_activity=datetime.now(UTC),
+        heat_tier="cold",
+    )
+
+
+def _unanswered_config(
+    enabled: bool = True,
+    max_replies: int = 2,
+    min_age_hours: int = 2,
+) -> AppConfig:
+    return AppConfig(
+        heat=HeatConfig(
+            unanswered_enabled=enabled,
+            unanswered_max_replies=max_replies,
+            unanswered_min_age_hours=min_age_hours,
+        )
+    )
+
+
+def test_unanswered_glyph_fires_when_enabled_question_low_replies_aged() -> None:
+    # All four conditions met: enabled, "?" in message, low reply count, aged enough.
+    now = _time.time()
+    thread = _make_unanswered_thread(
+        first_message="Can you look at this?", reply_count=1, age_seconds=7300, base_time=now
+    )
+    config = _unanswered_config(enabled=True, max_replies=2, min_age_hours=2)
+    emojis = _emojis(thread, config, now, _FAR_PAST_APP_START)
+    assert "\N{BLACK QUESTION MARK ORNAMENT}" in emojis
+
+
+def test_unanswered_glyph_absent_when_disabled_by_default() -> None:
+    # Default config has unanswered_enabled=False - glyph must not fire.
+    now = _time.time()
+    thread = _make_unanswered_thread(
+        first_message="Can you look at this?", reply_count=1, age_seconds=7300, base_time=now
+    )
+    config = AppConfig()  # default config - unanswered_enabled=False
+    emojis = _emojis(thread, config, now, _FAR_PAST_APP_START)
+    assert "\N{BLACK QUESTION MARK ORNAMENT}" not in emojis
+
+
+def test_unanswered_glyph_absent_when_no_question_mark() -> None:
+    # Enabled, aged, low replies, but no "?" in first_message - glyph absent.
+    now = _time.time()
+    thread = _make_unanswered_thread(
+        first_message="Something broke in prod", reply_count=1, age_seconds=7300, base_time=now
+    )
+    config = _unanswered_config(enabled=True, max_replies=2, min_age_hours=2)
+    emojis = _emojis(thread, config, now, _FAR_PAST_APP_START)
+    assert "\N{BLACK QUESTION MARK ORNAMENT}" not in emojis
+
+
+def test_unanswered_glyph_absent_when_reply_count_exceeds_max() -> None:
+    # reply_count is above the max - glyph absent.
+    now = _time.time()
+    thread = _make_unanswered_thread(
+        first_message="Is this still broken?", reply_count=3, age_seconds=7300, base_time=now
+    )
+    config = _unanswered_config(enabled=True, max_replies=2, min_age_hours=2)
+    emojis = _emojis(thread, config, now, _FAR_PAST_APP_START)
+    assert "\N{BLACK QUESTION MARK ORNAMENT}" not in emojis
+
+
+def test_unanswered_glyph_fires_at_exact_max_replies() -> None:
+    # reply_count == max_replies (boundary: <= is inclusive) - glyph fires.
+    now = _time.time()
+    thread = _make_unanswered_thread(
+        first_message="Is this still broken?", reply_count=2, age_seconds=7300, base_time=now
+    )
+    config = _unanswered_config(enabled=True, max_replies=2, min_age_hours=2)
+    emojis = _emojis(thread, config, now, _FAR_PAST_APP_START)
+    assert "\N{BLACK QUESTION MARK ORNAMENT}" in emojis
+
+
+def test_unanswered_glyph_absent_when_too_young() -> None:
+    # Thread is only 1 hour old, min_age is 2 hours - glyph absent.
+    now = _time.time()
+    thread = _make_unanswered_thread(
+        first_message="Is this still broken?",
+        reply_count=1,
+        age_seconds=3600,  # 1 hour - well below the 2-hour floor
+        base_time=now,
+    )
+    config = _unanswered_config(enabled=True, max_replies=2, min_age_hours=2)
+    emojis = _emojis(thread, config, now, _FAR_PAST_APP_START)
+    assert "\N{BLACK QUESTION MARK ORNAMENT}" not in emojis
+
+
+def test_unanswered_glyph_fires_with_question_mark_inside_message() -> None:
+    # "?" appears mid-message (not just at the end) - contains check, not ends-with.
+    now = _time.time()
+    thread = _make_unanswered_thread(
+        first_message="Wondering if this is the right approach? Let me know.",
+        reply_count=0,
+        age_seconds=7300,
+        base_time=now,
+    )
+    config = _unanswered_config(enabled=True, max_replies=2, min_age_hours=2)
+    emojis = _emojis(thread, config, now, _FAR_PAST_APP_START)
+    assert "\N{BLACK QUESTION MARK ORNAMENT}" in emojis
+
+
+def test_unanswered_glyph_leads_before_new_glyph() -> None:
+    # When unanswered fires alongside new, unanswered must appear first (leads).
+    now = _time.time()
+    first_observed_at = now - 1800  # 30 min ago - inside the new window
+    app_start_at = now - 7200  # storm suppressor clear
+    thread = _make_unanswered_thread(
+        first_message="Is this fixed?", reply_count=1, age_seconds=7300, base_time=now
+    )
+    thread.first_observed_at = first_observed_at
+    config = AppConfig(
+        heat=HeatConfig(
+            unanswered_enabled=True,
+            unanswered_max_replies=2,
+            unanswered_min_age_hours=2,
+            new_window_minutes=60,
+        )
+    )
+    emojis = _emojis(thread, config, now, app_start_at)
+    assert "\N{BLACK QUESTION MARK ORNAMENT}" in emojis
+    assert "\N{SPARKLES}" in emojis
+    unanswered_pos = emojis.index("\N{BLACK QUESTION MARK ORNAMENT}")
+    new_pos = emojis.index("\N{SPARKLES}")
+    assert unanswered_pos < new_pos

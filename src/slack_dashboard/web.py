@@ -22,12 +22,13 @@ logger = logging.getLogger(__name__)
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 # Glyphs for the emoji state channel (see design doc "Emoji State Channel").
-# Render order in the row: new, vip, spiking, fire, zombie (unanswered leads when on in Phase 4).
+# Render order in the row: unanswered (when on, leads), new, vip, spiking, fire, zombie.
 _ZOMBIE = "\N{ZOMBIE}"
 _FIRE = "\N{FIRE}"
 _VIP = "\N{CROWN}"
 _SPIKING = "\N{HIGH VOLTAGE SIGN}"
 _NEW = "\N{SPARKLES}"  # ✨ recently entered the dashboard's view
+_UNANSWERED = "\N{BLACK QUESTION MARK ORNAMENT}"  # ❓ arithmetic proxy: question, few replies, aged
 
 _GROUP_BY_CHOICES = ("none", "channel", "size", "velocity")
 
@@ -120,7 +121,7 @@ def _has_vip(thread: ThreadEntry, config: AppConfig) -> bool:
 def _emojis(thread: ThreadEntry, config: AppConfig, now: float, app_start_at: float) -> str:
     """Build the glyph string for a thread row.
 
-    Render order: new, vip, spiking, fire, zombie (unanswered leads when on in Phase 4).
+    Render order: unanswered (when on, leads), new, vip, spiking, fire, zombie.
     Each glyph is a single Unicode character that signals thread state at a glance.
 
     ``now`` and ``app_start_at`` are passed in (not read from the wall clock here) so the
@@ -128,9 +129,12 @@ def _emojis(thread: ThreadEntry, config: AppConfig, now: float, app_start_at: fl
     """
     riw = replies_in_window(thread, config.heat)
     new_window = config.heat.new_window_minutes * 60
+    min_age = config.heat.unanswered_min_age_hours * 3600
+    thread_age = now - float(thread.thread_ts)
     logger.debug(
         "_emojis: channel=%s thread_ts=%s replies_in_window=%d tier=%s"
-        " first_observed_at=%.3f now=%.3f app_start_at=%.3f new_window=%ds",
+        " first_observed_at=%.3f now=%.3f app_start_at=%.3f new_window=%ds"
+        " unanswered_enabled=%s reply_count=%d thread_age_s=%.0f min_age_s=%.0f",
         thread.channel_name,
         thread.thread_ts,
         riw,
@@ -139,8 +143,25 @@ def _emojis(thread: ThreadEntry, config: AppConfig, now: float, app_start_at: fl
         now,
         app_start_at,
         new_window,
+        config.heat.unanswered_enabled,
+        thread.reply_count,
+        thread_age,
+        min_age,
     )
     glyphs = []
+    # ❓ unanswered: arithmetic proxy for a dropped-ball question (opt-in; off by default).
+    # Fires when enabled AND the first message contains "?" AND reply_count is at or below
+    # the max-replies floor AND the thread is older than the age floor. The broader
+    # contains-? reading is used (vs ends-with-?) to catch questions embedded in longer
+    # messages (e.g. "see above, can we fix this?"). Effective primarily in ops channels
+    # running channel-min-replies: 1; standard channels require 3+ replies to surface.
+    if (
+        config.heat.unanswered_enabled
+        and "?" in thread.first_message
+        and thread.reply_count <= config.heat.unanswered_max_replies
+        and thread_age >= min_age
+    ):
+        glyphs.append(_UNANSWERED)
     # ✨ new: recently entered the dashboard's view (not a zombie; not within the
     # app-start suppressor window that masks the first-run / degraded-mode storm).
     if (

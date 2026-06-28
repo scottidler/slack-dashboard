@@ -78,6 +78,16 @@ heat:
   # group-by tier so the glyph and grouping agree).
   spiking-threshold: 15
 
+  # Unanswered proxy glyph (❓): arithmetic proxy for a dropped-ball question.
+  # Disabled by default; flip unanswered-enabled: true in your private ~/.config to
+  # observe. The proxy fires when the first message contains "?" AND reply count is at
+  # or below unanswered-max-replies AND the thread is older than unanswered-min-age-hours.
+  # Effective primarily in ops channels running channel-min-replies: 1 (sre, ask-security,
+  # etc.); standard channels require 3+ replies to appear so max-replies: 2 never fires.
+  unanswered-enabled: false
+  unanswered-max-replies: 2
+  unanswered-min-age-hours: 2
+
   # Resurrection: a thread quiet for resurrection-gap-hours, older than
   # resurrection-age-days, that gets new activity floats back up as a zombie for
   # resurrection-display-hours.

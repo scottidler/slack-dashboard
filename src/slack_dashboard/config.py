@@ -59,6 +59,16 @@ class HeatConfig(_KebabModel):
     # Minutes after first observation that the ✨ new glyph stays visible. 60 min
     # is long enough to survive a coffee-break gap, short enough not to read as stale.
     new_window_minutes: int = 60
+    # Unanswered proxy glyph (❓): arithmetic proxy for a dropped-ball question.
+    # Ships disabled by default (unanswered-enabled: false); flip on in private ~/.config
+    # to observe on Monday. The proxy fires when the first message contains "?" AND
+    # reply_count is at or below unanswered-max-replies AND the thread is older than
+    # unanswered-min-age-hours. Effective only in ops channels running channel-min-replies:
+    # 1 (e.g. sre, ask-security); standard channels require 3+ replies to appear so
+    # max-replies: 2 never fires there.
+    unanswered_enabled: bool = False
+    unanswered_max_replies: int = 2
+    unanswered_min_age_hours: int = 2
     resurrection_gap_hours: int = 24
     resurrection_age_days: int = 2
     resurrection_display_hours: int = 24
