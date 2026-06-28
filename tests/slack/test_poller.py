@@ -57,6 +57,27 @@ async def test_fetch_channel_via_process_item() -> None:
 
 
 @pytest.mark.asyncio
+async def test_participants_keyed_by_user_id_not_display_name() -> None:
+    """All write paths must key participants by stable Slack user_id, not the resolved
+    display name. The socket listener keys by raw user_id; if the REST path keyed by
+    name, a user active via both paths would be counted twice under two different keys.
+    See design 2026-06-27 Blocker 1. resolve_user returns a string distinct from the id
+    here so any name-keying regression would surface as wrong keys."""
+    mock_slack = _make_mock_slack()
+    mock_slack.resolve_user = AsyncMock(side_effect=lambda uid: f"display-{uid}")
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    await poller._process_item(
+        FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    )
+    entry = poller.threads[("C111", _NOW)]
+    # Participants keyed by raw user_id (U1 appears twice -> deduped to one key).
+    assert set(entry.participants) == {"U1", "U2", "U3"}
+    # started_by still uses the resolved display name for attribution, not the id.
+    assert entry.started_by == "display-U1"
+
+
+@pytest.mark.asyncio
 async def test_fetch_thread_via_process_item() -> None:
     mock_slack = _make_mock_slack()
     config = AppConfig(channels={"general": "C111"})

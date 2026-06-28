@@ -12,6 +12,7 @@
        class="group-choice{{ ' active' if loop.first }}"
        data-group-by="{{ choice }}">{{ choice }}</a>
     {% endfor %}
+    <span class="legend" title="&#x1F451; a high-priority person is in the thread&#10;&#x1F525; hot (high heat)&#10;&#x1F9DF; resurrected (old thread, went quiet, new activity)">&#x1F451;&#x1F525;&#x1F9DF;</span>
 </div>
 {# The selected grouping lives in a JS global re-sent via hx-vals on EVERY request
    (load, the 30s poll, and the focus-driven poll), so the periodic refresh can no
@@ -19,13 +20,16 @@
    and re-trigger the container; they no longer issue their own request. #}
 <div id="thread-list"
      hx-get="/threads"
-     hx-vals='js:{"group-by": window.slackDashGroupBy || "none"}'
+     hx-vals='js:{"group-by": window.slackDashGroupBy || "none", "compact": (window.slackDashCompact === false ? "false" : "true")}'
      hx-trigger="load, every 30s [document.visibilityState === 'visible'], poll"
      hx-swap="innerHTML">
     <p>Loading threads...</p>
 </div>
 <script>
     window.slackDashGroupBy = window.slackDashGroupBy || "none";
+    // Compact (top-N) is the default at rest; the global is re-sent via hx-vals on every
+    // request so the 30s poll preserves the show-all selection (same trick as group-by).
+    window.slackDashCompact = (window.slackDashCompact !== false);
     document.querySelectorAll(".group-choice").forEach(function(link) {
         link.addEventListener("click", function(evt) {
             evt.preventDefault();
@@ -35,6 +39,15 @@
             });
             htmx.trigger(document.getElementById("thread-list"), "poll");
         });
+    });
+    // Delegated: the toggle re-renders inside #thread-list every poll, so bind once on the
+    // stable container rather than on the (replaced) button itself.
+    document.getElementById("thread-list").addEventListener("click", function(evt) {
+        var btn = evt.target.closest(".compact-toggle");
+        if (!btn) return;
+        evt.preventDefault();
+        window.slackDashCompact = !window.slackDashCompact;
+        htmx.trigger(document.getElementById("thread-list"), "poll");
     });
 </script>
 {% endblock %}

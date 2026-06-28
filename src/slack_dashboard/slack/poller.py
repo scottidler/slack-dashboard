@@ -238,9 +238,12 @@ class SlackPoller:
         if incremental and existing and oldest:
             new_replies = [r for r in replies if r["ts"] != thread_ts]
             for r in new_replies:
-                if "user" in r:
-                    name = await self._resolve_user(r["user"])
-                    existing.participants[name] = existing.participants.get(name, 0) + 1
+                # Key participants by stable Slack user_id, matching the socket listener
+                # (listener.py): the resolved display name is non-unique/mutable and keying
+                # on it double-counts a user active via both paths. See design 2026-06-27.
+                user = r.get("user")
+                if user:
+                    existing.participants[user] = existing.participants.get(user, 0) + 1
             existing.reply_count += len(new_replies)
             # Capture the resurrection gap BEFORE last_activity is overwritten (see
             # State merge contract): once we bump last_activity the prior value is gone.
@@ -265,9 +268,11 @@ class SlackPoller:
 
         participants: dict[str, int] = {}
         for r in replies:
-            if "user" in r:
-                name = await self._resolve_user(r["user"])
-                participants[name] = participants.get(name, 0) + 1
+            # Key by stable Slack user_id (see incremental path above and listener.py);
+            # started_by below keeps the resolved display name for attribution.
+            user = r.get("user")
+            if user:
+                participants[user] = participants.get(user, 0) + 1
         last_activity = datetime.fromtimestamp(float(latest_ts), tz=UTC)
         first_message = replies[0].get("text", "") if replies else ""
         started_by_id = replies[0].get("user", "") if replies else ""

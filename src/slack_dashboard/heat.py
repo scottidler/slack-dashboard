@@ -1,7 +1,7 @@
 import logging
 from datetime import UTC, datetime, timedelta
 
-from slack_dashboard.config import HeatConfig, resolve_channel_weight
+from slack_dashboard.config import HeatConfig, resolve_channel_weight, resolve_person_weight
 from slack_dashboard.thread import ThreadEntry
 
 logger = logging.getLogger(__name__)
@@ -55,9 +55,13 @@ def velocity(thread: ThreadEntry, config: HeatConfig, now_ts: float | None = Non
 def compute_heat(thread: ThreadEntry, config: HeatConfig) -> float:
     now = datetime.now(UTC)
     hours_since = (now - thread.last_activity).total_seconds() / 3600
-    base = (thread.reply_count * config.reply_weight) + (
-        len(thread.participants) * config.participant_weight
-    )
+    # Participant term is the SUM of per-person weights (each defaults to participant_weight),
+    # so important people raise a thread without erasing volume gravity. Bounded by
+    # people_weight_cap so a pile-up of weighted people cannot run the score away.
+    people_term = sum(resolve_person_weight(uid, config) for uid in thread.participants)
+    if config.people_weight_cap > 0:
+        people_term = min(people_term, config.people_weight_cap)
+    base = (thread.reply_count * config.reply_weight) + people_term
     channel_weight = resolve_channel_weight(thread.channel_name, config)
     vel = velocity(thread, config, now.timestamp())
     recency = max(config.decay_floor, 1.0 - (hours_since / config.decay_hours))

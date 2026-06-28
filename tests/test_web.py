@@ -152,22 +152,64 @@ def test_threads_renders_fire_emoji_for_hot(client: TestClient) -> None:
     assert "\N{FIRE}" in response.text
 
 
-def test_threads_has_no_row_cap() -> None:
+def _client_with_n_threads(n: int) -> TestClient:
     app = FastAPI()
     poller = AsyncMock(spec=SlackPoller)
     threads = []
-    for i in range(40):
+    for i in range(n):
         t = _make_thread()
         t.thread_ts = f"100000000{i}.000000"
         t.first_message = f"thread number {i}"
         threads.append(t)
     poller.ranked_threads.return_value = threads
     create_routes(app, poller, MockLlm(), _CONFIG)
-    client = TestClient(app)
+    return TestClient(app)
+
+
+def test_threads_has_no_row_cap() -> None:
+    # Disclosure contract: even in compact mode (the default) every ranked thread is
+    # server-rendered into the DOM - nothing is dropped server-side. Compact only hides
+    # the below-fold tail via CSS, so all 40 thread bodies are present in the HTML.
+    client = _client_with_n_threads(40)
     response = client.get("/threads")
-    # All 40 render - the old threads[:15] cap is gone (zero-miss invariant)
     assert "thread number 39" in response.text
     assert "thread number 14" in response.text
+    # Every thread renders a row regardless of the fold (zero-miss).
+    assert response.text.count('class="thread-row') == 40
+
+
+def test_threads_compact_tags_below_fold_tail() -> None:
+    # With the default fold (compact_rows=20) and 40 threads, exactly the 20 past the fold
+    # carry the below-fold class; the top 20 do not.
+    client = _client_with_n_threads(40)
+    response = client.get("/threads")
+    assert response.text.count('class="thread-row below-fold"') == 20
+    assert 'class="disclosure compact"' in response.text
+
+
+def test_threads_full_mode_renders_no_compact_class() -> None:
+    # compact=false flips to show-all: the wrapper drops the compact class so CSS reveals
+    # the whole set, and the toggle offers to collapse back to the top N.
+    client = _client_with_n_threads(40)
+    response = client.get("/threads", params={"compact": "false"})
+    assert 'class="disclosure"' in response.text
+    assert 'class="disclosure compact"' not in response.text
+    assert "show top 20 - collapse" in response.text
+
+
+def test_threads_toggle_shows_hidden_count() -> None:
+    # The toggle always carries a visible count of how much sits below the fold.
+    client = _client_with_n_threads(40)
+    response = client.get("/threads")
+    assert "+20 more - show all 40" in response.text
+
+
+def test_threads_no_toggle_when_under_fold(client: TestClient) -> None:
+    # The single-thread fixture is well under the fold: nothing to disclose, no toggle,
+    # and no row is tagged below the fold.
+    response = client.get("/threads")
+    assert "compact-toggle" not in response.text
+    assert "below-fold" not in response.text
 
 
 def test_health_returns_ok(client: TestClient) -> None:

@@ -42,6 +42,15 @@ class HeatConfig(_KebabModel):
     retitle_reply_growth: int = 5
     retitle_reply_percent: int = 25
     channel_weights: dict[str, float] = {}
+    # Per-person importance, keyed by stable Slack user_id (glob-aware). A participant's
+    # weight defaults to participant_weight; entries here raise (or lower) specific people so
+    # a thread the right people are in floats up. Additive into base, bounded by
+    # people_weight_cap. PRIVATE: real ids/weights live only in the user's ~/.config, never
+    # in this public repo.
+    people_weights: dict[str, float] = {}
+    # Cap on the total per-thread people contribution to base (0 = no cap). Bounds a VIP
+    # pile-up so a crowd of weighted people cannot run the score away.
+    people_weight_cap: float = 0.0
     velocity_weight: float = 0.0
     velocity_window_minutes: int = 30
     resurrection_gap_hours: int = 24
@@ -75,6 +84,14 @@ class ServerConfig(_KebabModel):
     log_level: str = "info"
 
 
+class DisplayConfig(_KebabModel):
+    # Compact view fold: the default pane renders the top compact_rows threads by heat
+    # ("one page worth"); the rest are still server-rendered into the DOM but hidden via
+    # CSS until the global show-all toggle is flipped (zero-miss disclosure, see design
+    # doc Triage v3). 0 disables the fold (show everything at rest).
+    compact_rows: int = 20
+
+
 class AppConfig(_KebabModel):
     slack: SlackConfig = SlackConfig()
     channels: dict[str, str] = {}
@@ -82,6 +99,7 @@ class AppConfig(_KebabModel):
     heat: HeatConfig = HeatConfig()
     llm: LlmConfig = LlmConfig()
     server: ServerConfig = ServerConfig()
+    display: DisplayConfig = DisplayConfig()
     workspace: str = ""
 
 
@@ -102,6 +120,14 @@ def _resolve_glob(name: str, mapping: dict[str, Any], default: Any) -> Any:
 def resolve_channel_weight(name: str, config: HeatConfig) -> float:
     weight: float = _resolve_glob(name, config.channel_weights, 1.0)
     logger.debug("resolve_channel_weight: name=%s weight=%s", name, weight)
+    return weight
+
+
+def resolve_person_weight(user_id: str, config: HeatConfig) -> float:
+    """Per-person weight by Slack user_id; defaults to participant_weight when unlisted."""
+    default = float(config.participant_weight)
+    weight: float = _resolve_glob(user_id, config.people_weights, default)
+    logger.debug("resolve_person_weight: user_id=%s weight=%s", user_id, weight)
     return weight
 
 

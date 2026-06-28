@@ -10,6 +10,7 @@ class ThreadEntry:
     first_message: str
     started_by: str
     reply_count: int
+    # keyed by stable Slack user_id (not display name); value = message count
     participants: dict[str, int]
     last_activity: datetime
     heat_score: float = 0.0

@@ -1,13 +1,17 @@
 {% if groups and groups[0].rows %}
+{# Disclosure wrapper: in compact mode CSS hides .below-fold rows (and any group whose
+   rows are all below the fold). Every row is still in the DOM regardless - zero-miss. #}
+<div class="disclosure{{ ' compact' if compact }}">
 {% for group in groups %}
-<section class="thread-group">
+{% set group_hidden = group.rows | rejectattr('below_fold') | list | length == 0 %}
+<section class="thread-group{{ ' all-below-fold' if group_hidden }}">
     {% if group.label %}
     <h3 class="group-label">{{ ('#' ~ group.label|lower) if group_by == 'channel' else group.label }}</h3>
     {% endif %}
     {% for row in group.rows %}
     {% set row_id = "row-" ~ row.channel_id ~ "-" ~ (row.thread_ts | replace('.', '-')) %}
     {% set sid = row.channel_id ~ "-" ~ (row.thread_ts | replace('.', '-')) %}
-    <div class="thread-row" id="{{ row_id }}">
+    <div class="thread-row{{ ' below-fold' if row.below_fold }}" id="{{ row_id }}">
         <button class="dismiss-btn"
                 title="Dismiss permanently"
                 hx-post="/dismiss/{{ row.channel_id }}/{{ row.thread_ts }}"
@@ -42,6 +46,14 @@
     {% endfor %}
 </section>
 {% endfor %}
+{# Single global compact/full toggle. The hidden count is always visible so the user
+   knows how much sits below the fold; one click flips the whole view. The click is
+   caught by a delegated listener on #thread-list, which flips the JS global and re-polls
+   (same persistence pattern as group-by, so the 30s poll keeps the selection). #}
+{% if hidden > 0 %}
+<button class="compact-toggle" type="button">{% if compact %}+{{ hidden }} more - show all {{ total }}{% else %}show top {{ limit }} - collapse{% endif %}</button>
+{% endif %}
+</div>
 {% else %}
 <p>No active threads found.</p>
 {% endif %}

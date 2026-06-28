@@ -58,6 +58,16 @@ heat:
     ask-security: 2.0
     proj-*: 0.5
 
+  # Per-person importance, keyed by Slack user id (glob-aware; default = participant-weight).
+  # Raise specific people so a thread they are in floats up; the bonus is ADDITIVE into base
+  # and bounded by people-weight-cap. Keep real ids/weights in a PRIVATE config, never in a
+  # public repo. Example ids below are fake.
+  people-weights:
+    U0FAKE0001: 10   # a pinned person (e.g. your manager)
+    U0FAKE0002: 8    # a teammate you always want surfaced
+  # Cap the total per-thread people contribution to base (0 = no cap).
+  people-weight-cap: 30
+
   # Velocity: boost a thread spiking now over one that accreted replies slowly.
   # Start at 0 (off) and raise once the channel weights feel right.
   velocity-weight: 0.0
@@ -83,3 +93,9 @@ server:
   host: 0.0.0.0
   port: 8080
   log-level: info
+
+display:
+  # Compact-view fold: the default pane shows the top N threads by heat ("one page
+  # worth"); the rest are still server-rendered into the DOM and revealed by the global
+  # show-all toggle (nothing is dropped - zero-miss disclosure). 0 disables the fold.
+  compact-rows: 20

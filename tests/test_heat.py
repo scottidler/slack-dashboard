@@ -289,3 +289,30 @@ def test_reconstruct_resurrection_picks_most_recent_gap() -> None:
     ts = [now - 10 * 86400, now - 8 * 86400, now - 3 * 86400, now - 120]
     event = reconstruct_resurrection(sorted(ts), config)
     assert event == now - 120
+
+
+def test_people_weight_raises_score() -> None:
+    # A pinned participant (above-default weight) lifts the score vs an all-default thread.
+    base_cfg = HeatConfig()
+    vip_cfg = HeatConfig(people_weights={"U0": 50})
+    thread = _make_thread(reply_count=10, participants=3, hours_ago=0.0)
+    assert compute_heat(thread, vip_cfg) > compute_heat(thread, base_cfg)
+
+
+def test_people_weight_default_matches_participant_weight() -> None:
+    # With no people-weights set, each participant contributes participant_weight exactly,
+    # so the score is identical to the pre-Phase-2 formula.
+    config = HeatConfig()
+    thread = _make_thread(reply_count=10, participants=3, hours_ago=0.0)
+    # base = 10*2 + 3*3 = 29 (decay ~1.0)
+    assert abs(compute_heat(thread, config) - 29.0) < 1.0
+
+
+def test_people_weight_cap_bounds_contribution() -> None:
+    # The cap clamps the total people term so a crowd of weighted people cannot run away.
+    capped = HeatConfig(people_weights={"U0": 100, "U1": 100, "U2": 100}, people_weight_cap=10)
+    uncapped = HeatConfig(people_weights={"U0": 100, "U1": 100, "U2": 100})
+    thread = _make_thread(reply_count=0, participants=3, hours_ago=0.0)
+    # capped people_term = min(300, 10) = 10; uncapped = 300
+    assert abs(compute_heat(thread, capped) - 10.0) < 0.5
+    assert abs(compute_heat(thread, uncapped) - 300.0) < 5.0

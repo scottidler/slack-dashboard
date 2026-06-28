@@ -41,6 +41,14 @@
         .group-choice { margin: 0; }
         .group-choice.active { font-weight: 700; text-decoration: underline; color: var(--pico-color); }
         .group-sep { color: var(--pico-muted-color); opacity: 0.6; }
+        .legend { margin-left: auto; cursor: help; opacity: 0.85; letter-spacing: 0.1em; }
+        /* Compact fold: hide the below-fold tail (and any group entirely below the fold)
+           via pure CSS. Every row stays in the DOM; only its visibility changes. */
+        .disclosure.compact .below-fold { display: none; }
+        .disclosure.compact .thread-group.all-below-fold { display: none; }
+        /* Global show-all / collapse toggle; carries the visible hidden count. */
+        .compact-toggle { margin: 0.4em 0 0; padding: 0.1em 0; background: none; border: none; width: auto; font-size: 0.82em; color: var(--pico-muted-color); cursor: pointer; }
+        .compact-toggle:hover { color: var(--pico-color); text-decoration: underline; }
         .thread-group { margin-bottom: 1em; }
         .group-label { font-size: 0.9em; color: var(--pico-muted-color); margin: 0.5em 0 0.25em; border-bottom: 1px solid var(--pico-muted-border-color); }
         /* One font size across the row, and center-align: Firefox synthesizes a wrong
