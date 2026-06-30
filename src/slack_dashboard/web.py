@@ -372,7 +372,10 @@ def create_routes(
             return templates.TemplateResponse(
                 request, "partials/summary.html", {"summary": entry.summary, **detail}
             )
-        messages = [strip_mrkdwn(entry.first_message)]
+        # Tone rides this summary call; feed the full retained exchange
+        # (entry.replies via summary_texts), not just the root message, so the
+        # tone score reflects the whole conversation.
+        messages = [strip_mrkdwn(t) for t in entry.summary_texts]
         result = await llm.generate_summary(messages)
         if result.bullets is None:
             return templates.TemplateResponse(

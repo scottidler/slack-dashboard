@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from slack_dashboard.config import AppConfig, HeatConfig, SlackConfig
 from slack_dashboard.llm.provider import LlmProvider, SummaryResult
 from slack_dashboard.slack.poller import SlackPoller
-from slack_dashboard.thread import ThreadEntry
+from slack_dashboard.thread import ReplyRecord, ThreadEntry
 from slack_dashboard.web import _emojis, create_routes
 
 # A far-past app_start_at so the storm suppressor window (new_window_minutes * 60)
@@ -279,6 +279,69 @@ def test_summarize_llm_failure() -> None:
     response = client.get("/summarize/C123/1234567890.123456")
     assert response.status_code == 200
     assert "Retry" in response.text
+
+
+class CapturingLlm(LlmProvider):
+    """Records the messages handed to generate_summary so a test can assert the
+    full retained exchange (not just the root) is fed to the tone-bearing call."""
+
+    def __init__(self, result: SummaryResult) -> None:
+        self.result = result
+        self.last_messages: list[str] | None = None
+
+    async def generate_title(self, messages: list[str]) -> str | None:
+        return "Mock Title"
+
+    async def generate_summary(self, messages: list[str]) -> SummaryResult:
+        self.last_messages = messages
+        return self.result
+
+
+def test_summarize_feeds_full_retained_exchange_to_llm() -> None:
+    """The hover summary (which carries tone) must send the whole exchange from
+    entry.replies, not just the root message - else a hostile back-and-forth
+    under a polite root scores tone=0."""
+    app = FastAPI()
+    poller = _make_mock_poller()
+    thread = _make_thread()
+    thread.summary = None
+    thread.summary_watermark = 0
+    thread.replies = [
+        ReplyRecord(ts=100.0, author_id="U1", text="Something broke in prod", is_root=True),
+        ReplyRecord(ts=200.0, author_id="U2", text="you shipped without review", is_root=False),
+        ReplyRecord(ts=300.0, author_id="U1", text="back off, it passed CI", is_root=False),
+    ]
+    poller.ranked_threads.return_value = [thread]
+    poller.threads = {("C123", "1234567890.123456"): thread}
+    llm = CapturingLlm(SummaryResult(bullets="- a fight", tone=3))
+    create_routes(app, poller, llm, _CONFIG)
+    client = TestClient(app)
+    response = client.get("/summarize/C123/1234567890.123456")
+    assert response.status_code == 200
+    assert llm.last_messages is not None
+    assert "you shipped without review" in llm.last_messages
+    assert "back off, it passed CI" in llm.last_messages
+    assert thread.heated_tone == 3
+
+
+def test_summarize_preserves_tone_when_bullets_empty() -> None:
+    """A parseable TONE-only response yields bullets="" (falsy but valid): the
+    route must check `is None`, not truthiness, so the tone is not dropped."""
+    app = FastAPI()
+    poller = _make_mock_poller()
+    thread = _make_thread()
+    thread.summary = None
+    thread.summary_watermark = 0
+    thread.heated_tone = 0
+    poller.ranked_threads.return_value = [thread]
+    poller.threads = {("C123", "1234567890.123456"): thread}
+    llm = CapturingLlm(SummaryResult(bullets="", tone=3))
+    create_routes(app, poller, llm, _CONFIG)
+    client = TestClient(app)
+    response = client.get("/summarize/C123/1234567890.123456")
+    assert response.status_code == 200
+    assert "Retry" not in response.text
+    assert thread.heated_tone == 3
 
 
 def test_dismiss_route_invokes_dismiss_thread() -> None:

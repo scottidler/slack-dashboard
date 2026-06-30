@@ -86,6 +86,18 @@ class ThreadEntry:
         return [r.ts for r in self.replies]
 
     @property
+    def summary_texts(self) -> list[str]:
+        """Ordered message texts for the LLM summary/tone call.
+
+        Sourced from the canonical retained ``replies`` record (the full,
+        ordered, deduped exchange) so tone is rated on the whole conversation
+        rather than just the root message or the triggering delta.  Falls back
+        to the root ``first_message`` when no reply records are retained yet.
+        """
+        texts = [r.text for r in self.replies if r.text]
+        return texts if texts else [self.first_message]
+
+    @property
     def display_title(self) -> str:
         if self.title:
             return self.title

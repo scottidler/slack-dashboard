@@ -49,3 +49,52 @@
 ### Open questions
 
 - None.
+
+## Follow-up: Implementation Audit fixes (post-v0.3.7, shipped v0.3.8)
+
+The review-panel implementation audit (Architect/Gemini + Staff Engineer/Codex) on the
+shipped v0.3.7 surfaced two real findings that undercut the tone signal. Both fixed here.
+This section supersedes the two "Open questions: None." entries above for the audit's scope.
+
+### Design decisions
+
+- Added `ThreadEntry.summary_texts` property - `thread.py` - sourcing the LLM summary/tone
+  input from the canonical retained `replies` record (full ordered exchange, root + replies),
+  falling back to `[first_message]` only when no records are retained yet. Both summary-bearing
+  paths (`web.py` summarize route, `main.py:on_summary_needed`) now feed `summary_texts`, so
+  tone is rated on the whole conversation on every path.
+
+### Deviations
+
+- None from the design doc - the doc's premise ("`generate_summary` already sends the full
+  thread") was factually false about the existing code; this fix makes reality match the
+  doc's stated intent rather than departing from it.
+
+### Tradeoffs
+
+- Kept the two summary call sites (web route renders templates, `on_summary_needed` is
+  fire-and-forget) rather than extracting a shared helper - they share the now-tested
+  `summary_texts` property and the `is not None` contract, but their surrounding behavior
+  (template branch vs. background mutation) differs enough that a shared async helper would
+  have widened the diff for little gain.
+
+### Open questions
+
+- None.
+
+### Audit findings addressed
+
+1. **MUST-FIX - tone rated on root-only/delta text, not the full exchange.** The hover
+   summary path (`web.py`) and background re-summary (`main.py:on_summary_needed`) previously
+   passed only `first_message` / the triggering delta to `generate_summary`, so a hostile
+   back-and-forth under a polite root scored `tone=0`. Both now feed `entry.summary_texts`
+   (the full retained `replies`). Covered by `test_summarize_feeds_full_retained_exchange_to_llm`
+   and the `summary_texts` property tests.
+2. **CHEAP-WIN - `main.py:on_summary_needed` violated the `SummaryResult` failure contract.**
+   It used truthiness (`if result.bullets:`), so a parseable TONE-only response (`bullets=""`,
+   `tone=3`) dropped both summary and tone - exactly the strong-hostility signal the feature
+   exists for. Changed to `if result.bullets is not None:`, matching the web route. Covered by
+   `test_summarize_preserves_tone_when_bullets_empty`.
+
+Findings 3 (`example.yml` `unanswered-max-replies: 2`) and 4 (`TONE:` strip only handles
+numeric lines, deliberate) were assessed defer/non-issue and left as-is.

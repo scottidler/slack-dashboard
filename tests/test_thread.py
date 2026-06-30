@@ -159,6 +159,47 @@ def test_reply_timestamps_empty_when_no_replies() -> None:
     assert entry.reply_timestamps == []
 
 
+def test_summary_texts_uses_full_retained_exchange() -> None:
+    """summary_texts feeds the whole ordered exchange (root + replies), not just
+    the root - so tone is rated on the full conversation."""
+    entry = ThreadEntry(
+        channel_id="C1",
+        channel_name="test",
+        thread_ts="100.000000",
+        first_message="please look",
+        started_by="U1",
+        message_count=3,
+        participants={"U1": 1, "U2": 1},
+        last_activity=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    entry.replies = [
+        ReplyRecord(ts=100.0, author_id="U1", text="please look", is_root=True),
+        ReplyRecord(ts=200.0, author_id="U2", text="you broke the build again", is_root=False),
+        ReplyRecord(ts=300.0, author_id="U1", text="review your own PRs then", is_root=False),
+    ]
+    assert entry.summary_texts == [
+        "please look",
+        "you broke the build again",
+        "review your own PRs then",
+    ]
+
+
+def test_summary_texts_falls_back_to_first_message_when_no_replies() -> None:
+    """Before any reply records are retained, summary_texts degrades to the root
+    message so a summary can still be generated."""
+    entry = ThreadEntry(
+        channel_id="C1",
+        channel_name="test",
+        thread_ts="100.000000",
+        first_message="root only",
+        started_by="U1",
+        message_count=1,
+        participants={"U1": 1},
+        last_activity=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    assert entry.summary_texts == ["root only"]
+
+
 def test_merge_replies_dedupes_by_normalized_ts() -> None:
     """Same ts with sub-ulp float difference should collapse to one record."""
     r1 = ReplyRecord(ts=1000.123456, author_id="U1", text="hi", is_root=False)

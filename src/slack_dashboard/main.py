@@ -62,9 +62,14 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
             entry.title_watermark = entry.message_count
 
     async def on_summary_needed(entry: ThreadEntry, reply_texts: list[str]) -> None:
-        messages = [strip_mrkdwn(t) for t in reply_texts]
+        # Tone is rated on the full retained exchange (entry.replies), not the
+        # delta/root that triggered the summary, so a hostile back-and-forth
+        # under a polite root is scored on the whole conversation.
+        messages = [strip_mrkdwn(t) for t in entry.summary_texts]
         result = await llm.generate_summary(messages)
-        if result.bullets:
+        # A parseable TONE-only response yields bullets="" (falsy but valid):
+        # check `is not None` so the tone signal is not dropped with the summary.
+        if result.bullets is not None:
             entry.summary = result.bullets
             entry.summary_watermark = entry.message_count
             entry.heated_tone = result.tone
