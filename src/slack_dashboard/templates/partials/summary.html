@@ -1,5 +1,8 @@
 {% if error %}
 <div class="summary-content" role="alert">
+    {% if heat %}
+    {% include "partials/heat_strip.html" %}
+    {% endif %}
     <p>Failed to generate summary.</p>
     <button class="outline secondary"
             hx-get="/summarize/{{ channel_id }}/{{ thread_ts }}"
@@ -10,6 +13,9 @@
 </div>
 {% else %}
 <div class="summary-content">
+    {% if heat %}
+    {% include "partials/heat_strip.html" %}
+    {% endif %}
     {% if quote %}
     {# The thread's first message is its real title: quote it, attributed to the author. #}
     <blockquote class="thread-quote">{{ quote }}<cite class="thread-quote-author">- {{ author }}</cite></blockquote>

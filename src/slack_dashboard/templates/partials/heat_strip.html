@@ -1,0 +1,6 @@
+{# Heat-metrics strip: overall score + the factors that compose it, left to right. #}
+<div class="heat-strip">
+    {% for chip in heat %}
+    <span class="heat-chip{{ ' dim' if chip.dimmed }}" title="{{ chip.tooltip }}">{{ chip.glyph }}{{ chip.value }}</span>
+    {% endfor %}
+</div>

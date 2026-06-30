@@ -9,9 +9,17 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
-from slack_dashboard.config import AppConfig, resolve_channel_weight
+from slack_dashboard.config import AppConfig, HeatConfig, resolve_channel_weight
 from slack_dashboard.connection import ConnectionState
-from slack_dashboard.heat import is_heated, is_involved, is_vip, is_zombie, replies_in_window
+from slack_dashboard.heat import (
+    HeatBreakdown,
+    heat_breakdown,
+    is_heated,
+    is_involved,
+    is_vip,
+    is_zombie,
+    replies_in_window,
+)
 from slack_dashboard.llm.provider import LlmProvider
 from slack_dashboard.slack.mrkdwn import strip_mrkdwn
 from slack_dashboard.slack.poller import SlackPoller
@@ -30,6 +38,14 @@ _SPIKING = "\N{HIGH VOLTAGE SIGN}"
 _NEW = "\N{SPARKLES}"  # ✨ recently entered the dashboard's view
 _UNANSWERED = "\N{BLACK QUESTION MARK ORNAMENT}"  # ❓ arithmetic proxy: question, few replies, aged
 _INVOLVED = "\N{BUST IN SILHOUETTE}"  # 👤 the current user has personally posted in this thread
+
+# Heat-strip glyphs (see design doc "The strip"). _SPIKING, _INVOLVED, and _VIP above are
+# reused here for velocity, damping, and the base chip's crown so the strip and the row
+# speak one glyph vocabulary.
+_THERMO = "\N{THERMOMETER}"  # 🌡️ overall heat score
+_CHANNEL_WEIGHT = "\N{LABEL}"  # 🏷️ channel_weight multiplier
+_BASE = "\N{BAR CHART}"  # 📊 message_count/people_count (+👑 when a VIP is present)
+_RECENCY = "\N{STOPWATCH}"  # ⏱️ recency decay multiplier
 
 _GROUP_BY_CHOICES = ("none", "channel", "size", "velocity")
 
@@ -78,6 +94,71 @@ class RowView:
 class GroupView:
     label: str
     rows: list[RowView] = field(default_factory=list)
+
+
+@dataclass
+class HeatChip:
+    """One rendered chip in the hover popup's heat-metrics strip.
+
+    Pure presentation: glyph + already-formatted face value + native tooltip text, plus
+    whether this chip is a no-op for the score and should render dimmed. The template only
+    iterates; all formatting/dimming logic lives here so there is one place to read it.
+    """
+
+    glyph: str
+    value: str
+    tooltip: str
+    dimmed: bool = False
+
+
+def _heat_strip(breakdown: HeatBreakdown, config: HeatConfig, channel_name: str) -> list[HeatChip]:
+    """Build the fixed overall+5 chip strip for the hover popup from one breakdown.
+
+    Order matches the design doc: overall, channel_weight, base, velocity, recency,
+    damping. Dimmed (no-op-for-the-score) cases: channel_weight == 1.00 (no multiplier
+    effect), velocity_weight == 0.0 (the default - velocity contributes nothing to the
+    score even though the chip still reports the raw rate), and damping == 1.00 (not
+    involved, or the feature is off). Trivial assembly of already-computed fields - no
+    logging per the logging rule.
+    """
+    base_value = f"{breakdown.message_count}m·{breakdown.people_count}p"
+    if breakdown.has_vip:
+        base_value += _VIP
+    return [
+        HeatChip(
+            glyph=_THERMO,
+            value=f"{breakdown.overall:.0f}",
+            tooltip="heat score",
+        ),
+        HeatChip(
+            glyph=_CHANNEL_WEIGHT,
+            value=f"×{breakdown.channel_weight:.2f}",
+            tooltip=f"#{channel_name} channel weight",
+            dimmed=breakdown.channel_weight == 1.00,
+        ),
+        HeatChip(
+            glyph=_BASE,
+            value=base_value,
+            tooltip=f"base {breakdown.base:.1f} · people {breakdown.people_term:.1f}",
+        ),
+        HeatChip(
+            glyph=_SPIKING,
+            value=f"{breakdown.velocity:.1f}",
+            tooltip="replies/min in window (contribution = vel × velocity_weight)",
+            dimmed=config.velocity_weight == 0.0,
+        ),
+        HeatChip(
+            glyph=_RECENCY,
+            value=f"{breakdown.recency:.2f}",
+            tooltip="hours since last activity, decayed toward the floor",
+        ),
+        HeatChip(
+            glyph=_INVOLVED,
+            value=f"×{breakdown.damping:.2f}",
+            tooltip="involvement damping",
+            dimmed=breakdown.damping == 1.00,
+        ),
+    ]
 
 
 def _markdown_filter(text: str) -> Markup:
@@ -390,9 +471,20 @@ def create_routes(
                 "partials/summary.html",
                 {"error": True, "channel_id": channel_id, "thread_ts": thread_ts},
             )
+        # The heat-strip data depends only on entry, not on the summary, so it is built
+        # once here and carried by every thread-bearing response below (cached, fresh
+        # success, and fresh LLM-failure alike) - only the missing-thread branch above
+        # omits it.
+        now = datetime.now(UTC).timestamp()
+        breakdown = heat_breakdown(entry, config.heat, poller.self_user_id, now)
+        heat_chips = _heat_strip(breakdown, config.heat, entry.channel_name)
         # The detail header quotes the thread's first message (its real "title") and
         # attributes it to the author; bullets summarizing the thread render below.
-        detail = {"quote": strip_mrkdwn(entry.first_message), "author": entry.started_by}
+        detail = {
+            "quote": strip_mrkdwn(entry.first_message),
+            "author": entry.started_by,
+            "heat": heat_chips,
+        }
         if entry.summary and entry.summary_watermark >= entry.message_count:
             return templates.TemplateResponse(
                 request, "partials/summary.html", {"summary": entry.summary, **detail}
@@ -406,7 +498,7 @@ def create_routes(
             return templates.TemplateResponse(
                 request,
                 "partials/summary.html",
-                {"error": True, "channel_id": channel_id, "thread_ts": thread_ts},
+                {"error": True, "channel_id": channel_id, "thread_ts": thread_ts, **detail},
             )
         entry.summary = result.bullets
         entry.summary_watermark = entry.message_count

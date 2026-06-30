@@ -46,3 +46,71 @@ Companion to `docs/design/2026-06-30-heat-metrics-strip.md`. Each phase appends 
 
 ### Open questions
 - None.
+
+## Phase 2: Wire the breakdown into /summarize and render the strip
+
+### Design decisions
+- New glyph constants added next to the existing block - `web.py:_THERMO`,
+  `web.py:_CHANNEL_WEIGHT`, `web.py:_BASE`, `web.py:_RECENCY` - using the same `\N{...}`
+  form as the row glyphs; verified each Unicode name resolves
+  (`unicodedata.lookup("THERMOMETER")` etc.) before relying on it. `_SPIKING`, `_INVOLVED`,
+  and `_VIP` are reused unchanged for velocity, damping, and the base chip's crown.
+- Introduced a `HeatChip` dataclass (`web.py:HeatChip`) and a `_heat_strip(breakdown,
+  config, channel_name)` helper (`web.py:_heat_strip`) that builds the fixed
+  overall+5-chip list with already-formatted face values, native tooltip text, and the
+  `dimmed` flag. All formatting/dimming logic lives in Python per the doc's instruction;
+  `templates/partials/heat_strip.html` only iterates `chip.glyph` / `chip.value` /
+  `chip.tooltip` / `chip.dimmed`.
+- The `/summarize` handler (`web.py:summarize`) captures `now = datetime.now(UTC)
+  .timestamp()` and calls `heat_breakdown(entry, config.heat, poller.self_user_id, now)`
+  immediately after the `entry is None` guard, then builds `detail` with a `"heat"` key
+  carrying the chip list. All three thread-bearing branches (cached, fresh-LLM-success,
+  fresh-LLM-failure) spread `**detail`, so the strip is present in all three; only the
+  missing-thread branch omits it (the doc's exact contract).
+- `summary.html` now `{% include "partials/heat_strip.html" %}` guarded by `{% if heat
+  %}` in both the error layout and the normal layout, so the strip renders above either
+  the "Failed to generate summary / Retry" block or the quote+bullets block, and the
+  missing-thread error (no `heat` in context) shows only the error - matching the doc's
+  "both layouts" requirement without duplicating the chip markup inline in
+  `summary.html`.
+- Pulled the strip's `<div class="heat-strip">...</div>` markup into its own partial
+  (`templates/partials/heat_strip.html`) rather than inlining the `{% for %}` twice in
+  `summary.html` (once per branch) - one include, used from both branches, avoids
+  duplicating the chip-rendering markup.
+- Bold quote / normal-weight author is CSS-only (`base.html:.thread-quote` /
+  `.thread-quote-author`), per the doc - no markup wrapping added in `summary.html`.
+- `.heat-strip` / `.heat-chip` / `.heat-chip.dim` added to the inline `<style>` in
+  `base.html`, matching `.row-counts`' density (`tabular-nums`, `white-space: nowrap`,
+  terse `gap`). No `@media` breakpoints, per the Resolved Questions - chips always
+  render, dimmed ones just go to `opacity: 0.4`.
+- The 🏷️ channel-weight chip's tooltip includes the `#channel` name (`f"#{channel_name}
+  channel weight"`) per the doc's "channel name + weight" spec; the 📊 base chip's
+  tooltip is the terse `base {base:.1f} · people {people_term:.1f}` form lifted directly
+  from the doc's Resolved Questions example.
+
+### Deviations
+- The ⏱️ recency tooltip text is "hours since last activity, decayed toward the floor"
+  rather than the doc's literal placeholder "hours since last activity ..." (an
+  ellipsis, not finished prose) - filled in with a complete, accurate description of
+  what the `recency` multiplier represents (`heat.py:heat_breakdown`'s `recency = max
+  (decay_floor, 1.0 - hours_since/decay_hours)`), since shipping a literal "..." would
+  be a worse tooltip than a real sentence. No behavior or formatting change, doc intent
+  preserved.
+
+### Tradeoffs
+- Built a dedicated `templates/partials/heat_strip.html` partial instead of inlining the
+  chip loop directly in `summary.html`'s two branches - the doc only specified "render a
+  `.heat-strip` block... in both layouts" without mandating a separate file. A shared
+  include avoids two copies of the same `{% for chip in heat %}` markup drifting apart,
+  at the cost of one more small template file; chosen for the same single-source
+  discipline the doc applies to the score math.
+- `_heat_strip` takes `channel_name` as a plain `str` (read from `entry.channel_name`)
+  rather than threading the whole `ThreadEntry` through - the helper only ever needs the
+  name for the tooltip, so the narrower signature is easier to test in isolation
+  (confirmed via a direct unit-level check during implementation, then covered through
+  the route-level mock-poller test pattern already established in `test_web.py`,
+  consistent with the existing helpers like `_emojis`/`_build_row` that also take
+  individual fields rather than full configs where only a few fields are used).
+
+### Open questions
+- None.

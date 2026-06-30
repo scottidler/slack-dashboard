@@ -90,10 +90,17 @@
         .row-summary { display: none; position: absolute; top: 100%; left: 0; z-index: 30; min-width: 26em; max-width: 44em; max-height: 24em; overflow-y: auto; margin-top: 0.15em; }
         .thread-main:hover .row-summary { display: block; }
         .summary-hint { font-size: 0.8em; color: var(--pico-muted-color); font-style: italic; }
-        /* Quoted first message (the thread's real title) atop the summary detail. */
-        .thread-quote { margin: 0 0 0.4em; padding: 0.2em 0.6em; border-left: 3px solid var(--pico-muted-border-color); font-style: italic; }
-        .thread-quote-author { display: block; font-style: normal; font-size: 0.85em; color: var(--pico-muted-color); margin-top: 0.2em; }
+        /* Quoted first message (the thread's real title) atop the summary detail. Bold
+           reads as the heading of the detail panel; the author attribution resets to
+           normal weight so it does not inherit the emphasis. */
+        .thread-quote { margin: 0 0 0.4em; padding: 0.2em 0.6em; border-left: 3px solid var(--pico-muted-border-color); font-style: italic; font-weight: 600; }
+        .thread-quote-author { display: block; font-style: normal; font-weight: 400; font-size: 0.85em; color: var(--pico-muted-color); margin-top: 0.2em; }
         .summary-bullets :is(ul, ol) { margin: 0; padding-left: 1.1em; }
+        /* Heat-metrics strip atop the hover popup: overall + 5 chips, fixed layout, never
+           reflows (no @media here - matches .row-counts density, see CLAUDE.md). */
+        .heat-strip { display: flex; flex-wrap: nowrap; align-items: baseline; gap: 0.5em; margin-bottom: 0.4em; font-size: 0.85em; color: var(--pico-muted-color); white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .heat-chip { cursor: help; }
+        .heat-chip.dim { opacity: 0.4; }
     </style>
 </head>
 <body>

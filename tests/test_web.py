@@ -320,6 +320,94 @@ def test_summarize_llm_failure() -> None:
     assert "Retry" in response.text
 
 
+def test_summarize_renders_heat_strip(client: TestClient) -> None:
+    # The strip renders the overall score and the five composing-factor chips, using the
+    # same glyph vocabulary as the row (⚡ velocity, 👤 damping) plus the new strip-only
+    # glyphs (🌡️ overall, 🏷️ channel_weight, 📊 base, ⏱️ recency).
+    response = client.get("/summarize/C123/1234567890.123456")
+    assert response.status_code == 200
+    assert "heat-strip" in response.text
+    assert "\N{THERMOMETER}" in response.text
+    assert "\N{LABEL}" in response.text
+    assert "\N{BAR CHART}" in response.text
+    assert "\N{HIGH VOLTAGE SIGN}" in response.text
+    assert "\N{STOPWATCH}" in response.text
+    assert "\N{BUST IN SILHOUETTE}" in response.text
+    # message_count=10, 3 participants on _make_thread()
+    assert "10m·3p" in response.text
+
+
+def test_summarize_base_chip_appends_crown_for_vip() -> None:
+    # is_vip fires when a participant's resolve_person_weight exceeds participant_weight
+    # (the default 3); weight U1 above default so the base chip appends the crown.
+    app = FastAPI()
+    poller = _make_mock_poller()
+    thread = _make_thread()
+    config = AppConfig(heat=HeatConfig(people_weights={"U1": 10.0}))
+    poller.ranked_threads.return_value = [thread]
+    poller.threads = {("C123", "1234567890.123456"): thread}
+    create_routes(app, poller, MockLlm(), config)
+    client = TestClient(app)
+    response = client.get("/summarize/C123/1234567890.123456")
+    assert response.status_code == 200
+    assert f"{thread.message_count}m·{len(thread.participants)}p\N{CROWN}" in response.text
+
+
+def test_summarize_base_chip_omits_crown_for_non_vip(client: TestClient) -> None:
+    # _CONFIG has no people_weights overrides, so no participant clears the VIP bar.
+    response = client.get("/summarize/C123/1234567890.123456")
+    assert response.status_code == 200
+    assert "\N{CROWN}" not in response.text
+
+
+def test_summarize_llm_failure_renders_strip_and_retry() -> None:
+    # The LLM-failure branch still has a valid entry, so the heat data is valid; showing
+    # the strip above the Retry block is strictly better than a bare error.
+    app = FastAPI()
+    poller = _make_mock_poller()
+    thread = _make_thread()
+    poller.ranked_threads.return_value = [thread]
+    poller.threads = {("C123", "1234567890.123456"): thread}
+    create_routes(app, poller, FailingLlm(), _CONFIG)
+    client = TestClient(app)
+    response = client.get("/summarize/C123/1234567890.123456")
+    assert response.status_code == 200
+    assert "Retry" in response.text
+    assert "heat-strip" in response.text
+    assert "\N{THERMOMETER}" in response.text
+
+
+def test_summarize_not_found_renders_no_strip(client: TestClient) -> None:
+    # The missing-thread branch has no entry to compute a breakdown from, so it omits
+    # the strip entirely.
+    response = client.get("/summarize/C999/9999999999.999999")
+    assert response.status_code == 200
+    assert "heat-strip" not in response.text
+    assert "\N{THERMOMETER}" not in response.text
+
+
+def test_summarize_velocity_chip_dimmed_when_weight_zero(client: TestClient) -> None:
+    # _CONFIG uses the default HeatConfig, where velocity_weight == 0.0: the chip still
+    # reports the raw rate but is dimmed since it contributes nothing to the score.
+    response = client.get("/summarize/C123/1234567890.123456")
+    assert response.status_code == 200
+    assert 'class="heat-chip dim" title="replies/min in window' in response.text
+
+
+def test_summarize_velocity_chip_not_dimmed_when_weight_nonzero() -> None:
+    app = FastAPI()
+    poller = _make_mock_poller()
+    thread = _make_thread()
+    config = AppConfig(heat=HeatConfig(velocity_weight=1.0))
+    poller.ranked_threads.return_value = [thread]
+    poller.threads = {("C123", "1234567890.123456"): thread}
+    create_routes(app, poller, MockLlm(), config)
+    client = TestClient(app)
+    response = client.get("/summarize/C123/1234567890.123456")
+    assert response.status_code == 200
+    assert 'class="heat-chip" title="replies/min in window' in response.text
+
+
 class CapturingLlm(LlmProvider):
     """Records the messages handed to generate_summary so a test can assert the
     full retained exchange (not just the root) is fed to the tone-bearing call."""
