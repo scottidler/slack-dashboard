@@ -2,7 +2,7 @@ import time
 from datetime import UTC, datetime
 
 from slack_dashboard.config import AppConfig
-from slack_dashboard.thread import ThreadEntry
+from slack_dashboard.thread import ReplyRecord, ThreadEntry
 from slack_dashboard.web import _build_row, deep_link, group_threads
 
 # A consistent now/app_start_at pair for all grouping tests: storm suppressor is
@@ -24,7 +24,7 @@ def _thread(
         thread_ts=thread_ts,
         first_message="msg",
         started_by="U1",
-        reply_count=reply_count,
+        message_count=reply_count,
         participants={f"U{i}": 1 for i in range(participants)},
         last_activity=datetime.now(UTC),
         heat_tier=heat_tier,
@@ -128,7 +128,7 @@ def test_group_by_size_buckets() -> None:
         "small (3-24)",
     ]
     # Heat (input) order is preserved within a bucket.
-    assert [r.reply_count for r in groups[-1].rows] == [10, 3]
+    assert [r.message_count for r in groups[-1].rows] == [10, 3]
 
 
 def test_group_by_size_drops_empty_buckets() -> None:
@@ -142,11 +142,17 @@ def test_group_by_velocity_buckets() -> None:
     config = AppConfig()
     now = time.time()
     spiking = _thread(thread_ts="1")
-    spiking.reply_timestamps = [now - i for i in range(20)]  # 20 replies in-window
+    spiking.replies = [
+        ReplyRecord(ts=now - i, author_id="U1", text="", is_root=(i == 0)) for i in range(20)
+    ]  # 20 replies in-window
     active = _thread(thread_ts="2")
-    active.reply_timestamps = [now - 60, now - 120, now - 180]  # 3 in-window
+    active.replies = [
+        ReplyRecord(ts=now - 60, author_id="U1", text="", is_root=True),
+        ReplyRecord(ts=now - 120, author_id="U1", text="", is_root=False),
+        ReplyRecord(ts=now - 180, author_id="U1", text="", is_root=False),
+    ]  # 3 in-window
     idle = _thread(thread_ts="3")
-    idle.reply_timestamps = []
+    # no replies - idle.replies stays empty (default)
     groups = group_threads([spiking, active, idle], "velocity", config, _NOW, _FAR_PAST_APP_START)
     assert [g.label for g in groups] == ["spiking (15+)", "active (1-14)", "idle (0)"]
 

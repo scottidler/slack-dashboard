@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from anthropic.types import TextBlock
 
-from slack_dashboard.llm.provider import AnthropicProvider
+from slack_dashboard.llm.provider import AnthropicProvider, SummaryResult
 
 
 def _text_block(text: str) -> TextBlock:
@@ -37,7 +37,7 @@ async def test_generate_summary() -> None:
     ]
     mock_client.messages.create = AsyncMock(return_value=mock_response)
     provider = AnthropicProvider(mock_client, model="claude-haiku-4-5-20251001")
-    summary = await provider.generate_summary(
+    result = await provider.generate_summary(
         [
             "We need to migrate the prod database",
             "I can handle the schema changes",
@@ -45,8 +45,10 @@ async def test_generate_summary() -> None:
             "Let's do it Saturday during maintenance window",
         ]
     )
-    assert summary is not None
-    assert "migrating" in summary.lower() or "database" in summary.lower()
+    assert isinstance(result, SummaryResult)
+    assert result.bullets is not None
+    assert "migrating" in result.bullets.lower() or "database" in result.bullets.lower()
+    assert result.tone == 0  # Phase 1: tone always 0
     mock_client.messages.create.assert_called_once()
 
 
@@ -60,9 +62,12 @@ async def test_generate_title_failure_returns_none() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generate_summary_failure_returns_none() -> None:
+async def test_generate_summary_failure_returns_summary_result_with_none_bullets() -> None:
+    """On LLM failure, generate_summary returns SummaryResult(bullets=None) not None."""
     mock_client = AsyncMock()
     mock_client.messages.create = AsyncMock(side_effect=Exception("API error"))
     provider = AnthropicProvider(mock_client, model="claude-haiku-4-5-20251001")
-    summary = await provider.generate_summary(["Some message"])
-    assert summary is None
+    result = await provider.generate_summary(["Some message"])
+    assert isinstance(result, SummaryResult)
+    assert result.bullets is None
+    assert result.tone == 0

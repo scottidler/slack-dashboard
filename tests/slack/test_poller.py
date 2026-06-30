@@ -28,6 +28,7 @@ def _make_mock_slack() -> AsyncMock:
             {"ts": _NOW, "text": "Root message", "reply_count": 3, "thread_ts": _NOW},
         ]
     )
+    # fetch_replies returns root + 3 replies = 4 messages; message_count = len = 4
     client.fetch_replies = AsyncMock(
         return_value=[
             {"ts": _NOW, "user": "U1", "text": "root"},
@@ -50,7 +51,8 @@ async def test_fetch_channel_via_process_item() -> None:
     key = ("C111", _NOW)
     assert key in poller.threads
     entry = poller.threads[key]
-    assert entry.reply_count == 3
+    # message_count = len(replies) = 4 (root + 3)
+    assert entry.message_count == 4
     assert len(entry.participants) == 3
     assert entry.channel_name == "general"
     assert entry.first_message == "root"
@@ -92,7 +94,7 @@ async def test_fetch_thread_via_process_item() -> None:
     assert len(poller.threads) == 1
     key = ("C111", _NOW)
     entry = poller.threads[key]
-    assert entry.reply_count == 3
+    assert entry.message_count == 4  # root + 3 replies
     assert entry.first_message == "root"
 
 
@@ -205,7 +207,7 @@ async def test_incremental_merge_adds_participants() -> None:
     mock_slack = _make_mock_slack()
     config = AppConfig(channels={"general": "C111"})
     poller = SlackPoller(mock_slack, config)
-    # Initial full fetch
+    # Initial full fetch: root + 3 replies = message_count=4, participants=3
     item = FetchItem(
         priority=PRIORITY_BACKFILL,
         channel_id="C111",
@@ -214,7 +216,7 @@ async def test_incremental_merge_adds_participants() -> None:
     )
     await poller._process_item(item)
     key = ("C111", _NOW)
-    assert poller.threads[key].reply_count == 3
+    assert poller.threads[key].message_count == 4
     assert len(poller.threads[key].participants) == 3
 
     # Simulate incremental fetch with new reply from new user
@@ -231,7 +233,7 @@ async def test_incremental_merge_adds_participants() -> None:
         thread_ts=_NOW,
     )
     await poller._process_item(refresh_item)
-    assert poller.threads[key].reply_count == 4
+    assert poller.threads[key].message_count == 5
     assert "U_NEW" in poller.threads[key].participants
     assert len(poller.threads[key].participants) == 4
 
@@ -240,6 +242,8 @@ async def test_incremental_merge_adds_participants() -> None:
 async def test_full_refresh_preserves_velocity_and_resurrection_state() -> None:
     """State merge contract: a full-fetch rebuild must carry forward velocity and
     resurrection fields, or every periodic refresh would silently reset them."""
+    from slack_dashboard.thread import ReplyRecord
+
     mock_slack = _make_mock_slack()
     config = AppConfig(channels={"general": "C111"})
     poller = SlackPoller(mock_slack, config)
@@ -257,7 +261,8 @@ async def test_full_refresh_preserves_velocity_and_resurrection_state() -> None:
     # Simulate accumulated velocity history + a resurrection event
     marker = time.time() - 100
     entry.resurrection_event_ts = marker
-    entry.reply_timestamps = [time.time() - 5]
+    # Set a reply record that should be carried forward via merge_replies
+    entry.replies = [ReplyRecord(ts=time.time() - 5, author_id="U1", text="", is_root=False)]
 
     # A full (non-incremental) refresh rebuilds the ThreadEntry from scratch
     await poller._fetch_thread("C111", "general", _NOW, incremental=False)
@@ -480,7 +485,7 @@ async def test_velocity_not_double_counted_across_listener_and_fetch() -> None:
     )
     await poller._fetch_thread("C111", "general", parent, incremental=False)
 
-    # Socket event for the new reply: listener appends raw float(ts)
+    # Socket event for the new reply: listener merges a ReplyRecord
     listener = SocketListener(
         queue=poller.queue,
         threads=poller.threads,
@@ -535,7 +540,7 @@ async def test_evict_prunes_observed_by_horizon_not_age(tmp_path) -> None:
             thread_ts="active-old",
             first_message="m",
             started_by="U1",
-            reply_count=3,
+            message_count=3,
             participants={"U1": 3},
             last_activity=datetime.now(UTC),  # recent activity -> not evicted
             first_observed_at=1.0,
@@ -551,7 +556,7 @@ async def test_evict_prunes_observed_by_horizon_not_age(tmp_path) -> None:
         thread_ts="dead-old",
         first_message="m",
         started_by="U1",
-        reply_count=3,
+        message_count=3,
         participants={"U1": 3},
         last_activity=datetime.now(UTC) - timedelta(days=99),
         resurrection_event_ts=0.0,

@@ -17,8 +17,15 @@ def _make_request(
     thread_ts: str | None = "1234.5678",
     user: str = "U999",
     ts: str = "1711300000.000000",
+    text: str = "hello",
 ) -> AsyncMock:
-    event: dict[str, str] = {"type": event_type, "channel": channel, "user": user, "ts": ts}
+    event: dict[str, str] = {
+        "type": event_type,
+        "channel": channel,
+        "user": user,
+        "ts": ts,
+        "text": text,
+    }
     if thread_ts is not None:
         event["thread_ts"] = thread_ts
     req = AsyncMock()
@@ -31,7 +38,7 @@ def _make_request(
 def _make_thread(
     channel_id: str = "C111",
     thread_ts: str = "1234.5678",
-    reply_count: int = 5,
+    message_count: int = 5,
 ) -> ThreadEntry:
     return ThreadEntry(
         channel_id=channel_id,
@@ -39,7 +46,7 @@ def _make_thread(
         thread_ts=thread_ts,
         first_message="test",
         started_by="U1",
-        reply_count=reply_count,
+        message_count=message_count,
         participants={"U1": 2, "U2": 1},
         last_activity=datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC),
     )
@@ -125,14 +132,14 @@ async def test_queues_thread_reply() -> None:
 
 @pytest.mark.asyncio
 async def test_updates_existing_thread_metadata() -> None:
-    thread = _make_thread(reply_count=5)
+    thread = _make_thread(message_count=5)
     threads = {("C111", "1234.5678"): thread}
     listener, _ = _make_listener(threads=threads)
     client = AsyncMock()
     req = _make_request(user="U_NEW", ts="1774440000.000000")
     await listener.handle_event(client, req)
 
-    assert thread.reply_count == 6
+    assert thread.message_count == 6
     assert "U_NEW" in thread.participants
     assert thread.last_activity == datetime.fromtimestamp(1774440000.0, tz=UTC)
 
@@ -186,7 +193,8 @@ async def test_no_resurrection_on_small_gap() -> None:
 
 
 @pytest.mark.asyncio
-async def test_appends_reply_timestamp() -> None:
+async def test_appends_reply_record_and_timestamp() -> None:
+    """Listener now merges a ReplyRecord; reply_timestamps is derived."""
     import time
 
     thread = _make_thread()
@@ -194,10 +202,16 @@ async def test_appends_reply_timestamp() -> None:
     threads = {("C111", "1234.5678"): thread}
     listener, _ = _make_listener(threads=threads)
     client = AsyncMock()
-    # Must be inside the velocity window or prune_timestamps drops it
+    # Must be inside the velocity window or merge_replies drops nothing but
+    # reply_timestamps (derived) would reflect only in-window entries from prune.
     ts = str(time.time())
-    req = _make_request(ts=ts)
+    req = _make_request(ts=ts, text="fresh reply", user="U999")
     await listener.handle_event(client, req)
+    # reply_timestamps is a derived property of replies
+    assert len(thread.replies) == 1
+    assert thread.replies[0].ts == pytest.approx(float(ts))
+    assert thread.replies[0].author_id == "U999"
+    assert thread.replies[0].text == "fresh reply"
     assert len(thread.reply_timestamps) == 1
     assert thread.reply_timestamps[0] == pytest.approx(float(ts))
     assert thread.first_seen_ts == float("1234.5678")

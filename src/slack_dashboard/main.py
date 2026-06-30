@@ -59,14 +59,15 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
         title = await llm.generate_title(messages)
         if title:
             entry.title = title
-            entry.title_watermark = entry.reply_count
+            entry.title_watermark = entry.message_count
 
     async def on_summary_needed(entry: ThreadEntry, reply_texts: list[str]) -> None:
         messages = [strip_mrkdwn(t) for t in reply_texts]
-        summary = await llm.generate_summary(messages)
-        if summary:
-            entry.summary = summary
-            entry.summary_watermark = entry.reply_count
+        result = await llm.generate_summary(messages)
+        if result.bullets:
+            entry.summary = result.bullets
+            entry.summary_watermark = entry.message_count
+            entry.heated_tone = result.tone
 
     dismiss_store = DismissStore(_resolve_dismiss_path())
     dismiss_store.load()

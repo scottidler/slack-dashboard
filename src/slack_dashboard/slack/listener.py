@@ -7,9 +7,9 @@ from slack_sdk.socket_mode.request import SocketModeRequest
 from slack_sdk.socket_mode.response import SocketModeResponse
 
 from slack_dashboard.config import HeatConfig
-from slack_dashboard.heat import detect_resurrection, prune_timestamps
+from slack_dashboard.heat import detect_resurrection
 from slack_dashboard.slack.queue import PRIORITY_SOCKET_EVENT, FetchItem, FetchQueue
-from slack_dashboard.thread import ThreadEntry
+from slack_dashboard.thread import REPLY_TEXT_MAX, ReplyRecord, ThreadEntry, merge_replies
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +76,12 @@ class SocketListener:
         if user:
             existing.participants[user] = existing.participants.get(user, 0) + 1
 
-        existing.reply_count += 1
+        existing.message_count += 1
 
         ts = event.get("ts", "")
         if ts:
             # Store the RAW float(ts), not a datetime round-trip: the full fetch records
-            # the same reply as float(r["ts"]), and prune_timestamps dedups by a normalized
+            # the same reply as float(r["ts"]), and merge_replies dedups by a normalized
             # key, so both paths must agree on the raw value or velocity double-counts.
             event_ts = float(ts)
             event_time = datetime.fromtimestamp(event_ts, tz=UTC)
@@ -92,10 +92,28 @@ class SocketListener:
             prior_ts = existing.last_activity.timestamp()
             if detect_resurrection(prior_ts, event_ts, self._heat_config):
                 existing.resurrection_event_ts = event_ts
-            existing.reply_timestamps = prune_timestamps(
-                existing.reply_timestamps + [event_ts], self._heat_config
+            # Build a ReplyRecord for this live event and merge into existing.replies.
+            # author_id and text are available directly from the event payload (unlike
+            # the pre-Phase-1 path that only had a bare timestamp).
+            record = ReplyRecord(
+                ts=event_ts,
+                author_id=user or "",
+                text=(event.get("text", "") or "")[:REPLY_TEXT_MAX],
+                is_root=False,
             )
+            existing.replies = merge_replies(existing.replies, [record])
+            # reply_timestamps is now a derived property of existing.replies;
+            # no separate prune_timestamps call is needed here.
             if existing.first_seen_ts <= 0:
                 existing.first_seen_ts = float(thread_ts)
             if event_time > existing.last_activity:
                 existing.last_activity = event_time
+        logger.debug(
+            "_apply_event: channel=%s thread_ts=%s user=%s ts=%s message_count=%d replies=%d",
+            channel_name,
+            thread_ts,
+            user,
+            ts,
+            existing.message_count,
+            len(existing.replies),
+        )

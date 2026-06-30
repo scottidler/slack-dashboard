@@ -61,7 +61,7 @@ class RowView:
     channel_name: str
     thread_ts: str
     display_title: str
-    reply_count: int
+    message_count: int
     participant_count: int
     heat_tier: str
     emojis: str
@@ -134,7 +134,7 @@ def _emojis(thread: ThreadEntry, config: AppConfig, now: float, app_start_at: fl
     logger.debug(
         "_emojis: channel=%s thread_ts=%s replies_in_window=%d tier=%s"
         " first_observed_at=%.3f now=%.3f app_start_at=%.3f new_window=%ds"
-        " unanswered_enabled=%s reply_count=%d thread_age_s=%.0f min_age_s=%.0f",
+        " unanswered_enabled=%s message_count=%d thread_age_s=%.0f min_age_s=%.0f",
         thread.channel_name,
         thread.thread_ts,
         riw,
@@ -144,7 +144,7 @@ def _emojis(thread: ThreadEntry, config: AppConfig, now: float, app_start_at: fl
         app_start_at,
         new_window,
         config.heat.unanswered_enabled,
-        thread.reply_count,
+        thread.message_count,
         thread_age,
         min_age,
     )
@@ -158,7 +158,7 @@ def _emojis(thread: ThreadEntry, config: AppConfig, now: float, app_start_at: fl
     if (
         config.heat.unanswered_enabled
         and "?" in thread.first_message
-        and thread.reply_count <= config.heat.unanswered_max_replies
+        and thread.message_count <= config.heat.unanswered_max_replies
         and thread_age >= min_age
     ):
         glyphs.append(_UNANSWERED)
@@ -194,7 +194,7 @@ def _build_row(
         channel_name=thread.channel_name,
         thread_ts=thread.thread_ts,
         display_title=thread.display_title,
-        reply_count=thread.reply_count,
+        message_count=thread.message_count,
         participant_count=len(thread.participants),
         heat_tier=thread.heat_tier,
         emojis=_emojis(thread, config, now, app_start_at),
@@ -294,7 +294,7 @@ def group_threads(
     if group_by == "size":
         buckets = {label: GroupView(label=label) for label, _ in _SIZE_TIERS}
         for index, thread in enumerate(threads):
-            label = _tier_label(thread.reply_count, _SIZE_TIERS)
+            label = _tier_label(thread.message_count, _SIZE_TIERS)
             buckets[label].rows.append(
                 _build_row(thread, config, now, app_start_at, below_fold=_below(index))
             )
@@ -368,22 +368,22 @@ def create_routes(
         # The detail header quotes the thread's first message (its real "title") and
         # attributes it to the author; bullets summarizing the thread render below.
         detail = {"quote": strip_mrkdwn(entry.first_message), "author": entry.started_by}
-        if entry.summary and entry.summary_watermark >= entry.reply_count:
+        if entry.summary and entry.summary_watermark >= entry.message_count:
             return templates.TemplateResponse(
                 request, "partials/summary.html", {"summary": entry.summary, **detail}
             )
         messages = [strip_mrkdwn(entry.first_message)]
-        summary = await llm.generate_summary(messages)
-        if summary is None:
+        result = await llm.generate_summary(messages)
+        if result.bullets is None:
             return templates.TemplateResponse(
                 request,
                 "partials/summary.html",
                 {"error": True, "channel_id": channel_id, "thread_ts": thread_ts},
             )
-        entry.summary = summary
-        entry.summary_watermark = entry.reply_count
+        entry.summary = result.bullets
+        entry.summary_watermark = entry.message_count
         return templates.TemplateResponse(
-            request, "partials/summary.html", {"summary": summary, **detail}
+            request, "partials/summary.html", {"summary": result.bullets, **detail}
         )
 
     @app.get("/channel/{channel_id}", response_class=HTMLResponse)

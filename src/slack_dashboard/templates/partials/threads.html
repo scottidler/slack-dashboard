@@ -18,7 +18,7 @@
                 hx-target="#{{ row_id }}"
                 hx-swap="outerHTML"
                 hx-trigger="click consume">&#10005;</button>
-        <span class="row-counts"><span class="count-replies" title="{{ row.reply_count }} response{{ '' if row.reply_count == 1 else 's' }}">{{ row.reply_count }}r</span><span class="count-sep">|</span><span class="count-people" title="{{ row.participant_count }} {{ 'person' if row.participant_count == 1 else 'people' }}">{{ row.participant_count }}p</span></span>
+        <span class="row-counts"><span class="count-replies" title="{{ row.message_count }} message{{ '' if row.message_count == 1 else 's' }}">{{ row.message_count }}m</span><span class="count-sep">|</span><span class="count-people" title="{{ row.participant_count }} {{ 'person' if row.participant_count == 1 else 'people' }}">{{ row.participant_count }}p</span></span>
         {% if group_by != 'channel' %}
         {# Hover the channel handle to see all of that channel's threads, ranked. #}
         <span class="channel-cell"

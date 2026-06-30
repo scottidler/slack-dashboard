@@ -6,7 +6,7 @@
     {% for row in rows %}
     <a class="chan-row"
        href="{{ row.deep_link }}"{% if not row.deep_link.startswith('slack://') %} target="_blank" rel="noopener"{% endif %}>
-        <span class="chan-counts">{{ row.reply_count }}r|{{ row.participant_count }}p</span>
+        <span class="chan-counts">{{ row.message_count }}m|{{ row.participant_count }}p</span>
         <span class="chan-title heat-{{ row.heat_tier }}">{{ row.display_title }}</span>
     </a>
     {% else %}

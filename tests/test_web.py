@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from slack_dashboard.config import AppConfig, HeatConfig, SlackConfig
-from slack_dashboard.llm.provider import LlmProvider
+from slack_dashboard.llm.provider import LlmProvider, SummaryResult
 from slack_dashboard.slack.poller import SlackPoller
 from slack_dashboard.thread import ThreadEntry
 from slack_dashboard.web import _emojis, create_routes
@@ -25,16 +25,16 @@ class MockLlm(LlmProvider):
     async def generate_title(self, messages: list[str]) -> str | None:
         return "Mock Title"
 
-    async def generate_summary(self, messages: list[str]) -> str | None:
-        return "Mock summary of the thread."
+    async def generate_summary(self, messages: list[str]) -> SummaryResult:
+        return SummaryResult(bullets="Mock summary of the thread.", tone=0)
 
 
 class FailingLlm(LlmProvider):
     async def generate_title(self, messages: list[str]) -> str | None:
         return None
 
-    async def generate_summary(self, messages: list[str]) -> str | None:
-        return None
+    async def generate_summary(self, messages: list[str]) -> SummaryResult:
+        return SummaryResult(bullets=None, tone=0)
 
 
 def _make_thread() -> ThreadEntry:
@@ -44,7 +44,7 @@ def _make_thread() -> ThreadEntry:
         thread_ts="1234567890.123456",
         first_message="Something broke in prod",
         started_by="U1",
-        reply_count=10,
+        message_count=10,
         participants={"U1": 3, "U2": 2, "U3": 1},
         last_activity=datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC),
         heat_score=80.0,
@@ -92,8 +92,8 @@ def test_threads_returns_partial(client: TestClient) -> None:
     assert response.status_code == 200
     assert "sre-internal" in response.text
     assert "Something broke in prod" in response.text
-    # Compact counts: "10r" replies, "3p" participants
-    assert "10r" in response.text
+    # Compact counts: "10m" messages, "3p" participants
+    assert "10m" in response.text
     assert "3p" in response.text
 
 
@@ -330,6 +330,8 @@ def test_status_banner_disabled() -> None:
 
 def _make_spiking_thread(replies_in_window: int, heat_tier: str = "cold") -> ThreadEntry:
     """Thread with the given number of recent replies in the velocity window."""
+    from slack_dashboard.thread import ReplyRecord
+
     now = _time.time()
     t = ThreadEntry(
         channel_id="C123",
@@ -337,13 +339,16 @@ def _make_spiking_thread(replies_in_window: int, heat_tier: str = "cold") -> Thr
         thread_ts="1234567890.123456",
         first_message="Something is happening",
         started_by="U1",
-        reply_count=replies_in_window,
+        message_count=replies_in_window,
         participants={"U1": 1},
         last_activity=datetime.now(UTC),
         heat_tier=heat_tier,
     )
     # Place all reply timestamps within the last minute so they are in the window.
-    t.reply_timestamps = [now - i for i in range(replies_in_window)]
+    t.replies = [
+        ReplyRecord(ts=now - i, author_id="U1", text="", is_root=(i == 0))
+        for i in range(replies_in_window)
+    ]
     return t
 
 
@@ -421,7 +426,7 @@ def _make_new_thread(
         thread_ts="1234567890.123456",
         first_message="Brand new thread",
         started_by="U1",
-        reply_count=5,
+        message_count=5,
         participants={"U1": 3},
         last_activity=datetime.now(UTC),
         heat_tier=heat_tier,
@@ -578,7 +583,7 @@ def _make_unanswered_thread(
         thread_ts=thread_ts,
         first_message=first_message,
         started_by="U1",
-        reply_count=reply_count,
+        message_count=reply_count,
         participants={"U1": 1},
         last_activity=datetime.now(UTC),
         heat_tier="cold",

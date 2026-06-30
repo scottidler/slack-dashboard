@@ -62,16 +62,26 @@ class HeatConfig(_KebabModel):
     # Unanswered proxy glyph (❓): arithmetic proxy for a dropped-ball question.
     # Ships disabled by default (unanswered-enabled: false); flip on in private ~/.config
     # to observe on Monday. The proxy fires when the first message contains "?" AND
-    # reply_count is at or below unanswered-max-replies AND the thread is older than
+    # message_count is at or below unanswered-max-replies AND the thread is older than
     # unanswered-min-age-hours. Effective only in ops channels running channel-min-replies:
     # 1 (e.g. sre, ask-security); standard channels require 3+ replies to appear so
-    # max-replies: 2 never fires there.
+    # max-replies: 3 never fires there.
+    # NOTE: default bumped from 2 to 3 because message_count now includes the root message
+    # (previously reply_count excluded it).  A no-reply question is message_count == 1;
+    # max-replies: 3 preserves the old "root + up to 2 replies" firing window.
     unanswered_enabled: bool = False
-    unanswered_max_replies: int = 2
+    unanswered_max_replies: int = 3
     unanswered_min_age_hours: int = 2
     resurrection_gap_hours: int = 24
     resurrection_age_days: int = 2
     resurrection_display_hours: int = 24
+    # Heated-exchange signal config (🔥 repurpose, Phase 1 groundwork).
+    # heated_score = structural_term + tone_term; 🔥 fires when >= heated_threshold.
+    # structural_term: exchange-gated intensity, clamped 0-10, floor-free decay.
+    # tone_term: heated_tone (0-3) * heated_tone_weight = 0..9 (Phase 2).
+    heated_threshold: float = 8.0
+    heated_structural_scale: float = 1.0
+    heated_tone_weight: float = 3.0
 
     @model_validator(mode="before")
     @classmethod

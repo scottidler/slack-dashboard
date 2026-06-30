@@ -17,9 +17,9 @@ When changing the UI, hold this line:
     to its author (the real "title"), then bullets summarizing the thread.
   - Hover the **#channel** handle → popover listing every thread in that channel, ranked;
     each listing is a `slack://` link into the desktop app.
-  - Hover **`Nr`** → "N responses"; hover **`Np`** → "N people" (native tooltips).
-- Fixed-width left columns (dismiss `×`, counts `Nr|Np`) so titles align into a scannable
-  column. Counts are intentionally terse (`3r|3p`, not "3 replies · 3 participants").
+  - Hover **`Nm`** → "N message(s)"; hover **`Np`** → "N people" (native tooltips).
+- Fixed-width left columns (dismiss `×`, counts `Nm|Np`) so titles align into a scannable
+  column. Counts are intentionally terse (`3m|3p`, not "3 messages · 3 participants").
 - Channel handles render Slack-style: lowercase, `#`-prefixed, no ALL-CAPS, no pill.
 - Thread/channel links use the `slack://` scheme (desktop app) when `slack.team-id` is
   set; see `deep_link` / `channel_link` in `web.py`.

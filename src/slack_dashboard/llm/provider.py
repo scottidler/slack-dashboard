@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 
 from anthropic import AsyncAnthropic
 from anthropic.types import Message, TextBlock
@@ -8,6 +9,23 @@ from anthropic.types import Message, TextBlock
 logger = logging.getLogger(__name__)
 
 _TITLE_SEMAPHORE = asyncio.Semaphore(5)
+
+
+@dataclass
+class SummaryResult:
+    """Return type for generate_summary.
+
+    ``bullets`` is the markdown bulleted summary text, or None when the LLM
+    call failed entirely.  ``tone`` is the linguistic tone score 0-3 ("0 cordial,
+    1 tense, 2 pointed/frustrated, 3 openly hostile/escalating").
+
+    In Phase 1, tone defaults to 0 - the TONE emit/parse/strip is Phase 2.
+    Phase 2 will append a trailing ``TONE: <0-3>`` line to the LLM prompt,
+    parse and clamp it here, and strip it from bullets before returning.
+    """
+
+    bullets: str | None
+    tone: int = 0
 
 
 def _extract_text(response: Message) -> str:
@@ -22,7 +40,7 @@ class LlmProvider(ABC):
     async def generate_title(self, messages: list[str]) -> str | None: ...
 
     @abstractmethod
-    async def generate_summary(self, messages: list[str]) -> str | None: ...
+    async def generate_summary(self, messages: list[str]) -> SummaryResult: ...
 
 
 class AnthropicProvider(LlmProvider):
@@ -50,7 +68,13 @@ class AnthropicProvider(LlmProvider):
                 logger.exception("Failed to generate title")
                 return None
 
-    async def generate_summary(self, messages: list[str]) -> str | None:
+    async def generate_summary(self, messages: list[str]) -> SummaryResult:
+        """Generate a bulleted summary of the thread.
+
+        Returns a SummaryResult with bullets=None on LLM failure (callers must
+        check before storing).  tone defaults to 0 in Phase 1; Phase 2 will
+        emit/parse/strip the TONE line from the prompt and response.
+        """
         try:
             thread_content = "\n".join(messages)
             response = await self._client.messages.create(
@@ -67,7 +91,8 @@ class AnthropicProvider(LlmProvider):
                     {"role": "user", "content": f"Slack thread messages:\n\n{thread_content}"}
                 ],
             )
-            return _extract_text(response) or None
+            text = _extract_text(response) or None
+            return SummaryResult(bullets=text, tone=0)
         except Exception:
             logger.exception("Failed to generate summary")
-            return None
+            return SummaryResult(bullets=None, tone=0)

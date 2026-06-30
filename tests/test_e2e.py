@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from slack_dashboard.config import AppConfig, FetchConfig, HeatConfig
 from slack_dashboard.dismiss import DismissStore
-from slack_dashboard.llm.provider import LlmProvider
+from slack_dashboard.llm.provider import LlmProvider, SummaryResult
 from slack_dashboard.slack.client import SlackClient
 from slack_dashboard.slack.poller import SlackPoller
 from slack_dashboard.slack.queue import PRIORITY_BACKFILL, FetchItem
@@ -23,8 +23,8 @@ class _Llm(LlmProvider):
     async def generate_title(self, messages: list[str]) -> str | None:
         return "Title"
 
-    async def generate_summary(self, messages: list[str]) -> str | None:
-        return "Summary"
+    async def generate_summary(self, messages: list[str]) -> SummaryResult:
+        return SummaryResult(bullets="Summary", tone=0)
 
 
 def _mock_slack() -> AsyncMock:
@@ -122,7 +122,7 @@ async def test_reconnect_recovers_reply_missed_during_disconnect() -> None:
     await poller._fetch_channel("C1", "sre")
     key = ("C1", parent)
     assert poller.thread_watermarks[key] == r1
-    replies_before = poller.threads[key].reply_count
+    replies_before = poller.threads[key].message_count
 
     # The connection drops (on_close edge): banner shows disconnected, reconcile armed
     conn = ConnectionState(socket_enabled=True, connected=True)
@@ -159,4 +159,4 @@ async def test_reconnect_recovers_reply_missed_during_disconnect() -> None:
 
     assert conn.status() == "connected"  # banner cleared
     assert poller.thread_watermarks[key] == r2_missed  # watermark advanced past the gap
-    assert poller.threads[key].reply_count > replies_before  # the missed reply was recovered
+    assert poller.threads[key].message_count > replies_before  # the missed reply was recovered

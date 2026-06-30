@@ -133,7 +133,7 @@ def test_defaults() -> None:
     assert heat.spiking_threshold == 15
     assert heat.new_window_minutes == 60
     assert heat.unanswered_enabled is False
-    assert heat.unanswered_max_replies == 2
+    assert heat.unanswered_max_replies == 3
     assert heat.unanswered_min_age_hours == 2
     assert heat.resurrection_gap_hours == 24
     assert heat.resurrection_age_days == 2

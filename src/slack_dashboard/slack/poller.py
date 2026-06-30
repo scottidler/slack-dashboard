@@ -12,7 +12,6 @@ from slack_dashboard.heat import (
     detect_resurrection,
     filter_stale_threads,
     is_zombie,
-    prune_timestamps,
     reconstruct_resurrection,
 )
 from slack_dashboard.observed import ObservedStore
@@ -23,7 +22,7 @@ from slack_dashboard.slack.queue import (
     FetchItem,
     FetchQueue,
 )
-from slack_dashboard.thread import ThreadEntry
+from slack_dashboard.thread import REPLY_TEXT_MAX, ReplyRecord, ThreadEntry, merge_replies
 
 logger = logging.getLogger(__name__)
 
@@ -270,7 +269,7 @@ class SlackPoller:
                 user = r.get("user")
                 if user:
                     existing.participants[user] = existing.participants.get(user, 0) + 1
-            existing.reply_count += len(new_replies)
+            existing.message_count += len(new_replies)
             # Capture the resurrection gap BEFORE last_activity is overwritten (see
             # State merge contract): once we bump last_activity the prior value is gone.
             last_activity = datetime.fromtimestamp(float(latest_ts), tz=UTC)
@@ -278,10 +277,18 @@ class SlackPoller:
             event_ts = last_activity.timestamp()
             if detect_resurrection(prior_ts, event_ts, self._config.heat):
                 existing.resurrection_event_ts = event_ts
-            new_ts_values = [float(r["ts"]) for r in new_replies if r.get("ts")]
-            existing.reply_timestamps = prune_timestamps(
-                existing.reply_timestamps + new_ts_values, self._config.heat
-            )
+            # Build ReplyRecord objects for the new replies and merge into existing.
+            incoming_records = [
+                ReplyRecord(
+                    ts=float(r["ts"]),
+                    author_id=r.get("user", ""),
+                    text=(r.get("text", "") or "")[:REPLY_TEXT_MAX],
+                    is_root=False,
+                )
+                for r in new_replies
+                if r.get("ts")
+            ]
+            existing.replies = merge_replies(existing.replies, incoming_records)
             if existing.first_seen_ts <= 0:
                 existing.first_seen_ts = float(thread_ts)
             if last_activity > existing.last_activity:
@@ -307,12 +314,26 @@ class SlackPoller:
             if existing and existing.started_by
             else await self._resolve_user(started_by_id)
         )
+        # Build ReplyRecord objects for the full reply set fetched from Slack.
+        # replies[0] is the root message; mark it with is_root=True.
+        fetched_records: list[ReplyRecord] = []
+        for idx, r in enumerate(replies):
+            ts_val = r.get("ts")
+            if not ts_val:
+                continue
+            fetched_records.append(
+                ReplyRecord(
+                    ts=float(ts_val),
+                    author_id=r.get("user", ""),
+                    text=(r.get("text", "") or "")[:REPLY_TEXT_MAX],
+                    is_root=(idx == 0),
+                )
+            )
         # State merge contract: the full-fetch rebuild must not silently wipe velocity or
         # resurrection state. first_seen_ts is deterministic from thread_ts.
-        # reply_timestamps merges carried-forward + fetched (deduped by prune_timestamps).
-        carried_ts = list(existing.reply_timestamps) if existing else []
-        fetched_ts = [float(r["ts"]) for r in replies if r.get("ts") and r["ts"] != thread_ts]
-        reply_timestamps = prune_timestamps(carried_ts + fetched_ts, self._config.heat)
+        # replies merges carried-forward + fetched (deduped by merge_replies).
+        carried_records = list(existing.replies) if existing else []
+        merged_replies = merge_replies(carried_records, fetched_records)
         # Resurrection is reconstructed state-independently from the full reply timeline
         # (Phase 6): the prior in-memory state is gone after eviction/restart, so carrying
         # forward would miss exactly the long-dead-thread case resurrection exists for.
@@ -336,25 +357,27 @@ class SlackPoller:
             thread_ts=thread_ts,
             first_message=first_message,
             started_by=started_by_name,
-            reply_count=len(replies) - 1,
+            message_count=len(replies),
             participants=participants,
             last_activity=last_activity,
             title=existing.title if existing else None,
             title_watermark=existing.title_watermark if existing else 0,
             summary=existing.summary if existing else None,
             summary_watermark=existing.summary_watermark if existing else 0,
-            reply_timestamps=reply_timestamps,
+            replies=merged_replies,
             resurrection_event_ts=resurrection_event_ts,
             first_seen_ts=float(thread_ts),
             first_observed_at=first_observed_at,
+            heated_tone=existing.heated_tone if existing else 0,
         )
         self._update_heat(entry)
         self._threads[key] = entry
         logger.debug(
-            "Thread %s/%s: %d replies, %d participants, heat=%.1f, last=%s",
+            "Thread %s/%s: %d messages, %d reply records, %d participants, heat=%.1f, last=%s",
             channel_name,
             thread_ts,
-            entry.reply_count,
+            entry.message_count,
+            len(entry.replies),
             len(entry.participants),
             entry.heat_score,
             entry.last_activity.isoformat(),
@@ -415,6 +438,6 @@ class SlackPoller:
             self._config.heat.retitle_reply_percent,
         ):
             asyncio.create_task(self._on_title_needed(entry, reply_texts))
-        needs_summary = entry.summary is None or entry.reply_count > entry.summary_watermark
+        needs_summary = entry.summary is None or entry.message_count > entry.summary_watermark
         if self._on_summary_needed and needs_summary:
             asyncio.create_task(self._on_summary_needed(entry, reply_texts))
