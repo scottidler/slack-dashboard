@@ -1,10 +1,47 @@
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from slack_dashboard.config import HeatConfig, resolve_channel_weight, resolve_person_weight
 from slack_dashboard.thread import ThreadEntry
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class HeatBreakdown:
+    """The composed factors behind a single heat score, exposed in one struct.
+
+    Every field is a quantity that enters ``compute_heat``'s formula or names a count a
+    human scans. ``overall`` is the ranking score and equals ``compute_heat``'s result for
+    the same inputs; the other fields are the intermediates that produce it. This is the
+    single arithmetic path - ``compute_heat`` returns ``heat_breakdown(...).overall``.
+    """
+
+    overall: float  # the ranking score (== compute_heat result)
+    channel_weight: float  # multiplier
+    base: float  # message_count*reply_weight + people_term (capped)
+    message_count: int  # for the Nm face value
+    people_count: int  # len(participants), for the Np face value
+    people_term: float  # weighted, capped sum (tooltip / precision)
+    has_vip: bool  # any participant above default weight -> append crown
+    velocity: float  # raw replies/min in window
+    recency: float  # decay multiplier in [decay_floor, 1.0]
+    damping: float  # involvement-damping multiplier in [1-involved_damping, 1.0]
+
+
+def is_vip(thread: ThreadEntry, config: HeatConfig) -> bool:
+    """True when any participant carries an above-default people-weight (a pinned person).
+
+    The single source of truth for the VIP rule: a participant is a VIP when their
+    ``resolve_person_weight`` exceeds the default ``participant_weight``. Both the heat
+    breakdown's crown and ``web._has_vip`` delegate here so the rule lives in one place.
+
+    Trivial membership predicate - no logging per the logging rule.
+    """
+    default = float(config.participant_weight)
+    return any(resolve_person_weight(uid, config) > default for uid in thread.participants)
+
 
 # Hard cap on retained reply timestamps per thread so a high-velocity thread
 # cannot grow the velocity window unbounded (oldest dropped past this cap).
@@ -105,33 +142,81 @@ def involvement_damping(
     return damping
 
 
-def compute_heat(thread: ThreadEntry, config: HeatConfig, self_user_id: str | None = None) -> float:
-    now = datetime.now(UTC)
-    hours_since = (now - thread.last_activity).total_seconds() / 3600
+def heat_breakdown(
+    thread: ThreadEntry,
+    config: HeatConfig,
+    self_user_id: str | None = None,
+    now: float | None = None,
+) -> HeatBreakdown:
+    """Compute every factor behind a thread's heat score in one place.
+
+    This is the single arithmetic path for the ranking score: ``compute_heat`` is a thin
+    wrapper that returns ``.overall``. ``now`` is a float Unix timestamp defaulting to the
+    current UTC instant, matching ``velocity``/``involvement_damping``/``structural_heat``.
+    ``recency`` derives ``hours_since`` from the float ``now`` (the ``structural_heat``
+    pattern), which assumes a tz-aware ``last_activity`` (the poller creates it aware,
+    though ``ThreadEntry`` does not enforce it).
+    """
+    if now is None:
+        now = datetime.now(UTC).timestamp()
+    logger.debug(
+        "heat_breakdown: channel=%s thread_ts=%s message_count=%d participants=%d "
+        "self_user_id=%s now=%.6f",
+        thread.channel_name,
+        thread.thread_ts,
+        thread.message_count,
+        len(thread.participants),
+        self_user_id,
+        now,
+    )
+    hours_since = (now - thread.last_activity.timestamp()) / 3600
     # Participant term is the SUM of per-person weights (each defaults to participant_weight),
     # so important people raise a thread without erasing volume gravity. Bounded by
     # people_weight_cap so a pile-up of weighted people cannot run the score away.
     people_term = sum(resolve_person_weight(uid, config) for uid in thread.participants)
     if config.people_weight_cap > 0:
         people_term = min(people_term, config.people_weight_cap)
-    base = (thread.message_count * config.reply_weight) + people_term
+    message_count = thread.message_count
+    people_count = len(thread.participants)
+    base = (message_count * config.reply_weight) + people_term
     channel_weight = resolve_channel_weight(thread.channel_name, config)
-    vel = velocity(thread, config, now.timestamp())
+    vel = velocity(thread, config, now)
     recency = max(config.decay_floor, 1.0 - (hours_since / config.decay_hours))
-    damping = involvement_damping(thread, config, self_user_id, now.timestamp())
+    damping = involvement_damping(thread, config, self_user_id, now)
+    has_vip = is_vip(thread, config)
     score = channel_weight * (base + vel * config.velocity_weight) * recency * damping
     logger.debug(
-        "compute_heat: channel=%s base=%.1f velocity=%.3f weight=%.2f recency=%.3f "
+        "heat_breakdown: channel=%s base=%.1f message_count=%d people_count=%d "
+        "people_term=%.1f has_vip=%s velocity=%.3f weight=%.2f recency=%.3f "
         "damping=%.3f score=%.1f",
         thread.channel_name,
         base,
+        message_count,
+        people_count,
+        people_term,
+        has_vip,
         vel,
         channel_weight,
         recency,
         damping,
         score,
     )
-    return score
+    return HeatBreakdown(
+        overall=score,
+        channel_weight=channel_weight,
+        base=base,
+        message_count=message_count,
+        people_count=people_count,
+        people_term=people_term,
+        has_vip=has_vip,
+        velocity=vel,
+        recency=recency,
+        damping=damping,
+    )
+
+
+def compute_heat(thread: ThreadEntry, config: HeatConfig, self_user_id: str | None = None) -> float:
+    return heat_breakdown(thread, config, self_user_id).overall
 
 
 def detect_resurrection(prior_last_activity_ts: float, event_ts: float, config: HeatConfig) -> bool:

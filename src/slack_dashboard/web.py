@@ -9,9 +9,9 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
-from slack_dashboard.config import AppConfig, resolve_channel_weight, resolve_person_weight
+from slack_dashboard.config import AppConfig, resolve_channel_weight
 from slack_dashboard.connection import ConnectionState
-from slack_dashboard.heat import is_heated, is_involved, is_zombie, replies_in_window
+from slack_dashboard.heat import is_heated, is_involved, is_vip, is_zombie, replies_in_window
 from slack_dashboard.llm.provider import LlmProvider
 from slack_dashboard.slack.mrkdwn import strip_mrkdwn
 from slack_dashboard.slack.poller import SlackPoller
@@ -114,9 +114,11 @@ def channel_link(workspace: str, channel_id: str, team_id: str = "") -> str:
 
 
 def _has_vip(thread: ThreadEntry, config: AppConfig) -> bool:
-    """True when a participant carries an above-default people-weight (a pinned person)."""
-    default = float(config.heat.participant_weight)
-    return any(resolve_person_weight(uid, config.heat) > default for uid in thread.participants)
+    """True when a participant carries an above-default people-weight (a pinned person).
+
+    Delegates to ``heat.is_vip`` so the VIP rule lives in exactly one place.
+    """
+    return is_vip(thread, config.heat)
 
 
 def _emojis(

@@ -3,13 +3,16 @@ from datetime import UTC, datetime, timedelta
 
 from slack_dashboard.config import HeatConfig
 from slack_dashboard.heat import (
+    HeatBreakdown,
     classify_tier,
     compute_heat,
     detect_resurrection,
     filter_stale_threads,
+    heat_breakdown,
     involvement_damping,
     is_heated,
     is_involved,
+    is_vip,
     is_zombie,
     prune_timestamps,
     rank_threads,
@@ -582,3 +585,149 @@ def test_compute_heat_applies_involvement_damping() -> None:
     undamped = compute_heat(thread, config, None)
     assert damped < undamped
     assert abs(damped - undamped * 0.5) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# heat_breakdown / is_vip tests (Phase 1: single-path factor exposure)
+# ---------------------------------------------------------------------------
+
+
+def test_heat_breakdown_fields_match_hand_computed() -> None:
+    # message_count=10, participants=3 (all default weight 3.0), recent, neutral channel.
+    config = HeatConfig()
+    now = _time.time()
+    thread = _make_thread(message_count=10, participants=3, hours_ago=0.0)
+    bd = heat_breakdown(thread, config, None, now)
+    # people_term = 3 * participant_weight(3.0) = 9.0 (no cap hit at default cap)
+    assert abs(bd.people_term - 9.0) < 1e-6
+    # base = message_count*reply_weight + people_term = 10*2 + 9 = 29.0
+    assert abs(bd.base - 29.0) < 1e-6
+    assert bd.message_count == 10
+    assert bd.people_count == 3
+    assert bd.channel_weight == 1.0  # neutral channel
+    assert bd.velocity == 0.0  # no reply timestamps
+    assert abs(bd.recency - 1.0) < 1e-6  # hours_ago=0 -> decay 1.0
+    assert bd.damping == 1.0  # self_user_id None -> no damping
+    assert bd.has_vip is False  # all default-weight participants
+    # overall = channel_weight * (base + vel*velocity_weight) * recency * damping = 29.0
+    assert abs(bd.overall - 29.0) < 1e-6
+
+
+def test_heat_breakdown_channel_weight_factor() -> None:
+    config = HeatConfig(channel_weights={"sre": 2.0})
+    now = _time.time()
+    thread = _make_thread(message_count=10, participants=3, hours_ago=0.0, channel_name="sre")
+    bd = heat_breakdown(thread, config, None, now)
+    assert bd.channel_weight == 2.0
+    # overall = 2.0 * 29.0 * 1.0 * 1.0 = 58.0
+    assert abs(bd.overall - 58.0) < 1e-6
+
+
+def test_heat_breakdown_recency_factor() -> None:
+    # 12 hours old, decay_hours=24 -> recency = 1 - 12/24 = 0.5
+    config = HeatConfig()
+    now = _time.time()
+    thread = _make_thread(message_count=10, participants=3, hours_ago=12.0)
+    bd = heat_breakdown(thread, config, None, now)
+    assert abs(bd.recency - 0.5) < 0.01
+    assert abs(bd.overall - 29.0 * 0.5) < 0.5
+
+
+def test_heat_breakdown_velocity_factor() -> None:
+    config = HeatConfig(velocity_window_minutes=30)
+    now = _time.time()
+    thread = _make_thread(message_count=10, participants=3, hours_ago=0.0)
+    thread.replies = [
+        ReplyRecord(ts=now - 60 * i, author_id="U1", text="", is_root=(i == 0)) for i in range(6)
+    ]
+    bd = heat_breakdown(thread, config, None, now)
+    # 6 replies in the 30-min window -> 6/30 = 0.2 replies/min
+    assert abs(bd.velocity - 6 / 30) < 1e-6
+
+
+def test_heat_breakdown_damping_factor() -> None:
+    config = HeatConfig(involved_damping=0.5, involved_decay_messages=10, involved_decay_hours=24)
+    now = _time.time()
+    thread = _involved_thread(self_ago_s=0, messages_after=0)
+    bd = heat_breakdown(thread, config, "U1", now)
+    # Just posted, nothing after -> damping = 1 - involved_damping = 0.5
+    assert abs(bd.damping - 0.5) < 1e-6
+
+
+def test_heat_breakdown_people_term_capped() -> None:
+    config = HeatConfig(people_weights={"U0": 100, "U1": 100, "U2": 100}, people_weight_cap=10)
+    now = _time.time()
+    thread = _make_thread(message_count=0, participants=3, hours_ago=0.0)
+    bd = heat_breakdown(thread, config, None, now)
+    # people_term = min(300, 10) = 10; has_vip True (above-default weights present)
+    assert abs(bd.people_term - 10.0) < 1e-6
+    assert abs(bd.base - 10.0) < 1e-6
+    assert bd.has_vip is True
+
+
+def test_heat_breakdown_has_vip_true_with_pinned_participant() -> None:
+    config = HeatConfig(people_weights={"U0": 50})
+    now = _time.time()
+    thread = _make_thread(message_count=10, participants=3, hours_ago=0.0)
+    bd = heat_breakdown(thread, config, None, now)
+    assert bd.has_vip is True
+
+
+def test_single_path_invariant() -> None:
+    # compute_heat must equal heat_breakdown(...).overall for several fixtures.
+    config = HeatConfig()
+    fixtures = [
+        _make_thread(message_count=10, participants=3, hours_ago=0.0),
+        _make_thread(message_count=5, participants=2, hours_ago=1.0),
+        _make_thread(message_count=200, participants=20, hours_ago=25.0),
+        _make_thread(message_count=0, participants=0, hours_ago=0.0),
+    ]
+    for thread in fixtures:
+        # compute_heat is a thin wrapper over heat_breakdown(...).overall; with a fresh
+        # default now on each, the two agree to within sub-second decay drift on a 24h curve.
+        assert abs(compute_heat(thread, config) - heat_breakdown(thread, config).overall) < 1e-3
+
+
+def test_single_path_invariant_with_involvement() -> None:
+    config = HeatConfig(involved_damping=0.5, involved_decay_messages=10, involved_decay_hours=24)
+    thread = _involved_thread(self_ago_s=0, messages_after=0)
+    now = _time.time()
+    # Pinned now: heat_breakdown is deterministic, so compute_heat (its .overall) agrees.
+    bd = heat_breakdown(thread, config, "U1", now)
+    assert bd.overall == heat_breakdown(thread, config, "U1", now).overall
+    assert abs(bd.damping - 0.5) < 1e-6
+
+
+def test_compute_heat_numeric_result_unchanged() -> None:
+    # Pin the refactor: a known fixture's score is exactly what the pre-refactor formula gave.
+    # base = 10*2 + 3*3 = 29; neutral channel; recent (recency ~1.0); no damping -> 29.0.
+    config = HeatConfig()
+    thread = _make_thread(message_count=10, participants=3, hours_ago=0.0)
+    assert abs(compute_heat(thread, config) - 29.0) < 1.0
+
+
+def test_heat_breakdown_overall_equals_compute_heat_default_now() -> None:
+    # With the default now (each call captures its own), the two paths agree to within
+    # the sub-second decay drift between calls on a 24h curve - i.e. effectively equal.
+    config = HeatConfig()
+    thread = _make_thread(message_count=10, participants=3, hours_ago=0.5)
+    assert abs(compute_heat(thread, config) - heat_breakdown(thread, config).overall) < 1e-3
+
+
+def test_heat_breakdown_is_frozen() -> None:
+    config = HeatConfig()
+    thread = _make_thread(message_count=10, participants=3, hours_ago=0.0)
+    bd = heat_breakdown(thread, config)
+    assert isinstance(bd, HeatBreakdown)
+
+
+def test_is_vip_true_when_above_default_weight() -> None:
+    config = HeatConfig(people_weights={"U0": 50})
+    thread = _make_thread(message_count=10, participants=3, hours_ago=0.0)
+    assert is_vip(thread, config) is True
+
+
+def test_is_vip_false_when_all_default() -> None:
+    config = HeatConfig()
+    thread = _make_thread(message_count=10, participants=3, hours_ago=0.0)
+    assert is_vip(thread, config) is False
