@@ -140,3 +140,37 @@ Two user-directed changes after v0.3.8, implemented directly (no separate design
 - `auth.test` failure (network/invalid token) leaves `self_user_id` None; `is_involved`
   then never matches, so the 👤 glyph simply stays dark - no thread is blocked, nothing
   crashes. Covered by `test_resolve_self_none_on_failure` and `test_is_involved_false_when_self_unresolved`.
+
+## Follow-up: involvement damping (shipped v0.3.10)
+
+A heat-ranking change requested after the 👤 glyph: a thread the user has RECENTLY posted
+in is lower priority (they already weighed in), with the reduction fading as the message is
+buried and as time passes. The 👤 presence glyph is unchanged; this only scales heat.
+
+### Design decisions
+
+- `heat.involvement_damping(thread, config, self_user_id, now_ts)` returns a multiplier in
+  `[1 - involved_damping, 1.0]`, folded into `compute_heat` as the last factor (alongside
+  channel_weight and recency). Uses the user's last retained post in `replies` (author_id ==
+  self), counts messages after it, and computes `freshness = msg_fade * time_fade`;
+  `damping = 1 - involved_damping * freshness`.
+- **Product of the two fades** (message-burial AND time), not min/max: both must be fresh for
+  full reduction; either one going stale erodes it. Each axis has its own decay knob, and a
+  knob of 0 disables that axis (fade fixed at 1.0). This is the "knobs for power and
+  diminution" the user asked for.
+- Three knobs on `HeatConfig` (kebab in yaml, load from the XDG config via `_KebabModel`):
+  `involved-damping` (peak cut, default 0.5), `involved-decay-messages` (default 10),
+  `involved-decay-hours` (default 24.0). Documented in `slack-dashboard.example.yml` and added
+  to the live `~/.config/slack-dashboard/slack-dashboard.yml`.
+- `self_user_id` reaches `compute_heat` from the poller (`ranked_threads`, `_update_heat`)
+  the same way the render path gets it; `rank_threads` gained an optional pass-through.
+
+### Deviations
+- None.
+
+### Tradeoffs
+- Multiplicative damping on the final score (not subtracting from base) keeps it explainable
+  and composable with the other multipliers, and bounds the effect to a clean fraction.
+
+### Open questions
+- Defaults (0.5 / 10 msgs / 24h) are a starting point; calibrate by observation.

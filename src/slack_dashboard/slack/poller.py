@@ -104,7 +104,7 @@ class SlackPoller:
         ]
         threads = filter_stale_threads(live, self._config.heat)
         for t in threads:
-            t.heat_score = compute_heat(t, self._config.heat)
+            t.heat_score = compute_heat(t, self._config.heat, self._self_user_id)
             t.heat_tier = classify_tier(t.heat_score, self._config.heat)
         return sorted(threads, key=lambda t: t.heat_score, reverse=True)
 
@@ -446,7 +446,7 @@ class SlackPoller:
         return await self._slack.resolve_user(user_id)
 
     def _update_heat(self, entry: ThreadEntry) -> None:
-        entry.heat_score = compute_heat(entry, self._config.heat)
+        entry.heat_score = compute_heat(entry, self._config.heat, self._self_user_id)
         entry.heat_tier = classify_tier(entry.heat_score, self._config.heat)
 
     def _maybe_trigger_llm(self, entry: ThreadEntry, reply_texts: list[str]) -> None:

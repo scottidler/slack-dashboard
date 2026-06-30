@@ -7,6 +7,7 @@ from slack_dashboard.heat import (
     compute_heat,
     detect_resurrection,
     filter_stale_threads,
+    involvement_damping,
     is_heated,
     is_involved,
     is_zombie,
@@ -497,3 +498,87 @@ def test_is_involved_false_when_self_unresolved() -> None:
     # None self_user_id (auth.test failed / not yet run) never matches.
     thread = _thread_with_participants({"U1": 2})
     assert not is_involved(thread, None)
+
+
+# involvement_damping tests (recent self-post lowers priority, fades as it is buried)
+
+
+def _involved_thread(self_ago_s: float, messages_after: int, self_id: str = "U1") -> ThreadEntry:
+    now = _time.time()
+    my_ts = now - self_ago_s
+    replies = [ReplyRecord(ts=my_ts, author_id=self_id, text="me", is_root=False)]
+    for i in range(messages_after):
+        replies.append(ReplyRecord(ts=my_ts + (i + 1), author_id="UOTHER", text="x", is_root=False))
+    thread = ThreadEntry(
+        channel_id="C1",
+        channel_name="sre",
+        thread_ts="100.000000",
+        first_message="root",
+        started_by="U9",
+        message_count=1 + messages_after,
+        participants={self_id: 1, "UOTHER": messages_after},
+        last_activity=datetime.now(UTC),
+    )
+    thread.replies = replies
+    return thread
+
+
+def test_involvement_damping_none_self_is_noop() -> None:
+    thread = _involved_thread(self_ago_s=0, messages_after=0)
+    assert involvement_damping(thread, HeatConfig(), None, _time.time()) == 1.0
+
+
+def test_involvement_damping_disabled_is_noop() -> None:
+    thread = _involved_thread(self_ago_s=0, messages_after=0)
+    config = HeatConfig(involved_damping=0.0)
+    assert involvement_damping(thread, config, "U1", _time.time()) == 1.0
+
+
+def test_involvement_damping_noop_when_user_has_no_post() -> None:
+    thread = _involved_thread(self_ago_s=0, messages_after=0, self_id="U1")
+    # The user "UZZZ" never posted, so there is nothing to damp.
+    assert involvement_damping(thread, HeatConfig(), "UZZZ", _time.time()) == 1.0
+
+
+def test_involvement_damping_strongest_right_after_post() -> None:
+    # Just posted (0s ago), nothing after -> freshness 1 -> damping = 1 - involved_damping.
+    config = HeatConfig(involved_damping=0.5, involved_decay_messages=10, involved_decay_hours=24)
+    thread = _involved_thread(self_ago_s=0, messages_after=0)
+    assert abs(involvement_damping(thread, config, "U1", _time.time()) - 0.5) < 1e-6
+
+
+def test_involvement_damping_fades_as_messages_pile_up() -> None:
+    config = HeatConfig(involved_damping=0.5, involved_decay_messages=10, involved_decay_hours=24)
+    now = _time.time()
+    fresh = involvement_damping(_involved_thread(0, 0), config, "U1", now)
+    buried = involvement_damping(_involved_thread(0, 5), config, "U1", now)
+    # More messages after my post -> less reduction -> damping closer to 1.0.
+    assert fresh < buried < 1.0
+
+
+def test_involvement_damping_fully_restored_when_superseded() -> None:
+    config = HeatConfig(involved_damping=0.5, involved_decay_messages=10, involved_decay_hours=24)
+    # messages_after >= involved_decay_messages -> msg_fade 0 -> no reduction.
+    thread = _involved_thread(self_ago_s=0, messages_after=10)
+    assert involvement_damping(thread, config, "U1", _time.time()) == 1.0
+
+
+def test_involvement_damping_fades_over_time() -> None:
+    config = HeatConfig(involved_damping=0.5, involved_decay_messages=10, involved_decay_hours=24)
+    now = _time.time()
+    recent = involvement_damping(_involved_thread(0, 0), config, "U1", now)
+    aged = involvement_damping(_involved_thread(12 * 3600, 0), config, "U1", now)
+    # 12h after my post (half the decay window) -> half the reduction.
+    assert recent < aged < 1.0
+    # Past the full time window -> fully restored.
+    old = involvement_damping(_involved_thread(25 * 3600, 0), config, "U1", now)
+    assert old == 1.0
+
+
+def test_compute_heat_applies_involvement_damping() -> None:
+    config = HeatConfig(involved_damping=0.5, involved_decay_messages=10, involved_decay_hours=24)
+    thread = _involved_thread(self_ago_s=0, messages_after=0)
+    damped = compute_heat(thread, config, "U1")
+    undamped = compute_heat(thread, config, None)
+    assert damped < undamped
+    assert abs(damped - undamped * 0.5) < 1e-6

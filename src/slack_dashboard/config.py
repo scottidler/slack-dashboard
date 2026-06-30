@@ -83,6 +83,20 @@ class HeatConfig(_KebabModel):
     heated_structural_scale: float = 1.0
     heated_tone_weight: float = 3.0
 
+    # Involvement damping: a thread the user has RECENTLY posted in is lower priority -
+    # you have already weighed in. The reduction is strongest right after your post and
+    # fades back to none (multiplier 1.0) as your message is buried by later messages AND
+    # as time passes, at which point the thread may need you again and regains its rank.
+    # The 👤 presence glyph is unaffected; this only scales heat.
+    #   msg_fade  = max(0, 1 - messages_after / involved_decay_messages)
+    #   time_fade = max(0, 1 - hours_since    / involved_decay_hours)
+    #   heat *= 1 - involved_damping * (msg_fade * time_fade)
+    # involved_damping is the peak cut: 0.0 disables the feature, 0.5 halves heat right
+    # after your post, 1.0 can drive it to zero. Set a decay knob to 0 to disable that axis.
+    involved_damping: float = 0.5
+    involved_decay_messages: int = 10
+    involved_decay_hours: float = 24.0
+
     @model_validator(mode="before")
     @classmethod
     def _migrate_decay_half_life(cls, data: Any) -> Any:

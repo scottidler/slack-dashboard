@@ -143,6 +143,9 @@ def test_defaults() -> None:
     assert heat.warm_threshold == 20
     assert heat.retitle_reply_growth == 5
     assert heat.retitle_reply_percent == 25
+    assert heat.involved_damping == 0.5
+    assert heat.involved_decay_messages == 10
+    assert heat.involved_decay_hours == 24.0
     llm = LlmConfig()
     assert llm.provider == "anthropic"
     assert llm.model == "claude-haiku-4-5-20251001"

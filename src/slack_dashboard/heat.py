@@ -54,7 +54,58 @@ def velocity(thread: ThreadEntry, config: HeatConfig, now_ts: float | None = Non
     return replies_in_window(thread, config, now_ts) / config.velocity_window_minutes
 
 
-def compute_heat(thread: ThreadEntry, config: HeatConfig) -> float:
+def involvement_damping(
+    thread: ThreadEntry,
+    config: HeatConfig,
+    self_user_id: str | None,
+    now_ts: float,
+) -> float:
+    """Heat multiplier that lowers priority for a thread the user recently posted in.
+
+    Returns 1.0 (no change) when the feature is off (involved_damping <= 0), the user is
+    unresolved (None), or the user has no retained post in this thread. Otherwise the
+    user's last post drives a reduction strongest immediately (nothing after it, just
+    posted) that fades back to 1.0 as later messages bury it and as time passes - at which
+    point the thread may need the user again and regains its rank:
+
+        msg_fade  = max(0, 1 - messages_after / involved_decay_messages)
+        time_fade = max(0, 1 - hours_since    / involved_decay_hours)
+        damping   = 1 - involved_damping * (msg_fade * time_fade)   # in [1-damping, 1]
+
+    A decay knob of 0 disables that axis (treated as always-fresh on it). Logs the inputs
+    and resulting multiplier per the logging rule.
+    """
+    if self_user_id is None or config.involved_damping <= 0:
+        return 1.0
+    mine = [r.ts for r in thread.replies if r.author_id == self_user_id]
+    if not mine:
+        return 1.0
+    last_ts = max(mine)
+    messages_after = sum(1 for r in thread.replies if r.ts > last_ts)
+    hours_since = max(0.0, (now_ts - last_ts) / 3600)
+    # A decay knob of 0 disables that axis (fade fixed at 1.0 = always fresh on it).
+    decay_msgs = config.involved_decay_messages
+    decay_hrs = config.involved_decay_hours
+    msg_fade = max(0.0, 1.0 - messages_after / decay_msgs) if decay_msgs > 0 else 1.0
+    time_fade = max(0.0, 1.0 - hours_since / decay_hrs) if decay_hrs > 0 else 1.0
+    freshness = msg_fade * time_fade
+    damping = 1.0 - config.involved_damping * freshness
+    logger.debug(
+        "involvement_damping: channel=%s thread_ts=%s messages_after=%d hours_since=%.2f "
+        "msg_fade=%.3f time_fade=%.3f freshness=%.3f damping=%.3f",
+        thread.channel_name,
+        thread.thread_ts,
+        messages_after,
+        hours_since,
+        msg_fade,
+        time_fade,
+        freshness,
+        damping,
+    )
+    return damping
+
+
+def compute_heat(thread: ThreadEntry, config: HeatConfig, self_user_id: str | None = None) -> float:
     now = datetime.now(UTC)
     hours_since = (now - thread.last_activity).total_seconds() / 3600
     # Participant term is the SUM of per-person weights (each defaults to participant_weight),
@@ -67,14 +118,17 @@ def compute_heat(thread: ThreadEntry, config: HeatConfig) -> float:
     channel_weight = resolve_channel_weight(thread.channel_name, config)
     vel = velocity(thread, config, now.timestamp())
     recency = max(config.decay_floor, 1.0 - (hours_since / config.decay_hours))
-    score = channel_weight * (base + vel * config.velocity_weight) * recency
+    damping = involvement_damping(thread, config, self_user_id, now.timestamp())
+    score = channel_weight * (base + vel * config.velocity_weight) * recency * damping
     logger.debug(
-        "compute_heat: channel=%s base=%.1f velocity=%.3f weight=%.2f recency=%.3f score=%.1f",
+        "compute_heat: channel=%s base=%.1f velocity=%.3f weight=%.2f recency=%.3f "
+        "damping=%.3f score=%.1f",
         thread.channel_name,
         base,
         vel,
         channel_weight,
         recency,
+        damping,
         score,
     )
     return score
@@ -262,9 +316,10 @@ def classify_tier(score: float, config: HeatConfig) -> str:
 def rank_threads(
     threads: list[ThreadEntry],
     config: HeatConfig,
+    self_user_id: str | None = None,
 ) -> list[ThreadEntry]:
     for thread in threads:
-        thread.heat_score = compute_heat(thread, config)
+        thread.heat_score = compute_heat(thread, config, self_user_id)
         thread.heat_tier = classify_tier(thread.heat_score, config)
     return sorted(threads, key=lambda t: t.heat_score, reverse=True)
 

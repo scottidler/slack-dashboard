@@ -62,6 +62,19 @@ heat:
   heated-structural-scale: 1.0
   heated-tone-weight: 3.0
 
+  # Involvement damping: a thread you have RECENTLY posted in (the 👤 glyph) is lower
+  # priority - you already weighed in. The cut is strongest right after your post and
+  # fades back to none as your message is buried by later messages AND as time passes,
+  # so a thread that moves on past your input climbs back up:
+  #   msg-fade  = max(0, 1 - messages-after-your-post / involved-decay-messages)
+  #   time-fade = max(0, 1 - hours-since-your-post    / involved-decay-hours)
+  #   heat *= 1 - involved-damping * (msg-fade * time-fade)
+  # involved-damping is the peak cut: 0.0 turns it off, 0.5 halves heat right after your
+  # post, 1.0 can zero it. Set either decay knob to 0 to disable that axis.
+  involved-damping: 0.5
+  involved-decay-messages: 10
+  involved-decay-hours: 24.0
+
   # The single highest-leverage knob: weight the channels you care about up and
   # the noise down. Glob-aware; exact keys win over globs; default 1.0.
   channel-weights:
