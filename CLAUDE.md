@@ -18,6 +18,14 @@ When changing the UI, hold this line:
   - Hover the **#channel** handle → popover listing every thread in that channel, ranked;
     each listing is a `slack://` link into the desktop app.
   - Hover **`Nm`** → "N message(s)"; hover **`Np`** → "N people" (native tooltips).
+  - The title hover also shows a one-line heat-metrics strip above the quoted first
+    message: the overall score plus the factors that compose it, left to right. Glyph ->
+    factor: 🌡️ overall heat score; 🏷️ channel weight (`×N.NN`); 📊 base (`Nm·Np`, message
+    count times people count, with 👑 appended when a VIP-weighted person is in the
+    thread); ⚡ velocity (replies/min; dimmed when `velocity_weight` is 0, since it then
+    contributes nothing to the score); ⏱️ recency (decay multiplier, 0..1); 👤 involvement
+    damping (`×N.NN`). ⚡, 👤, and 👑 are the same glyphs the row already uses for its
+    emoji column; the strip just reuses them rather than inventing new ones.
 - Fixed-width left columns (dismiss `×`, counts `Nm|Np`) so titles align into a scannable
   column. Counts are intentionally terse (`3m|3p`, not "3 messages · 3 participants").
 - Channel handles render Slack-style: lowercase, `#`-prefixed, no ALL-CAPS, no pill.

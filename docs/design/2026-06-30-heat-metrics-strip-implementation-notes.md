@@ -114,3 +114,44 @@ Companion to `docs/design/2026-06-30-heat-metrics-strip.md`. Each phase appends 
 
 ### Open questions
 - None.
+
+## Phase 3: Polish and convention
+
+### Design decisions
+- Verified rather than re-implemented: Phase 2 already satisfied both of Phase 3's
+  concrete checks, so no production code changed.
+  - **`now` discipline** (`web.py:summarize`): the handler captures exactly one
+    `now = datetime.now(UTC).timestamp()` right after the `entry is None` guard
+    (`web.py:478`) and passes that single value into `heat_breakdown(entry, config.heat,
+    poller.self_user_id, now)` (`web.py:479`). There is no second wall-clock read inside
+    the handler; the same `now` would also feed any later use in this request if one were
+    added. This matches the existing pattern at `web.py:441` (`/threads`) and `web.py:515`
+    (`/channel/{channel_id}`), which each capture one `now` per request.
+  - **CSS** (`templates/base.html:101-103`): `.heat-strip` carries both
+    `font-variant-numeric: tabular-nums` and `white-space: nowrap`, matching
+    `.row-counts` (`base.html:70`). `.heat-chip.dim` uses `opacity: 0.4`, in the same
+    range as the codebase's other de-emphasis opacities (`.count-sep` at 0.45,
+    `.group-sep` at 0.6) - dimmed enough to read as "no-op for the score" while the glyph
+    and value stay legible at a glance.
+- Documented the chip vocabulary in `CLAUDE.md` under "Design principle: maximum
+  information density", as a new bullet alongside the existing hover-affordance bullets
+  (`CLAUDE.md` density section) rather than a separate subsection - it is one more hover
+  affordance (the title hover), so it reads naturally as part of that existing list rather
+  than as a freestanding heading. Glyph -> factor mapping spelled out tersely (🌡️ overall,
+  🏷️ channel weight, 📊 base with 👑, ⚡ velocity, ⏱️ recency, 👤 damping), and the note that
+  ⚡/👤/👑 are reused from the row's emoji column rather than newly invented.
+
+### Deviations
+- None. Both Phase 3 verification items passed as committed in Phase 2; no code change
+  was required for either. The only Phase 3 deliverable that needed new work was the
+  `CLAUDE.md` documentation.
+
+### Tradeoffs
+- Considered adding a dedicated "## Heat-metrics strip vocabulary" subsection in
+  `CLAUDE.md` versus folding it into the existing hover bullet list - chose the latter
+  for terseness and consistency with how the other hover affordances (title, #channel,
+  Nm/Np) are already documented in that same list rather than broken out, keeping the
+  density section itself dense.
+
+### Open questions
+- None.
