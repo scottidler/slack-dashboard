@@ -98,3 +98,45 @@ This section supersedes the two "Open questions: None." entries above for the au
 
 Findings 3 (`example.yml` `unanswered-max-replies: 2`) and 4 (`TONE:` strip only handles
 numeric lines, deliberate) were assessed defer/non-issue and left as-is.
+
+## Follow-up: 🔥 → 🌶️ reglyph + 👤 involved signal (shipped v0.3.9)
+
+Two user-directed changes after v0.3.8, implemented directly (no separate design doc).
+
+### Design decisions
+
+- **Heated-exchange glyph moved from 🔥 to 🌶️** (`web.py:_PEPPER = "\N{HOT PEPPER}"`). The
+  signal/logic is unchanged (`is_heated`); only the rendered glyph, legend, tooltip,
+  `example.yml`, and the now-stale 🔥 comments in `config.py`/`base.html` changed. Note:
+  Unicode has no jalapeño codepoint; 🌶️ (HOT PEPPER) is the standard "spicy" glyph.
+- **New 👤 involved glyph** (`web.py:_INVOLVED = "\N{BUST IN SILHOUETTE}"`): fires when the
+  authenticated user has personally posted in a thread. This was an original 2026-06-29 ask
+  ("I also want one for if I am in the thread or not") that was dropped when that session
+  narrowed to the fire repurpose; resurfaced and built here.
+  - `heat.is_involved(thread, self_user_id)` - membership is a plain lookup against
+    `participants` (keyed by stable user_id, includes every author). The v3.2 reply-record
+    work is what made this trivial.
+  - Self-user resolution: `SlackClient.resolve_self()` calls `auth.test` once; `SlackPoller`
+    stores it in `start()` as `self_user_id`. The render path threads it through
+    `group_threads`/`_build_row`/`_emojis` exactly like `app_start_at`.
+  - **Render order: 👤 leads** (leftmost) as the primary triage cue ("am I already in this?").
+
+### Deviations
+
+- None.
+
+### Tradeoffs
+
+- Threaded `self_user_id` as an explicit param through the render path (mirroring
+  `app_start_at`) rather than stashing it on a global or mutating config - keeps the render
+  functions pure and testable, at the cost of touching several signatures.
+
+### Open questions
+
+- None.
+
+### Failure mode
+
+- `auth.test` failure (network/invalid token) leaves `self_user_id` None; `is_involved`
+  then never matches, so the 👤 glyph simply stays dark - no thread is blocked, nothing
+  crashes. Covered by `test_resolve_self_none_on_failure` and `test_is_involved_false_when_self_unresolved`.

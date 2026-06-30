@@ -1,6 +1,6 @@
 [project]
 name = "slack-dashboard"
-version = "0.3.8"
+version = "0.3.9"
 description = "Slack thread monitoring dashboard with heat-ranked conversations and LLM summarization"
 readme = "README.md"
 authors = [

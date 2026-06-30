@@ -11,7 +11,7 @@ from markupsafe import Markup
 
 from slack_dashboard.config import AppConfig, resolve_channel_weight, resolve_person_weight
 from slack_dashboard.connection import ConnectionState
-from slack_dashboard.heat import is_heated, is_zombie, replies_in_window
+from slack_dashboard.heat import is_heated, is_involved, is_zombie, replies_in_window
 from slack_dashboard.llm.provider import LlmProvider
 from slack_dashboard.slack.mrkdwn import strip_mrkdwn
 from slack_dashboard.slack.poller import SlackPoller
@@ -22,13 +22,14 @@ logger = logging.getLogger(__name__)
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 # Glyphs for the emoji state channel (see design doc "Emoji State Channel").
-# Render order in the row: unanswered (when on, leads), new, vip, spiking, fire, zombie.
+# Render order in the row: involved (leads), unanswered, new, vip, spiking, pepper, zombie.
 _ZOMBIE = "\N{ZOMBIE}"
-_FIRE = "\N{FIRE}"
+_PEPPER = "\N{HOT PEPPER}"  # 🌶️ heated exchange (contentious back-and-forth or hostile tone)
 _VIP = "\N{CROWN}"
 _SPIKING = "\N{HIGH VOLTAGE SIGN}"
 _NEW = "\N{SPARKLES}"  # ✨ recently entered the dashboard's view
 _UNANSWERED = "\N{BLACK QUESTION MARK ORNAMENT}"  # ❓ arithmetic proxy: question, few replies, aged
+_INVOLVED = "\N{BUST IN SILHOUETTE}"  # 👤 the current user has personally posted in this thread
 
 _GROUP_BY_CHOICES = ("none", "channel", "size", "velocity")
 
@@ -118,14 +119,22 @@ def _has_vip(thread: ThreadEntry, config: AppConfig) -> bool:
     return any(resolve_person_weight(uid, config.heat) > default for uid in thread.participants)
 
 
-def _emojis(thread: ThreadEntry, config: AppConfig, now: float, app_start_at: float) -> str:
+def _emojis(
+    thread: ThreadEntry,
+    config: AppConfig,
+    now: float,
+    app_start_at: float,
+    self_user_id: str | None = None,
+) -> str:
     """Build the glyph string for a thread row.
 
-    Render order: unanswered (when on, leads), new, vip, spiking, fire, zombie.
+    Render order: involved (leads), unanswered, new, vip, spiking, pepper, zombie.
     Each glyph is a single Unicode character that signals thread state at a glance.
 
     ``now`` and ``app_start_at`` are passed in (not read from the wall clock here) so the
     caller can capture them once per request and all rows use a consistent timestamp.
+    ``self_user_id`` is the authenticated user's Slack id; None when unresolved, in
+    which case the 👤 involved glyph never fires.
     """
     riw = replies_in_window(thread, config.heat)
     new_window = config.heat.new_window_minutes * 60
@@ -149,6 +158,12 @@ def _emojis(thread: ThreadEntry, config: AppConfig, now: float, app_start_at: fl
         min_age,
     )
     glyphs = []
+    # 👤 involved: the current user has personally posted in this thread (leads the row as
+    # the primary triage cue - "am I already in this one?"). participants is keyed by stable
+    # Slack user_id and includes every message author, so membership is a plain lookup. An
+    # unresolved self_user_id (None) never matches, so the glyph stays dark.
+    if is_involved(thread, self_user_id):
+        glyphs.append(_INVOLVED)
     # ❓ unanswered: arithmetic proxy for a dropped-ball question (opt-in; off by default).
     # Fires when enabled AND the first message contains "?" AND reply_count is at or below
     # the max-replies floor AND the thread is older than the age floor. The broader
@@ -176,7 +191,7 @@ def _emojis(thread: ThreadEntry, config: AppConfig, now: float, app_start_at: fl
     if riw >= config.heat.spiking_threshold:
         glyphs.append(_SPIKING)
     if is_heated(thread, config.heat, now):
-        glyphs.append(_FIRE)
+        glyphs.append(_PEPPER)
     if is_zombie(thread, config.heat):
         glyphs.append(_ZOMBIE)
     return "".join(glyphs)
@@ -187,6 +202,7 @@ def _build_row(
     config: AppConfig,
     now: float,
     app_start_at: float,
+    self_user_id: str | None = None,
     below_fold: bool = False,
 ) -> RowView:
     return RowView(
@@ -197,7 +213,7 @@ def _build_row(
         message_count=thread.message_count,
         participant_count=len(thread.participants),
         heat_tier=thread.heat_tier,
-        emojis=_emojis(thread, config, now, app_start_at),
+        emojis=_emojis(thread, config, now, app_start_at, self_user_id),
         deep_link=deep_link(
             config.workspace, thread.channel_id, thread.thread_ts, config.slack.team_id
         ),
@@ -213,6 +229,7 @@ def group_threads(
     config: AppConfig,
     now: float,
     app_start_at: float,
+    self_user_id: str | None = None,
 ) -> list[GroupView]:
     """Partition globally-ranked threads into display groups.
 
@@ -245,7 +262,7 @@ def group_threads(
             GroupView(
                 label="",
                 rows=[
-                    _build_row(t, config, now, app_start_at, below_fold=_below(i))
+                    _build_row(t, config, now, app_start_at, self_user_id, below_fold=_below(i))
                     for i, t in enumerate(threads)
                 ],
             )
@@ -259,7 +276,9 @@ def group_threads(
                 group = GroupView(label=thread.channel_name)
                 groups[thread.channel_name] = group
             group.rows.append(
-                _build_row(thread, config, now, app_start_at, below_fold=_below(index))
+                _build_row(
+                    thread, config, now, app_start_at, self_user_id, below_fold=_below(index)
+                )
             )
 
         # Cluster channel groups by family (the first hyphen-delimited token, so all
@@ -296,14 +315,18 @@ def group_threads(
         for index, thread in enumerate(threads):
             label = _tier_label(thread.message_count, _SIZE_TIERS)
             buckets[label].rows.append(
-                _build_row(thread, config, now, app_start_at, below_fold=_below(index))
+                _build_row(
+                    thread, config, now, app_start_at, self_user_id, below_fold=_below(index)
+                )
             )
     else:  # velocity
         buckets = {label: GroupView(label=label) for label, _ in _VELOCITY_TIERS}
         for index, thread in enumerate(threads):
             label = _tier_label(replies_in_window(thread, config.heat), _VELOCITY_TIERS)
             buckets[label].rows.append(
-                _build_row(thread, config, now, app_start_at, below_fold=_below(index))
+                _build_row(
+                    thread, config, now, app_start_at, self_user_id, below_fold=_below(index)
+                )
             )
     return [group for group in buckets.values() if group.rows]
 
@@ -335,7 +358,7 @@ def create_routes(
         now = datetime.now(UTC).timestamp()
         app_start_at = poller.app_start_at
         ranked = poller.ranked_threads()
-        groups = group_threads(ranked, group_by, config, now, app_start_at)
+        groups = group_threads(ranked, group_by, config, now, app_start_at, poller.self_user_id)
         # Disclosure contract: every ranked thread is always server-rendered (groups carry
         # the full set); compact mode only hides the below-fold tail via CSS. The visible
         # hidden count tells the user how much sits past the fold.
@@ -399,7 +422,9 @@ def create_routes(
         app_start_at = poller.app_start_at
         ranked = poller.ranked_threads()
         rows = [
-            _build_row(t, config, now, app_start_at) for t in ranked if t.channel_id == channel_id
+            _build_row(t, config, now, app_start_at, poller.self_user_id)
+            for t in ranked
+            if t.channel_id == channel_id
         ]
         name = next((t.channel_name for t in ranked if t.channel_id == channel_id), channel_id)
         link = channel_link(config.workspace, channel_id, config.slack.team_id)

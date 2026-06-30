@@ -59,6 +59,9 @@ def _make_mock_poller(threads: list[ThreadEntry] | None = None) -> AsyncMock:
     # so the storm suppressor (now - app_start_at >= new_window) is always satisfied
     # in route-level tests that are not specifically testing the suppressor.
     type(poller).app_start_at = PropertyMock(return_value=_FAR_PAST_APP_START)
+    # self_user_id is a property on SlackPoller; default the mock to None so the 👤
+    # involved glyph stays dark in tests that are not specifically exercising it.
+    type(poller).self_user_id = PropertyMock(return_value=None)
     if threads is not None:
         poller.ranked_threads.return_value = threads
     return poller
@@ -162,9 +165,9 @@ def test_threads_channel_link_uses_app_scheme_when_team_id_set() -> None:
     assert 'href="slack://channel?team=T999&amp;id=C123"' in response.text
 
 
-def test_threads_renders_fire_emoji_for_heated() -> None:
-    # 🔥 now means a heated exchange: a thread with a strong stored tone
-    # (3 * weight 3.0 = 9 >= threshold 8.0) renders the fire glyph.
+def test_threads_renders_pepper_emoji_for_heated() -> None:
+    # 🌶️ means a heated exchange: a thread with a strong stored tone
+    # (3 * weight 3.0 = 9 >= threshold 8.0) renders the pepper glyph.
     from slack_dashboard.thread import ReplyRecord
 
     app = FastAPI()
@@ -179,7 +182,43 @@ def test_threads_renders_fire_emoji_for_heated() -> None:
     poller = _make_mock_poller([thread])
     create_routes(app, poller, MockLlm(), _CONFIG)
     response = TestClient(app).get("/threads")
-    assert "\N{FIRE}" in response.text
+    assert "\N{HOT PEPPER}" in response.text
+
+
+_INVOLVED_GLYPH = "\N{BUST IN SILHOUETTE}"  # 👤
+
+
+def test_emojis_involved_fires_when_self_in_participants() -> None:
+    # _make_thread() participants include "U1"; passing it as self_user_id lights 👤.
+    thread = _make_thread()
+    with_self = _emojis(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, "U1")
+    without_self = _emojis(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, None)
+    assert _INVOLVED_GLYPH in with_self
+    assert _INVOLVED_GLYPH not in without_self
+
+
+def test_emojis_involved_absent_when_self_not_participant() -> None:
+    thread = _make_thread()  # participants: U1, U2, U3
+    glyphs = _emojis(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, "UZZZ")
+    assert _INVOLVED_GLYPH not in glyphs
+
+
+def test_emojis_involved_leads_the_row() -> None:
+    # 👤 is the primary triage cue and renders first (leftmost) when present.
+    thread = _make_thread()
+    thread.heated_tone = 3  # also fire the pepper so there is a glyph to lead
+    glyphs = _emojis(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, "U1")
+    assert glyphs.startswith(_INVOLVED_GLYPH)
+
+
+def test_threads_renders_involved_glyph_end_to_end() -> None:
+    app = FastAPI()
+    thread = _make_thread()  # participants include U1
+    poller = _make_mock_poller([thread])
+    type(poller).self_user_id = PropertyMock(return_value="U1")
+    create_routes(app, poller, MockLlm(), _CONFIG)
+    response = TestClient(app).get("/threads")
+    assert _INVOLVED_GLYPH in response.text
 
 
 def _client_with_n_threads(n: int) -> TestClient:
@@ -410,8 +449,8 @@ def _make_spiking_thread(
 ) -> ThreadEntry:
     """Thread with the given number of recent replies in the velocity window.
 
-    All replies share one author (a monologue) so structural heat is 0; 🔥 is
-    driven purely by ``heated_tone`` here, keeping the spiking (⚡) and heated (🔥)
+    All replies share one author (a monologue) so structural heat is 0; 🌶️ is
+    driven purely by ``heated_tone`` here, keeping the spiking (⚡) and heated (🌶️)
     signals independent in these tests.
     """
     from slack_dashboard.thread import ReplyRecord
@@ -466,13 +505,13 @@ def test_spiking_glyph_absent_with_zero_replies() -> None:
 
 
 def test_spiking_glyph_distinct_from_fire() -> None:
-    # A spiking monologue with no heated tone shows ⚡ but not 🔥 - the two signals
-    # are independent now that 🔥 means "heated exchange," not high heat.
+    # A spiking monologue with no heated tone shows ⚡ but not 🌶️ - the two signals
+    # are independent now that 🌶️ means "heated exchange," not high heat.
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=20, heated_tone=0)
     emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
     assert "\N{HIGH VOLTAGE SIGN}" in emojis
-    assert "\N{FIRE}" not in emojis
+    assert "\N{HOT PEPPER}" not in emojis
 
 
 def test_spiking_and_fire_can_coexist() -> None:
@@ -482,21 +521,22 @@ def test_spiking_and_fire_can_coexist() -> None:
     thread = _make_spiking_thread(replies_in_window=20, heated_tone=3)
     emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
     assert "\N{HIGH VOLTAGE SIGN}" in emojis
-    assert "\N{FIRE}" in emojis
+    assert "\N{HOT PEPPER}" in emojis
 
 
-def test_spiking_glyph_precedes_fire_in_render_order() -> None:
-    # Glyph order: new, vip, spiking, fire, zombie. Spiking must appear before fire.
+def test_spiking_glyph_precedes_pepper_in_render_order() -> None:
+    # Glyph order: involved, unanswered, new, vip, spiking, pepper, zombie.
+    # Spiking must appear before the pepper.
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=20, heated_tone=3)
     emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
     spiking_pos = emojis.index("\N{HIGH VOLTAGE SIGN}")
-    fire_pos = emojis.index("\N{FIRE}")
-    assert spiking_pos < fire_pos
+    pepper_pos = emojis.index("\N{HOT PEPPER}")
+    assert spiking_pos < pepper_pos
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: Heated-exchange (🔥) glyph tests
+# Phase 2: Heated-exchange (🌶️) glyph tests
 # ---------------------------------------------------------------------------
 
 
@@ -529,11 +569,11 @@ def _make_heated_exchange_thread(heated_tone: int = 0) -> ThreadEntry:
 
 def test_heated_fires_on_strong_tone_alone() -> None:
     # A quietly-hostile, low-volume thread: monologue (structural 0) but tone 3.
-    # tone_term = 3 * 3.0 = 9 >= heated-threshold 8.0 -> 🔥.
+    # tone_term = 3 * 3.0 = 9 >= heated-threshold 8.0 -> 🌶️.
     config = AppConfig(heat=HeatConfig(heated_threshold=8.0, heated_tone_weight=3.0))
     thread = _make_spiking_thread(replies_in_window=2, heated_tone=3)
     emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{FIRE}" in emojis
+    assert "\N{HOT PEPPER}" in emojis
 
 
 def test_heated_fires_on_structure_alone() -> None:
@@ -547,15 +587,15 @@ def test_heated_fires_on_structure_alone() -> None:
     )
     thread = _make_heated_exchange_thread(heated_tone=0)
     emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{FIRE}" in emojis
+    assert "\N{HOT PEPPER}" in emojis
 
 
 def test_heated_does_not_fire_for_hot_but_cordial() -> None:
-    # A hot-tier monologue with cordial tone (0): structural 0 + tone 0 -> no 🔥.
+    # A hot-tier monologue with cordial tone (0): structural 0 + tone 0 -> no 🌶️.
     config = AppConfig(heat=HeatConfig(heated_threshold=8.0))
     thread = _make_spiking_thread(replies_in_window=20, heat_tier="hot", heated_tone=0)
     emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{FIRE}" not in emojis
+    assert "\N{HOT PEPPER}" not in emojis
 
 
 # ---------------------------------------------------------------------------

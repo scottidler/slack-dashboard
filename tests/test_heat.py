@@ -8,6 +8,7 @@ from slack_dashboard.heat import (
     detect_resurrection,
     filter_stale_threads,
     is_heated,
+    is_involved,
     is_zombie,
     prune_timestamps,
     rank_threads,
@@ -464,3 +465,35 @@ def test_is_heated_false_when_score_below_threshold() -> None:
         hours_ago=0.01,
     )
     assert not is_heated(thread, config, now)
+
+
+# is_involved tests (👤 the current user has posted in this thread)
+
+
+def _thread_with_participants(participants: dict[str, int]) -> ThreadEntry:
+    return ThreadEntry(
+        channel_id="C1",
+        channel_name="sre",
+        thread_ts="100.000000",
+        first_message="hello",
+        started_by="U1",
+        message_count=sum(participants.values()),
+        participants=participants,
+        last_activity=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+
+
+def test_is_involved_true_when_self_in_participants() -> None:
+    thread = _thread_with_participants({"U1": 2, "U2": 1})
+    assert is_involved(thread, "U1")
+
+
+def test_is_involved_false_when_self_not_participant() -> None:
+    thread = _thread_with_participants({"U1": 2, "U2": 1})
+    assert not is_involved(thread, "UZZZ")
+
+
+def test_is_involved_false_when_self_unresolved() -> None:
+    # None self_user_id (auth.test failed / not yet run) never matches.
+    thread = _thread_with_participants({"U1": 2})
+    assert not is_involved(thread, None)

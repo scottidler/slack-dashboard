@@ -40,6 +40,24 @@ class SlackClient:
             await asyncio.sleep(1.2)
             return result
 
+    async def resolve_self(self) -> str | None:
+        """Resolve the authenticated user's own Slack user_id via auth.test.
+
+        Used to mark threads the user has personally posted in (the 👤 involved
+        glyph). Returns None on any failure so the glyph simply never fires
+        rather than blocking startup.
+        """
+        logger.debug("resolve_self: calling auth.test")
+        try:
+            response = await self._client.auth_test()
+            data: dict[str, Any] = response.data  # type: ignore[assignment]
+            user_id: str | None = data.get("user_id") or None
+            logger.debug("resolve_self: resolved self user_id=%s", user_id)
+            return user_id
+        except Exception:
+            logger.warning("resolve_self: auth.test failed; involved glyph disabled", exc_info=True)
+            return None
+
     async def resolve_user(self, user_id: str) -> str:
         if not user_id:
             return ""

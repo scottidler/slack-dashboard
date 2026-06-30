@@ -233,9 +233,22 @@ def is_heated(thread: ThreadEntry, config: HeatConfig, now_ts: float | None = No
         thread.heated_tone,
         config.heated_tone_weight,
         config.heated_threshold,
-        "FIRE" if fired else "no",
+        "HEATED" if fired else "no",
     )
     return fired
+
+
+def is_involved(thread: ThreadEntry, self_user_id: str | None) -> bool:
+    """True when the current user has personally posted in this thread.
+
+    Membership is a plain lookup against ``participants`` (keyed by stable Slack
+    user_id, includes every message author - root and replies). ``self_user_id``
+    is None until auth.test resolves it (or if that fails), in which case this is
+    always False so the 👤 glyph stays dark rather than misfiring.
+
+    Trivial membership check - no logging per the logging rule.
+    """
+    return self_user_id is not None and self_user_id in thread.participants
 
 
 def classify_tier(score: float, config: HeatConfig) -> str:

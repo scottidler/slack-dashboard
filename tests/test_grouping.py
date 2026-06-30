@@ -165,22 +165,22 @@ def test_group_by_invalid_falls_back_to_none() -> None:
     assert len(groups[0].rows) == 1
 
 
-def test_build_row_emits_fire_for_heated_tone() -> None:
-    # 🔥 now means a heated exchange, not the hot heat tier. A strong stored tone
+def test_build_row_emits_pepper_for_heated_tone() -> None:
+    # 🌶️ means a heated exchange, not the hot heat tier. A strong stored tone
     # (3 * heated-tone-weight 3.0 = 9 >= heated-threshold 8.0) fires it on its own.
     config = AppConfig()
     thread = _thread(heat_tier="cold")
     thread.heated_tone = 3
     row = _build_row(thread, config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{FIRE}" in row.emojis
+    assert "\N{HOT PEPPER}" in row.emojis
 
 
-def test_build_row_no_fire_for_hot_but_cordial() -> None:
+def test_build_row_no_pepper_for_hot_but_cordial() -> None:
     # A hot-tier thread with no heated signal (monologue, cordial tone) must NOT
-    # fire 🔥 - the glyph is decoupled from heat tier.
+    # fire 🌶️ - the glyph is decoupled from heat tier.
     config = AppConfig()
     row = _build_row(_thread(heat_tier="hot"), config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{FIRE}" not in row.emojis
+    assert "\N{HOT PEPPER}" not in row.emojis
 
 
 def test_build_row_emits_zombie_for_resurrected() -> None:

@@ -174,3 +174,27 @@ async def test_history_and_replies_semaphores_independent(mock_slack: AsyncMock)
         asyncio.sleep = original_sleep  # type: ignore[assignment]
     assert history_entered.is_set()
     assert replies_entered.is_set()
+
+
+@pytest.mark.asyncio
+async def test_resolve_self_returns_user_id() -> None:
+    client_mock = AsyncMock()
+    client_mock.auth_test = AsyncMock(return_value=_mock_response({"ok": True, "user_id": "U123"}))
+    client = SlackClient(client_mock)
+    assert await client.resolve_self() == "U123"
+
+
+@pytest.mark.asyncio
+async def test_resolve_self_none_on_failure() -> None:
+    client_mock = AsyncMock()
+    client_mock.auth_test = AsyncMock(side_effect=Exception("invalid_auth"))
+    client = SlackClient(client_mock)
+    assert await client.resolve_self() is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_self_none_when_user_id_absent() -> None:
+    client_mock = AsyncMock()
+    client_mock.auth_test = AsyncMock(return_value=_mock_response({"ok": True}))
+    client = SlackClient(client_mock)
+    assert await client.resolve_self() is None

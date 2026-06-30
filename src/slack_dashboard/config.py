@@ -75,8 +75,8 @@ class HeatConfig(_KebabModel):
     resurrection_gap_hours: int = 24
     resurrection_age_days: int = 2
     resurrection_display_hours: int = 24
-    # Heated-exchange signal config (🔥 repurpose, Phase 1 groundwork).
-    # heated_score = structural_term + tone_term; 🔥 fires when >= heated_threshold.
+    # Heated-exchange signal config (the 🌶️ pepper glyph).
+    # heated_score = structural_term + tone_term; 🌶️ fires when >= heated_threshold.
     # structural_term: exchange-gated intensity, clamped 0-10, floor-free decay.
     # tone_term: heated_tone (0-3) * heated_tone_weight = 0..9 (Phase 2).
     heated_threshold: float = 8.0

@@ -23,6 +23,7 @@ def _make_mock_slack() -> AsyncMock:
     client = AsyncMock(spec=SlackClient)
     client.resolve_channels = AsyncMock(return_value={"general": "C111"})
     client.resolve_user = AsyncMock(side_effect=lambda uid: uid)
+    client.resolve_self = AsyncMock(return_value="USELF")
     client.fetch_threads = AsyncMock(
         return_value=[
             {"ts": _NOW, "text": "Root message", "reply_count": 3, "thread_ts": _NOW},
@@ -134,6 +135,19 @@ async def test_queue_seeded_on_start() -> None:
     poller = SlackPoller(mock_slack, config)
     await poller.start()
     assert poller.queue.pending_count == 2
+    await poller.stop()
+
+
+@pytest.mark.asyncio
+async def test_start_resolves_self_user_id() -> None:
+    # start() resolves the authenticated user's id once, for the 👤 involved glyph.
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    assert poller.self_user_id is None
+    await poller.start()
+    assert poller.self_user_id == "USELF"
+    mock_slack.resolve_self.assert_awaited_once()
     await poller.stop()
 
 

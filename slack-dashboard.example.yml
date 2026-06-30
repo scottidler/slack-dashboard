@@ -45,12 +45,12 @@ heat:
   # Dead threads age off after this many days (reversible by resurrection).
   max-thread-age-days: 3
 
-  # Tier thresholds (drive the hot/warm/cold title color). The 🔥 glyph is NO LONGER
-  # tied to the hot tier - it now means "heated exchange" (see heated-* below).
+  # Tier thresholds (drive the hot/warm/cold title color). No glyph is tied to the hot
+  # tier anymore - the heated-exchange signal is the 🌶️ pepper (see heated-* below).
   hot-threshold: 50
   warm-threshold: 20
 
-  # Heated-exchange signal (🔥): fires when heated-score >= heated-threshold, where
+  # Heated-exchange signal (🌶️): fires when heated-score >= heated-threshold, where
   # heated-score = structural-term + tone-term (both 0-10, summed). The structural term
   # is a deterministic render-time measure of a real back-and-forth (alternating authors,
   # few people, fast, recent); the tone term rides the per-thread summary call (the LLM

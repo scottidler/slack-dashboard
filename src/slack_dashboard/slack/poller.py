@@ -55,6 +55,20 @@ class SlackPoller:
         # Captured once in start() so the render path can suppress the new glyph
         # for the first new_window after poller start (app-start storm suppressor, M2).
         self._app_start_at: float = 0.0
+        # The authenticated user's own Slack user_id, resolved once in start() via
+        # auth.test. Drives the 👤 involved glyph (a thread the user has posted in).
+        # None until resolved (or if auth.test fails), in which case the glyph never fires.
+        self._self_user_id: str | None = None
+
+    @property
+    def self_user_id(self) -> str | None:
+        """The authenticated user's Slack user_id, or None if unresolved.
+
+        Resolved once in ``start()``; the render path uses it to mark threads the
+        user has personally posted in. None (auth.test failed/not yet run) means
+        the involved glyph stays dark.
+        """
+        return self._self_user_id
 
     @property
     def app_start_at(self) -> float:
@@ -170,11 +184,14 @@ class SlackPoller:
 
     async def start(self) -> None:
         self._app_start_at = datetime.now(UTC).timestamp()
+        self._self_user_id = await self._slack.resolve_self()
         self._channel_map = self._config.channels
         logger.info(
-            "Loaded %d channels from config, seeding fetch queue... app_start_at=%.3f",
+            "Loaded %d channels from config, seeding fetch queue..."
+            " app_start_at=%.3f self_user_id=%s",
             len(self._channel_map),
             self._app_start_at,
+            self._self_user_id,
         )
         self._queue.seed_channels(self._channel_map, priority=PRIORITY_BACKFILL)
         self._consumer_task = asyncio.create_task(self._consume_loop())
