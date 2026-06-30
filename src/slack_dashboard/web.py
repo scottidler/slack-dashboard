@@ -11,7 +11,7 @@ from markupsafe import Markup
 
 from slack_dashboard.config import AppConfig, resolve_channel_weight, resolve_person_weight
 from slack_dashboard.connection import ConnectionState
-from slack_dashboard.heat import is_zombie, replies_in_window
+from slack_dashboard.heat import is_heated, is_zombie, replies_in_window
 from slack_dashboard.llm.provider import LlmProvider
 from slack_dashboard.slack.mrkdwn import strip_mrkdwn
 from slack_dashboard.slack.poller import SlackPoller
@@ -175,7 +175,7 @@ def _emojis(thread: ThreadEntry, config: AppConfig, now: float, app_start_at: fl
         glyphs.append(_VIP)
     if riw >= config.heat.spiking_threshold:
         glyphs.append(_SPIKING)
-    if thread.heat_tier == "hot":
+    if is_heated(thread, config.heat, now):
         glyphs.append(_FIRE)
     if is_zombie(thread, config.heat):
         glyphs.append(_ZOMBIE)
@@ -382,6 +382,7 @@ def create_routes(
             )
         entry.summary = result.bullets
         entry.summary_watermark = entry.message_count
+        entry.heated_tone = result.tone
         return templates.TemplateResponse(
             request, "partials/summary.html", {"summary": result.bullets, **detail}
         )

@@ -45,9 +45,22 @@ heat:
   # Dead threads age off after this many days (reversible by resurrection).
   max-thread-age-days: 3
 
-  # Tier thresholds (drive the :fire: marker via the "hot" tier).
+  # Tier thresholds (drive the hot/warm/cold title color). The 🔥 glyph is NO LONGER
+  # tied to the hot tier - it now means "heated exchange" (see heated-* below).
   hot-threshold: 50
   warm-threshold: 20
+
+  # Heated-exchange signal (🔥): fires when heated-score >= heated-threshold, where
+  # heated-score = structural-term + tone-term (both 0-10, summed). The structural term
+  # is a deterministic render-time measure of a real back-and-forth (alternating authors,
+  # few people, fast, recent); the tone term rides the per-thread summary call (the LLM
+  # returns a 0-3 tone, scaled by heated-tone-weight). A strong tone alone (3 * 3.0 = 9)
+  # clears the default threshold, surfacing the quietly-hostile low-volume thread that
+  # heat-ranking buries. Decoupled from heat tier on purpose (a thread can be hot but
+  # cordial, or low-volume but hostile).
+  heated-threshold: 8.0
+  heated-structural-scale: 1.0
+  heated-tone-weight: 3.0
 
   # The single highest-leverage knob: weight the channels you care about up and
   # the noise down. Glob-aware; exact keys win over globs; default 1.0.

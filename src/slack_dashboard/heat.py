@@ -206,8 +206,10 @@ def structural_heat(thread: ThreadEntry, config: HeatConfig, now_ts: float | Non
 def is_heated(thread: ThreadEntry, config: HeatConfig, now_ts: float | None = None) -> bool:
     """Heated-exchange state, computed render-time (like is_zombie).
 
-    In Phase 1 tone_term = 0 (heated_tone is 0 until Phase 2 LLM changes land).
     heated_score = structural_term + tone_term; fires when >= heated_threshold.
+    tone_term = heated_tone (0-3, stored from the LLM summary) * heated_tone_weight,
+    so a strong tone alone (3 * 3.0 = 9 >= 8) clears the threshold even on a
+    low-volume thread, while a thread with no summary yet still fires on structure.
 
     Logs heated_score, structural term, tone term, threshold, and the fire decision
     per the logging rule.
@@ -216,7 +218,7 @@ def is_heated(thread: ThreadEntry, config: HeatConfig, now_ts: float | None = No
         now_ts = datetime.now(UTC).timestamp()
 
     s_term = structural_heat(thread, config, now_ts)
-    tone_term = thread.heated_tone * config.heated_tone_weight  # 0 in Phase 1
+    tone_term = thread.heated_tone * config.heated_tone_weight  # 0..3 * weight
     heated_score = s_term + tone_term
 
     fired = heated_score >= config.heated_threshold

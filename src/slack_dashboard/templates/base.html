@@ -7,8 +7,12 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <style>
+        /* Once 🔥 stops reinforcing the "hot" tier (it now means a heated exchange),
+           text color is the only tier cue. Warm is nudged off orange toward a clear
+           amber/yellow so it reads distinctly against hot red (the old #f39c12 orange
+           sat too close to red, ~1.74:1). */
         .heat-hot { color: #e74c3c; }
-        .heat-warm { color: #f39c12; }
+        .heat-warm { color: #f1c40f; }
         .heat-cold { color: #3498db; }
         /* Slack-like channel handle: lowercase, #-prefixed, regular weight, no pill.
            Fixed-width column so the titles to its right line up. */
