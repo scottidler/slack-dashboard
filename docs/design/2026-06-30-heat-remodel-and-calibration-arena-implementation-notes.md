@@ -200,3 +200,144 @@ Design doc: `docs/design/2026-06-30-heat-remodel-and-calibration-arena.md`
 
 ### Open questions
 - None.
+
+## Phase 4: Calibration arena
+
+### Design decisions
+- Four arena pieces landed as a package under `tests/calibration/`: `board.py` (two
+  fixtures), `criteria.py` (the binary judge), `score.py` (the harness), plus the dev-tool
+  loop at `bin/calibrate.py`. The optimizer (bin) is kept strictly separate from the judge
+  (criteria) per the arena's separate-judge/optimizer requirement: the loop reads only
+  `score_board`'s `(pass_count, failures, soft_distance)` and never inspects a predicate.
+- `board.busy_board()` transcribes ~20 threads from the 2026-06-30 ~8pm screenshot against a
+  FIXED `NOW` = 2026-06-30 20:00 PT (float epoch). The two "pinned" threads (sre-it
+  `sandbox-google-workspace`, data-platform `philo-migration`) last posted ~1pm/2:30pm; the
+  four 👤 involved threads are sre-it Sandbox, platform-internal, sre-it Claude-auth,
+  it-helpdesk Codex. `board.contrast_board()` is a near-idle weekend board (the over-fit
+  guard), including a Friday-4pm thread the `weekend_frozen` criterion re-scores at Monday-9am.
+  `tests/calibration/board.py`.
+- `board._thread` synthesizes a real `ReplyRecord` timeline from the counts (so velocity,
+  time_alive, and drop-and-rebuild have records to consume), places SELF_ID's post as the
+  second-to-last reply for involved threads (exactly one unseen reply after his post), and
+  supports `reply_gap_seconds` to give a long-lived thread a fresh in-window burst.
+  `tests/calibration/board.py:_thread`.
+- `score.rank_board` mirrors `heat.rank_threads`'s TWO-PASS pattern exactly - score every
+  thread via `heat_breakdown(...).overall` at the pinned `now`, sort descending, then
+  `classify_tier(score, rank, total, config)` over the sorted list - but pins `now` for
+  determinism. It NEVER re-implements the formula (the rejected "Alternative 1").
+  `tests/calibration/score.py:rank_board`.
+- The seven criteria are pure predicates over `(busy, contrast, config, now)`:
+  `at_most_N_red` (N_RED knob, seeded 5), `lunchtime_threads_demoted`, `active_recent_top3`
+  (uses the in-score `activity`/velocity signal, NOT structural_heat/alternation, per panel
+  blocker #3), `stale_is_cold`, `weekend_frozen`, `involvement_drop_then_rebuild`,
+  `vip_lift_capped`. Each also has a continuous `soft_penalty` giving the optimizer a
+  gradient when the binary pass_count is flat; the soft signal never overrides the binary.
+  `tests/calibration/criteria.py`.
+- The loop is a coordinate-descent hill-climb: sweep every knob (keep the best improving
+  candidate, lexicographic on `(pass_count, -soft_distance)`), RE-sweep until a full sweep
+  changes nothing or `MAX_ITERS`=15 knob changes are made. Re-sweeping (vs a single greedy
+  pass) is what lets it escape the atrophy-vs-tier ridge; the tier knobs are ordered FIRST so
+  that in relative mode the busy-board red count is governed by `tier_hot_count` (rank-based),
+  which removes the incentive to over-commit atrophy at the cost of `weekend_frozen`.
+  `bin/calibrate.py:calibrate`, `bin/calibrate.py:KNOBS`.
+- The loop writes a full baseline -> keep/discard -> final trace to a committed report
+  artifact (`docs/design/2026-06-30-calibration-trace.md`) per the arena's "traceable
+  actions" requirement, so the chosen knobs have visible provenance.
+
+### BASELINE PATHOLOGY CONFIRMATION (Phase 5 depends on this)
+- Under the LIVE `~/.config` baseline the busy board reproduces the pathology:
+  **10 of 20 red, and the two idle threads pinned top-2** (data-platform philo-migration #1,
+  sre-it sandbox-google-workspace #2), with a stale thread also red at #6. Baseline score
+  = 3/7 criteria pass (fails `at_most_N_red`, `lunchtime_threads_demoted`,
+  `active_recent_top3`, `stale_is_cold`).
+- To reproduce the pathology faithfully against the NEW single-path formula, `score.live_config`
+  transcribes the live channel/people/velocity weights and `people_weight_cap` 30 verbatim,
+  AND emulates the PRE-REMODEL formula shape (large `base_cap`/`base_k` -> near-linear
+  unbounded base; large `atrophy_half_life_work_hours` -> slow wall-clock-like decay;
+  absolute `tier_hot` 50). Without this emulation the Phase 2 seed defaults already fix the
+  board, hiding the pathology - see Deviations.
+
+### WINNING KNOB VALUES (Phase 5 writes these verbatim into config defaults/example.yml)
+- The loop reached 7/7 (0 failures) in 4 knob changes. The **decisive, verified finding**:
+  the ONLY knob that must change from the Phase 2 seed defaults is `tier_method` -> `relative`.
+  Verified directly: Phase-2 code-default seeds (base_cap 50, base_k 15,
+  atrophy_half_life_work_hours 3.0, activity_cap 20, alive_weight 0.0, alive_k 6.0,
+  involved_drop 0.8, involved_rebuild_per_msg 0.15, tier_hot_count 3, tier_warm_count 10,
+  tier_floor 5.0) + `tier_method: relative` scores **7/7**. Absolute mode + those same seeds
+  scores 5/7 (fails at_most_N_red, lunchtime_threads_demoted).
+- The loop's literal final config (first-found among a large tie-set at 7/7):
+  ```
+  tier_method = relative          <- the decisive change
+  atrophy_half_life_work_hours = 1.5
+  base_cap = 80.0
+  base_k = 10.0
+  activity_cap = 20.0
+  alive_weight = 0.0
+  alive_k = 6.0
+  involved_drop = 0.8
+  involved_rebuild_per_msg = 0.15
+  tier_hot = 50.0                 (inert in relative mode)
+  tier_warm = 20.0                (inert in relative mode)
+  tier_hot_count = 3
+  tier_warm_count = 10
+  tier_floor = 5.0
+  ```
+- **Phase 5 recommendation:** flip the config default `tier_method` to `relative` and KEEP the
+  Phase 2 seed shapes (base_cap 50, base_k 15, atrophy 3.0). Reason: `base_cap`/`base_k`/
+  `atrophy` are all in the winning 7/7 tie-set (the trace shows base_cap 80->50 and atrophy
+  1.5->3.0 both "discard" as ties), the loop only kept 80/10/1.5 because they were the first
+  candidates encountered walking down from the pre-remodel emulation values; the doc's
+  seed shapes (50/15/3.0) are the intended, better-motivated values and pass identically.
+  atrophy 3.0 in particular is safer for `weekend_frozen` (0.31 vs 0.03 at 5 work-hrs idle),
+  matching the doc's worked example. `N_RED` = 5 held (busy board settles at 3 red).
+
+### Deviations
+- **`live_config` emulates the PRE-REMODEL formula shape, not just the raw ~/.config knob
+  values.** The phase spec says "baseline against the LIVE knobs" and "verify the baseline
+  reproduces the pathology." Those two are in tension under the new single path: Phase 2
+  already re-shaped `heat_breakdown` (hard base ceiling + working-hours atrophy), so the raw
+  live knobs against the NEW formula do NOT reproduce all-red + pinning (they score 5/7 and
+  do not pin the idle threads). The pathology was a property of the OLD formula. To honor
+  BOTH requirements, `live_config` keeps the live channel/people/velocity weights + cap
+  verbatim and sets the re-model knobs to values that emulate the old formula shape
+  (unbounded base, slow decay, absolute-50 tier). This is documented in the `live_config`
+  docstring and the trace. Without it there is no pathology to improve on and the arena is
+  vacuous.
+- `criteria.weekend_frozen` and its soft penalty re-derive a Monday-9am evaluation instant
+  internally rather than reading it off a board's fixed `now` (the boards all evaluate at the
+  Tue-8pm `NOW`). The criterion is fundamentally "score this thread as if it were Monday
+  morning," so it constructs that instant itself; the alternative (a third board at a
+  different `now`) would duplicate the fixture for one predicate.
+- No frozen `tests/calibration/test_calibration.py` was added (that is explicitly Phase 5).
+  The four calibration modules ARE collected by pytest (they live under `tests/`), but they
+  define no `test_*` functions and have no import-time side effects, so collection is a
+  no-op import and CI stays green. Verified: `otto ci` passes with the modules present.
+
+### Tradeoffs
+- Coordinate-descent-with-re-sweep + tier-knobs-first ordering vs. a plain single-pass greedy
+  climb. The single-pass climb stranded a local optimum (it committed an over-aggressive
+  atrophy that broke `weekend_frozen` and could not back out, because reaching 7/7 needed a
+  simultaneous atrophy+tier move). Re-sweeping and ordering tiering first (so relative mode
+  decouples reds from atrophy) reaches 7/7 cleanly. Chosen for correctness within the arena's
+  keep/discard + iteration-cap constraints; still a hill-climb, not a global search.
+- Emulating the pre-remodel shape in `live_config` vs. hard-coding a synthetic "pathological"
+  config. Chose emulation-of-the-old-formula because it is the honest reconstruction of what
+  was actually running when Scott took the screenshot (live weights + old decay/base/tier
+  behavior), so the loop's improvement is measured against reality, not a strawman.
+- Soft penalties are hand-weighted (reds as integer over-count; weekend_frozen as a
+  normalized sub-1 shortfall). They only break ties and never override the binary pass_count,
+  so imperfect weighting cannot cause a wrong pass/fail verdict - at worst it changes which
+  member of a tie-set the loop lands on (hence the Phase-5 recommendation to prefer the doc
+  seeds over the loop's first-found tie members).
+
+### Open questions
+- **`base_cap`/`base_k`/`atrophy` within the 7/7 tie-set:** the criteria as written do not
+  distinguish the doc seeds (50/15/3.0) from the loop's first-found (80/10/1.5); both pass
+  7/7. If Scott wants the arena to PIN these (not just the doc's judgment), the criteria need
+  a tighter predicate (e.g. an explicit "small-active thread outranks a 3x-bigger stale one
+  by margin M"). Recommend keeping the doc seeds for now (see Phase 5 recommendation) and
+  tightening only if a future board shows drift.
+- **Fixture ages are synthesized, not pulled from a live DB/DEBUG dump** (per the doc's
+  Resolved-Questions note). The pathology reproduces and the criteria hold for the
+  synthesized ages; if a future criterion needs exact timing, refine `board.py` from a real
+  dump.
