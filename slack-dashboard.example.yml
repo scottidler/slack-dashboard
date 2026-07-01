@@ -38,17 +38,45 @@ heat:
   reply-weight: 2
   participant-weight: 3
 
-  # Recency: linear ramp from 1.0 down to decay-floor over decay-hours.
+  # Legacy recency knobs. No longer read directly (recency is now the working-hours
+  # atrophy below); retained only for the decay-half-life-hours migration.
   decay-hours: 24
   decay-floor: 0.01
 
   # Dead threads age off after this many days (reversible by resurrection).
   max-thread-age-days: 3
 
-  # Tier thresholds (drive the hot/warm/cold title color). No glyph is tied to the hot
-  # tier anymore - the heated-exchange signal is the 🌶️ pepper (see heated-* below).
-  hot-threshold: 50
-  warm-threshold: 20
+  # Working-hours band the atrophy clock runs on. Nights and weekends contribute zero
+  # working hours, so a Friday-afternoon thread does not go stone-cold over the weekend.
+  work-window:
+    timezone: America/Los_Angeles
+    start-hour: 6            # 06:00
+    end-hour: 18              # 18:00
+    work-days: [mon, tue, wed, thu, fri]
+
+  # Atrophy: score *= 0.5 ** (time-since-last-work-hours / atrophy-half-life-work-hours).
+  # A thread idle 3 work-hours is at 0.5; idle ~12 work-hours (>1 working day) is ~0.06.
+  atrophy-half-life-work-hours: 3.0
+
+  # base-norm = base-cap * volume / (volume + base-k): a HARD asymptotic ceiling
+  # (-> base-cap as volume -> inf), monotone, so a huge stale thread cannot dominate a
+  # small fresh one. base-cap 50 keeps the historical scale roughly intact; base-k 15
+  # places the half-saturation point near volume 15 (a handful of messages + a couple
+  # people).
+  base-cap: 50.0
+  base-k: 15.0
+
+  # activity = min(activity-cap, velocity * velocity-weight): a bounded additive burst
+  # term kept OUTSIDE the volume ceiling, so a fast spike is not washed out by a
+  # saturated base. Cap 20 = a strong spike can add up to ~40% of a saturated base-norm.
+  activity-cap: 20.0
+
+  # alive-boost = 1 + alive-weight * f(time-alive) * atrophy; f = time-alive /
+  # (time-alive + alive-k). alive-weight 0.0 = time-alive is DISPLAY-ONLY (the strip
+  # still shows it) until calibration says otherwise. alive-k 6.0 places f's half-point
+  # near 6 work-hours (about a full working day of life).
+  alive-weight: 0.0
+  alive-k: 6.0
 
   # Heated-exchange signal (🌶️): fires when heated-score >= heated-threshold, where
   # heated-score = structural-term + tone-term (both 0-10, summed). The structural term
@@ -62,18 +90,26 @@ heat:
   heated-structural-scale: 1.0
   heated-tone-weight: 3.0
 
-  # Involvement damping: a thread you have RECENTLY posted in (the 👤 glyph) is lower
-  # priority - you already weighed in. The cut is strongest right after your post and
-  # fades back to none as your message is buried by later messages AND as time passes,
-  # so a thread that moves on past your input climbs back up:
-  #   msg-fade  = max(0, 1 - messages-after-your-post / involved-decay-messages)
-  #   time-fade = max(0, 1 - hours-since-your-post    / involved-decay-hours)
-  #   heat *= 1 - involved-damping * (msg-fade * time-fade)
-  # involved-damping is the peak cut: 0.0 turns it off, 0.5 halves heat right after your
-  # post, 1.0 can zero it. Set either decay knob to 0 to disable that axis.
-  involved-damping: 0.5
-  involved-decay-messages: 10
-  involved-decay-hours: 24.0
+  # Drop-and-rebuild involvement: a thread you have RECENTLY posted in (the 👤 glyph) is
+  # lower priority - you already weighed in. Posting drops the score hard to
+  # involved-drop (0.8 = a 20% cut); each reply AFTER your last post rebuilds it toward
+  # 1.0 at rate involved-rebuild-per-msg, so a thread that moved on without you
+  # re-surfaces. Clamped to [involved-drop, 1.0]. involved-drop: 1.0 disables the feature.
+  involved-drop: 0.8
+  involved-rebuild-per-msg: 0.15
+
+  # Tiering (see heat.classify_tier). tier-method: "absolute" (score thresholds tier-hot /
+  # tier-warm) or "relative" (rank-aware top-N with an absolute floor so a fully-atrophied
+  # board still yields zero hot). tier-hot / tier-warm mirror the historical hot/warm
+  # lines but are now meaningful because base-norm is ceilinged. tier-hot-count /
+  # tier-warm-count are the relative-mode top-N sizes; tier-floor is the absolute floor
+  # relative mode checks before marking anything hot/warm.
+  tier-method: absolute
+  tier-hot: 50.0
+  tier-warm: 20.0
+  tier-hot-count: 3
+  tier-warm-count: 10
+  tier-floor: 5.0
 
   # The single highest-leverage knob: weight the channels you care about up and
   # the noise down. Glob-aware; exact keys win over globs; default 1.0.

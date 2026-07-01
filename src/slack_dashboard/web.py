@@ -45,7 +45,13 @@ _INVOLVED = "\N{BUST IN SILHOUETTE}"  # 👤 the current user has personally pos
 _THERMO = "\N{THERMOMETER}"  # 🌡️ overall heat score
 _CHANNEL_WEIGHT = "\N{LABEL}"  # 🏷️ channel_weight multiplier
 _BASE = "\N{BAR CHART}"  # 📊 message_count/people_count (+👑 when a VIP is present)
-_RECENCY = "\N{STOPWATCH}"  # ⏱️ recency decay multiplier
+_RECENCY = "\N{STOPWATCH}"  # ⏱️ atrophy decay multiplier
+# Heat-remodel chips (see design doc "Data Model" / worktime): time_alive and
+# time_since_last, both fractional working hours. Distinct glyphs from _RECENCY (the
+# atrophy multiplier itself) so the strip can show the raw working-hours inputs alongside
+# the decay they drive.
+_TIME_ALIVE = "\N{HOURGLASS}"  # ⌛ time_alive: working hours, first-post -> last-post
+_TIME_SINCE_LAST = "\N{TIMER CLOCK}"  # ⏲ time_since_last: working hours, last-post -> now
 
 _GROUP_BY_CHOICES = ("none", "channel", "size", "velocity")
 
@@ -112,14 +118,17 @@ class HeatChip:
 
 
 def _heat_strip(breakdown: HeatBreakdown, config: HeatConfig, channel_name: str) -> list[HeatChip]:
-    """Build the fixed overall+5 chip strip for the hover popup from one breakdown.
+    """Build the fixed overall+7 chip strip for the hover popup from one breakdown.
 
-    Order matches the design doc: overall, channel_weight, base, velocity, atrophy,
-    damping. Dimmed (no-op-for-the-score) cases: channel_weight == 1.00 (no multiplier
-    effect), velocity_weight == 0.0 (the default - velocity contributes nothing to the
-    score even though the chip still reports the raw rate), and damping == 1.00 (not
-    involved, or the feature is off). Trivial assembly of already-computed fields - no
-    logging per the logging rule.
+    Order matches the design doc: overall, channel_weight, base, velocity, time_alive,
+    time_since_last, atrophy, damping. The two working-hours chips sit beside the atrophy
+    chip they feed (time_since_last IS the atrophy input; time_alive feeds alive_boost).
+    Dimmed (no-op-for-the-score) cases: channel_weight == 1.00 (no multiplier effect),
+    velocity_weight == 0.0 (the default - velocity contributes nothing to the score even
+    though the chip still reports the raw rate), time_alive dimmed when alive_weight ==
+    0.0 (the default - display-only until calibration says otherwise, per the design doc),
+    and damping == 1.00 (not involved, or the feature is off). Trivial assembly of
+    already-computed fields - no logging per the logging rule.
     """
     base_value = f"{breakdown.message_count}m·{breakdown.people_count}p"
     if breakdown.has_vip:
@@ -146,6 +155,17 @@ def _heat_strip(breakdown: HeatBreakdown, config: HeatConfig, channel_name: str)
             value=f"{breakdown.velocity:.1f}",
             tooltip="replies/min in window (contribution = vel × velocity_weight)",
             dimmed=config.velocity_weight == 0.0,
+        ),
+        HeatChip(
+            glyph=_TIME_ALIVE,
+            value=f"{breakdown.time_alive:.1f}h",
+            tooltip="time alive: working hours, first post -> last post (feeds alive_boost)",
+            dimmed=config.alive_weight == 0.0,
+        ),
+        HeatChip(
+            glyph=_TIME_SINCE_LAST,
+            value=f"{breakdown.time_since_last:.1f}h",
+            tooltip="time since last: working hours, last post -> now (the atrophy input)",
         ),
         HeatChip(
             glyph=_RECENCY,

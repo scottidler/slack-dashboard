@@ -321,9 +321,9 @@ def test_summarize_llm_failure() -> None:
 
 
 def test_summarize_renders_heat_strip(client: TestClient) -> None:
-    # The strip renders the overall score and the five composing-factor chips, using the
-    # same glyph vocabulary as the row (⚡ velocity, 👤 damping) plus the new strip-only
-    # glyphs (🌡️ overall, 🏷️ channel_weight, 📊 base, ⏱️ recency).
+    # The strip renders the overall score and the seven composing-factor chips, using the
+    # same glyph vocabulary as the row (⚡ velocity, 👤 damping) plus the strip-only glyphs
+    # (🌡️ overall, 🏷️ channel_weight, 📊 base, ⌛ time_alive, ⏲ time_since_last, ⏱️ atrophy).
     response = client.get("/summarize/C123/1234567890.123456")
     assert response.status_code == 200
     assert "heat-strip" in response.text
@@ -331,6 +331,8 @@ def test_summarize_renders_heat_strip(client: TestClient) -> None:
     assert "\N{LABEL}" in response.text
     assert "\N{BAR CHART}" in response.text
     assert "\N{HIGH VOLTAGE SIGN}" in response.text
+    assert "\N{HOURGLASS}" in response.text
+    assert "\N{TIMER CLOCK}" in response.text
     assert "\N{STOPWATCH}" in response.text
     assert "\N{BUST IN SILHOUETTE}" in response.text
     # message_count=10, 3 participants on _make_thread()
@@ -406,6 +408,39 @@ def test_summarize_velocity_chip_not_dimmed_when_weight_nonzero() -> None:
     response = client.get("/summarize/C123/1234567890.123456")
     assert response.status_code == 200
     assert 'class="heat-chip" title="replies/min in window' in response.text
+
+
+def test_summarize_time_alive_chip_dimmed_when_alive_weight_zero(client: TestClient) -> None:
+    # _CONFIG uses the default HeatConfig, where alive_weight == 0.0: time_alive is
+    # display-only (alive_boost is a no-op) per the design doc, so the chip is dimmed.
+    response = client.get("/summarize/C123/1234567890.123456")
+    assert response.status_code == 200
+    assert "\N{HOURGLASS}" in response.text
+    assert 'class="heat-chip dim" title="time alive' in response.text
+
+
+def test_summarize_time_alive_chip_not_dimmed_when_alive_weight_nonzero() -> None:
+    app = FastAPI()
+    poller = _make_mock_poller()
+    thread = _make_thread()
+    config = AppConfig(heat=HeatConfig(alive_weight=1.0))
+    poller.ranked_threads.return_value = [thread]
+    poller.threads = {("C123", "1234567890.123456"): thread}
+    create_routes(app, poller, MockLlm(), config)
+    client = TestClient(app)
+    response = client.get("/summarize/C123/1234567890.123456")
+    assert response.status_code == 200
+    assert 'class="heat-chip" title="time alive' in response.text
+
+
+def test_summarize_time_since_last_chip_never_dimmed(client: TestClient) -> None:
+    # time_since_last is the atrophy input, always live regardless of any knob's value -
+    # it is never dimmed.
+    response = client.get("/summarize/C123/1234567890.123456")
+    assert response.status_code == 200
+    assert "\N{TIMER CLOCK}" in response.text
+    assert 'class="heat-chip" title="time since last' in response.text
+    assert 'class="heat-chip dim" title="time since last' not in response.text
 
 
 class CapturingLlm(LlmProvider):

@@ -128,3 +128,75 @@ Design doc: `docs/design/2026-06-30-heat-remodel-and-calibration-arena.md`
 - `tier-floor` seed (5.0) is a guess; the doc leaves it open and Phase 4 calibration should set it.
 - `base-cap`/`base-k`/`activity-cap`/`alive-k` seeds are reasonable starting shapes but are the
   primary knobs the calibration arena (Phase 4) is meant to tune against the live board.
+
+## Phase 3: Strip + docs wiring
+
+### Design decisions
+- Added two new strip-only glyph constants beside the existing heat-strip glyphs:
+  `_TIME_ALIVE` (`\N{HOURGLASS}` ⌛) and `_TIME_SINCE_LAST` (`\N{TIMER CLOCK}` ⏲), distinct
+  from `_RECENCY` (`\N{STOPWATCH}` ⏱️, the atrophy multiplier itself) so the strip can show
+  the raw working-hours inputs alongside the decay they drive. `web.py` (glyph constants,
+  ~line 45-49).
+- `_heat_strip` now emits 7 chips (was 5): overall, channel_weight, base, velocity,
+  time_alive, time_since_last, atrophy, damping - placed the two new chips adjacent to the
+  atrophy chip they feed, per the doc's "one line, factors that compose it, expanding left
+  to right" strip convention. `web.py:_heat_strip`.
+- Both new chips render `{:.1f}h` (one decimal place, `h` suffix) - one more decimal than
+  the existing `⏱️ {:.2f}` atrophy multiplier, since these are hour magnitudes (can run into
+  double digits) rather than a bounded 0..1 ratio; `h` disambiguates the unit at a glance
+  (the strip has no other bare-hour value to confuse it with).
+- Dimming: `time_alive` chip dims when `config.alive_weight == 0.0` - the exact same
+  convention the `⚡` velocity chip already uses for `velocity_weight == 0.0` (a chip dims
+  when its knob is the multiplicative no-op default, per the strip doc's dimming
+  conventions). This is honest: at the shipped `alive_weight: 0.0` seed, `alive_boost` is
+  always 1.0, so `time_alive` is display-only exactly as the design doc states ("0 =
+  display-only to start"). `time_since_last` is NEVER dimmed - it is the direct input to
+  `atrophy`, which is always live regardless of any knob's value, so there is no no-op
+  state to signal. `web.py:_heat_strip`.
+- `slack-dashboard.example.yml` `heat:` block rewritten to document every Phase 2 knob with
+  the seed defaults read directly from `config.py` (not from the design doc's prose, to
+  avoid transcription drift): `work-window` (timezone/start-hour/end-hour/work-days),
+  `atrophy-half-life-work-hours` 3.0, `base-cap` 50.0, `base-k` 15.0, `activity-cap` 20.0,
+  `alive-weight` 0.0, `alive-k` 6.0, `involved-drop` 0.8, `involved-rebuild-per-msg` 0.15,
+  `tier-method` absolute, `tier-hot` 50.0, `tier-warm` 20.0, `tier-hot-count` 3,
+  `tier-warm-count` 10, `tier-floor` 5.0. Comment style matches the file's existing
+  formula-in-comment convention (e.g. the pre-existing heated-exchange block).
+- Removed the now-superseded `hot-threshold: 50` / `warm-threshold: 20` lines from the
+  example (they were the pre-remodel absolute tier knobs); the new `tier-hot: 50.0` /
+  `tier-warm: 20.0` under the `tier-method` block are their direct, currently-read
+  replacements, so documenting both would show two config surfaces for the same value.
+  `hot-threshold`/`warm-threshold` remain valid, working legacy keys in `config.py`
+  (`_migrate_tier_thresholds`) - only the example file's *documented* surface changed, no
+  code/behavior change.
+- Also documented `decay-hours`/`decay-floor` as legacy (still read by `structural_heat`'s
+  decay term, per Phase 2 notes, but no longer part of the ranking `atrophy` calculation)
+  so the comment does not mislead a reader into thinking they still drive the main score.
+
+### Deviations
+- None. No new config fields were added (per phase scope); this phase only wired display
+  (chips/glyphs/CSS) and documentation (example.yml comments/defaults).
+
+### Tradeoffs
+- `{:.1f}h` unit-suffixed format for the two new chips vs. matching the bare `{:.2f}`
+  numeric style of the existing atrophy/velocity/damping chips exactly. Chose the `h`
+  suffix because these two values are literally hour counts (unlike the existing chips,
+  which are all ratios/multipliers/rates already disambiguated by their glyph), and an
+  unlabeled `5.2` beside `⌛` invites the reader to guess units; the tooltip states the unit
+  too, but the face value should not require a hover to parse, per the density principle
+  (scannable at rest, hover is for precision/provenance, not for basic legibility).
+- Placed the two new chips between velocity and atrophy (their natural formula
+  neighbors) rather than appending them at the end of the fixed 5-chip layout. Chose
+  formula-adjacency over pure additive-append because the strip's stated purpose is "why
+  a thread sits where it does" - `time_since_last` reads naturally right before the
+  `atrophy` multiplier it produces, and `time_alive` similarly explains the (currently
+  dimmed) `alive_boost` interplay; grouping them elsewhere would separate a value from the
+  factor it explains. The base.html/heat_strip.html rendering is glyph-order-agnostic (a
+  flat iteration over `heat`), so this reordering carries zero template risk.
+- Did not touch CLAUDE.md's chip vocabulary section in this phase, even though it now
+  undercounts the strip at "5 chips" - the design doc's Implementation Plan explicitly
+  assigns "Update CLAUDE.md chip vocabulary + strip tooltips for the new chips" to Phase 5
+  ("Lock + freeze"), not Phase 3. Fixing it here would be gold-plating outside this
+  phase's stated scope.
+
+### Open questions
+- None.
