@@ -4,6 +4,7 @@ import re
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import yaml
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -17,6 +18,56 @@ def _snake_to_kebab(name: str) -> str:
 
 class _KebabModel(BaseModel):
     model_config = ConfigDict(alias_generator=_snake_to_kebab, populate_by_name=True)
+
+
+# Canonical three-letter weekday tokens accepted in work-days, indexed to match
+# datetime.weekday() (Monday == 0 ... Sunday == 6).
+_WEEKDAY_TOKENS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+class WorkWindowConfig(_KebabModel):
+    """The working-hours band that atrophy runs on (see worktime.business_hours_between).
+
+    Nested under HeatConfig as ``heat.work-window`` (NOT composed into AppConfig): the
+    working-hours clock is a heat-model concern, and pinning it here kills the placement
+    ambiguity. Nights, weekends, and any hour outside [start_hour, end_hour) on a work day
+    contribute zero working hours.
+    """
+
+    timezone: str = "America/Los_Angeles"
+    start_hour: int = 6
+    end_hour: int = 18
+    work_days: list[str] = ["mon", "tue", "wed", "thu", "fri"]
+
+    @model_validator(mode="after")
+    def _validate(self) -> "WorkWindowConfig":
+        # Fail clearly at boot rather than silently producing a degenerate window.
+        if self.end_hour <= self.start_hour:
+            raise ValueError(
+                f"work-window end-hour ({self.end_hour}) must be greater than "
+                f"start-hour ({self.start_hour})"
+            )
+        if not self.work_days:
+            raise ValueError("work-window work-days must not be empty")
+        unknown = [d for d in self.work_days if d.lower() not in _WEEKDAY_TOKENS]
+        if unknown:
+            raise ValueError(
+                f"work-window work-days has unknown day tokens {unknown}; "
+                f"expected any of {list(_WEEKDAY_TOKENS)}"
+            )
+        try:
+            ZoneInfo(self.timezone)
+        except (ZoneInfoNotFoundError, ValueError) as e:
+            raise ValueError(f"work-window timezone {self.timezone!r} is not resolvable") from e
+        return self
+
+    def work_weekdays(self) -> set[int]:
+        """The configured work days as datetime.weekday() integers (Mon == 0 ... Sun == 6)."""
+        return {_WEEKDAY_TOKENS.index(d.lower()) for d in self.work_days}
+
+    def tzinfo(self) -> ZoneInfo:
+        """The resolved zoneinfo for this window (validated at construction)."""
+        return ZoneInfo(self.timezone)
 
 
 class SlackConfig(_KebabModel):
@@ -96,6 +147,12 @@ class HeatConfig(_KebabModel):
     involved_damping: float = 0.5
     involved_decay_messages: int = 10
     involved_decay_hours: float = 24.0
+
+    # Working-hours band the atrophy clock runs on (heat.work-window). Nights and weekends
+    # contribute zero working hours, so a Friday-afternoon thread does not go stone-cold
+    # over the weekend. Consumed by worktime.business_hours_between (wired into the score
+    # in a later phase); nested here (not on AppConfig) since it is a heat-model concern.
+    work_window: WorkWindowConfig = WorkWindowConfig()
 
     @model_validator(mode="before")
     @classmethod
