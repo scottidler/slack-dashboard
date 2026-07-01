@@ -232,3 +232,65 @@ def test_resolve_min_replies_override() -> None:
 def test_resolve_min_replies_glob() -> None:
     config = FetchConfig(min_replies=3, channel_min_replies={"ask-*": 1})
     assert resolve_min_replies("ask-security", config) == 1
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["base_cap", "base_k", "activity_cap", "atrophy_half_life_work_hours", "alive_k"],
+)
+def test_positive_score_knob_rejects_zero_at_construction(field: str) -> None:
+    # These knobs must fail clearly at config-load, not with a ZeroDivisionError deep in
+    # heat_breakdown (base_k / atrophy_half_life_work_hours / alive_k are denominators).
+    with pytest.raises(ValueError):
+        HeatConfig(**{field: 0.0})
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["base_cap", "base_k", "activity_cap", "atrophy_half_life_work_hours", "alive_k"],
+)
+def test_positive_score_knob_rejects_negative_at_construction(field: str) -> None:
+    with pytest.raises(ValueError):
+        HeatConfig(**{field: -1.0})
+
+
+def test_alive_weight_zero_is_allowed() -> None:
+    # alive_weight == 0.0 is the shipped display-only seed; it must NOT be over-constrained.
+    assert HeatConfig(alive_weight=0.0).alive_weight == 0.0
+
+
+def test_alive_weight_negative_rejected() -> None:
+    with pytest.raises(ValueError):
+        HeatConfig(alive_weight=-0.5)
+
+
+def test_deprecated_involved_key_warns(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    # The old involvement knobs were replaced by involved-drop/involved-rebuild-per-msg with no
+    # 1:1 value migration; a config still carrying them must emit a clear warning (not silently
+    # revert to defaults). extra keys are ignored by the model, so this warning is the only signal.
+    import logging
+
+    data = {
+        "channels": {"general": "C111"},
+        "heat": {"involved-damping": 0.5},
+    }
+    config_file = write_config(tmp_path, data)
+    with caplog.at_level(logging.WARNING):
+        config = load_config(config_file)
+    assert any(
+        "involved-damping" in record.message and "deprecated" in record.message
+        for record in caplog.records
+    )
+    # Defaults remain in effect (no fabricated migration).
+    assert config.heat.involved_drop == 0.8
+    assert config.heat.involved_rebuild_per_msg == 0.15
+
+
+def test_all_deprecated_involved_keys_warn(caplog: pytest.LogCaptureFixture) -> None:
+    import logging
+
+    for legacy in ("involved-damping", "involved-decay-messages", "involved-decay-hours"):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            HeatConfig.model_validate({legacy: 1})
+        assert any(legacy in record.message for record in caplog.records), legacy

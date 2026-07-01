@@ -38,8 +38,10 @@ heat:
   reply-weight: 2
   participant-weight: 3
 
-  # Legacy recency knobs. No longer read directly (recency is now the working-hours
-  # atrophy below); retained only for the decay-half-life-hours migration.
+  # Legacy recency knobs. These no longer feed the main heat/atrophy score (recency is
+  # now the working-hours atrophy below), but decay-hours IS still consumed by
+  # structural_heat - the heated-exchange signal (the 🔥 glyph) - for its floor-free
+  # decay term. Retained for that path and for the decay-half-life-hours migration.
   decay-hours: 24
   decay-floor: 0.01
 

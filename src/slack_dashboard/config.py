@@ -222,11 +222,62 @@ class HeatConfig(_KebabModel):
                 data[new] = value
         return data
 
+    @model_validator(mode="before")
+    @classmethod
+    def _warn_deprecated_involved_keys(cls, data: Any) -> Any:
+        # The old involvement knobs (involved-damping / involved-decay-messages /
+        # involved-decay-hours) were replaced by involved-drop / involved-rebuild-per-msg when
+        # the involvement model changed from exponential decay to drop-and-rebuild. There is NO
+        # clean 1:1 value migration (the model changed shape), so unlike _migrate_tier_thresholds
+        # we do NOT map a value - we WARN and proceed with the new defaults. extra keys are
+        # ignored by the model (ConfigDict has no extra="forbid"), so without this warning an
+        # existing private config with the old keys would silently revert to defaults.
+        if not isinstance(data, dict):
+            return data
+        deprecated = {
+            "involved-damping": "involved-drop / involved-rebuild-per-msg",
+            "involved-decay-messages": "involved-rebuild-per-msg",
+            "involved-decay-hours": "involved-rebuild-per-msg",
+        }
+        for legacy, replacement in deprecated.items():
+            legacy_snake = legacy.replace("-", "_")
+            if legacy in data or legacy_snake in data:
+                logger.warning(
+                    "heat config key %r is deprecated and IGNORED; the involvement model is now "
+                    "drop-and-rebuild - set %s instead (defaults are in effect until you do)",
+                    legacy,
+                    replacement,
+                )
+        return data
+
     @model_validator(mode="after")
     def _validate_tier_method(self) -> "HeatConfig":
         if self.tier_method not in ("absolute", "relative"):
             raise ValueError(
                 f"heat tier-method {self.tier_method!r} must be 'absolute' or 'relative'"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_score_bounds(self) -> "HeatConfig":
+        # Fail clearly at boot (not with a ZeroDivisionError deep in heat_breakdown) when a
+        # re-model knob is out of range. base_k / atrophy_half_life_work_hours / alive_k are
+        # denominators, so a zero would divide-by-zero at scoring time; base_cap / activity_cap
+        # being <= 0 would silently zero the score. alive_weight MAY be 0 (display-only seed),
+        # so it is >= 0, not > 0.
+        positive = (
+            ("base-cap", self.base_cap),
+            ("base-k", self.base_k),
+            ("activity-cap", self.activity_cap),
+            ("atrophy-half-life-work-hours", self.atrophy_half_life_work_hours),
+            ("alive-k", self.alive_k),
+        )
+        for name, value in positive:
+            if value <= 0:
+                raise ValueError(f"heat {name} ({value}) must be greater than 0")
+        if self.alive_weight < 0:
+            raise ValueError(
+                f"heat alive-weight ({self.alive_weight}) must be greater than or equal to 0"
             )
         return self
 

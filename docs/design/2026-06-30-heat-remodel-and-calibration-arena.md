@@ -385,6 +385,14 @@ under `otto ci` so the board cannot silently regress to all-red.
   screenshot board, (b) a contrast board (a near-idle weekend-morning / mostly-cold board) so
   the loop cannot over-fit a single 20-thread snapshot. `criteria.py` (binary spec),
   `score.py` (harness calling `heat_breakdown` + `classify_tier`).
+  - Over-fit-guard scope (honest accounting): most criteria (`lunchtime_threads_demoted`,
+    `active_recent_top3`, `involvement_drop_then_rebuild`, `vip_lift_capped`) name threads
+    that exist only on the busy board, so they are asserted against the busy fixture. The
+    contrast board defends the **board-agnostic invariants**: `weekend_frozen` (Friday-4pm
+    thread stays >= warm evaluated Monday), `at_most_N_red` (relative tiering must NOT paint a
+    quiet board all-red), and `stale_is_cold`'s property (long-idle threads go cold). The
+    frozen regression test re-asserts those three on the contrast fixture; it does not claim
+    every criterion is defended on both boards.
 - **Baseline against Scott's LIVE `~/.config` knobs, not code defaults** (`velocity_weight`
   5.0, the real channel/people weights, `people_weight_cap` 30) - transcribe them as the
   starting `HeatConfig`. Baselining code defaults (`velocity_weight` 0.0) would tune from the

@@ -102,3 +102,39 @@ def test_default_config_pass_count_is_full_on_both_fixtures() -> None:
     pass_count, failures, _soft_distance = score.score_board(config, now=board.NOW)
     assert pass_count == len(criteria.CRITERIA)
     assert failures == []
+
+
+# --- Contrast-board over-fit guard --------------------------------------------------------
+#
+# The CRITERIA registry above asserts most predicates only against the BUSY board (that is
+# what those predicates read); only ``weekend_frozen`` exercises the contrast fixture. To
+# make the contrast board a real over-fit guard (not just fixture ballast), assert the
+# board-agnostic invariants directly on it here: a near-idle, mostly-cold board must NOT be
+# painted all-red by relative tiering always filling its buckets, and its long-idle threads
+# must go cold. Criteria that are BUSY-board-specific (lunchtime_threads_demoted,
+# active_recent_top3 for the specific spike thread, involvement_drop_then_rebuild,
+# vip_lift_capped) are deliberately NOT re-asserted on the contrast fixture: they name
+# threads that only exist on the busy board, so they are not meaningful here.
+
+
+def test_contrast_board_at_most_n_red() -> None:
+    # at_most_N_red is board-agnostic (count hot on the given board). Re-check it on the
+    # contrast board so a knob change cannot make relative tiering paint a quiet board red.
+    config = _default_config()
+    contrast = score.rank_board(board.contrast_board(), config, board.NOW)
+    hot = sum(1 for r in contrast if r.tier == "hot")
+    assert hot <= criteria.N_RED
+
+
+def test_contrast_board_long_idle_threads_are_cold() -> None:
+    # stale_is_cold's invariant ("a thread idle > 1 full working day is cold") applied to the
+    # contrast fixture's long-idle threads: the Thursday it-helpdesk thread and the Sunday sre
+    # FYI both last posted days before NOW (Tue 8pm), so both must be cold. This defends the
+    # same "caught-up sinks" property stale_is_cold defends on the busy board.
+    config = _default_config()
+    contrast = score.rank_board(board.contrast_board(), config, board.NOW)
+    stale_helpdesk = criteria._find(contrast, "it-helpdesk", "stale-helpdesk")
+    weekend_fyi = criteria._find(contrast, "sre", "weekend-fyi")
+    assert stale_helpdesk is not None and weekend_fyi is not None
+    assert stale_helpdesk.tier == "cold"
+    assert weekend_fyi.tier == "cold"

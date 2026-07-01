@@ -420,3 +420,64 @@ Design doc: `docs/design/2026-06-30-heat-remodel-and-calibration-arena.md`
   for a future calibration pass if a new board ever shows drift; Phase 5 did not add a
   tie-breaking criterion, per the phase's scope (freeze the arena as it stands, do not
   extend it).
+
+## Audit remediation (review-panel)
+
+Five peripheral audit findings on the already-shipped heat re-model. No scoring math or
+tiering behavior changed; these are edge/doc/validation/test fixes only.
+
+### Design decisions
+- **#1 (example.yml comment):** corrected the `decay-hours`/`decay-floor` comment in
+  `slack-dashboard.example.yml` to state that these knobs no longer feed the main
+  heat/atrophy score but that `decay-hours` IS still consumed by `structural_heat` (the
+  🔥 heated-exchange signal) for its floor-free decay term. Verified the read site at
+  `heat.py:structural_heat` (`decay = max(0.0, 1.0 - hours_since_last / config.decay_hours)`).
+- **#2 (README model):** rewrote the "How ranking works" section and the key-knobs table in
+  `README.md` to describe the shipped single-path model (working-hours exponential atrophy,
+  hard-ceilinged `base_norm`, `activity` outside the ceiling, freshness-gated `alive_boost`,
+  drop-and-rebuild involvement, relative tiering). Knob names/defaults taken from `config.py`,
+  not invented. The two legacy `decay-*` rows now say "legacy", matching the example.yml.
+- **#3 (range validators):** added `HeatConfig._validate_score_bounds`
+  (`model_validator(mode="after")`, mirroring the existing `_validate_tier_method`) requiring
+  `base_cap`, `base_k`, `activity_cap`, `atrophy_half_life_work_hours`, `alive_k` all `> 0`
+  (denominators/ceilings) and `alive_weight >= 0` (display-only seed may be 0). This turns the
+  previous `atrophy_half_life_work_hours=0` `ZeroDivisionError` at scoring time into a clear
+  boot-time `ValueError`. `config.py:HeatConfig._validate_score_bounds`.
+- **#4 (deprecated involved-* keys):** added `HeatConfig._warn_deprecated_involved_keys`
+  (`model_validator(mode="before")`, mirroring `_migrate_tier_thresholds`) that DETECTS
+  `involved-damping` / `involved-decay-messages` / `involved-decay-hours` in the raw input and
+  emits a `logger.warning` naming each deprecated key and its replacement, then proceeds with
+  defaults. No value migration is fabricated (the involvement model changed shape). Function-
+  level WARN logging per the logging rule. `config.py:HeatConfig._warn_deprecated_involved_keys`.
+- **#5 (contrast over-fit guard):** added two contrast-board assertions in
+  `tests/calibration/test_calibration.py` for the board-agnostic invariants:
+  `test_contrast_board_at_most_n_red` (relative tiering must not paint a quiet board red;
+  contrast settles at 1 hot vs N_RED=5) and `test_contrast_board_long_idle_threads_are_cold`
+  (the Thursday it-helpdesk and Sunday sre threads are cold). Softened the design doc's Phase-4
+  over-fit bullet (`arena.md:384`) to honestly enumerate which invariants the contrast board
+  actually defends (`weekend_frozen`, `at_most_N_red`, `stale_is_cold`'s property) and to stop
+  implying every criterion is defended on both boards.
+
+### Deviations
+- The Phase-5 implementation-notes entry (line ~373) says the per-criterion frozen tests run
+  "on both `board.busy_board()` and `board.contrast_board()`". That wording overstates: the
+  per-criterion tests read the busy board for busy-only threads; only `weekend_frozen`
+  genuinely exercised the contrast fixture before this pass. The append-only notes rule
+  forbids editing that prior entry, so this correction is recorded here instead, and the new
+  contrast tests make the claim true for the three board-agnostic invariants.
+
+### Tradeoffs
+- **#3 validation as one `model_validator(mode="after")` vs. per-field `Field(gt=0)`
+  constraints.** Chose the after-validator to match the file's existing idiom
+  (`_validate_tier_method`, `WorkWindowConfig._validate`) and to keep the import surface
+  unchanged (no new `Field` import); a `Field(gt=0)` approach would be equally correct but
+  would mix two validation styles in one model.
+- **#5 assertions in the frozen test vs. new predicates in `criteria.py`.** Chose to add the
+  contrast assertions directly in `test_calibration.py` (using `criteria.N_RED` and
+  `criteria._find`) rather than adding new entries to the `CRITERIA` registry, because the
+  registry is the optimizer's judged spec (7 criteria the loop grades against) and adding
+  board-specific regression checks there would change the arena's grade surface. The frozen
+  regression test is the right home for "these invariants also hold on the contrast board".
+
+### Open questions
+- None.

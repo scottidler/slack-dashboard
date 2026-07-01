@@ -10,20 +10,42 @@ trackable live thread is ever hidden by the tool's relevance judgment.
 
 ## How ranking works
 
-Each thread gets an explainable, hand-tunable heat score:
+Each thread gets an explainable, hand-tunable heat score built on a single
+arithmetic path:
 
 ```
-base      = reply_count * reply-weight + participant_count * participant-weight
-velocity  = replies_in_window / velocity-window-minutes
-recency   = max(decay-floor, 1.0 - hours_since_last_activity / decay-hours)
-score     = channel-weight * (base + velocity * velocity-weight) * recency
+base-norm   = base-cap * volume / (volume + base-k)          # hard asymptotic ceiling
+activity    = min(activity-cap, velocity * velocity-weight)  # bounded burst, outside the ceiling
+atrophy     = 0.5 ** (work_hours_since_last / atrophy-half-life-work-hours)
+alive-boost = 1 + alive-weight * f(time_alive) * atrophy     # freshness-gated longevity lift
+score       = channel-weight * (base-norm + activity) * atrophy * alive-boost * damping
 ```
 
 - **channel-weight** - the highest-leverage knob. Weight the channels you care
   about (`sre`, `data-platform`) up and the noise (`proj-*`) down. Supports glob
   patterns; exact keys win over globs.
-- **velocity** - boosts a thread spiking *now* over one that merely accreted
-  replies slowly. Defaults to off (`velocity-weight: 0`).
+- **base-norm** - a hard, monotone asymptotic ceiling on volume
+  (`base-cap`/`base-k`): a huge stale thread and a modest fresh one both approach
+  `base-cap`, so raw volume can no longer dominate the board.
+- **activity** - a bounded additive burst term (`activity-cap`) kept *outside*
+  the volume ceiling, so a short thread spiking *now* is not washed out by a big
+  thread's message-count saturation. Defaults to off (`velocity-weight: 0`).
+- **atrophy** - an exponential half-life decay measured in *working hours*
+  (`atrophy-half-life-work-hours`), evaluated over the 6am-6pm PT Mon-Fri work
+  window (`heat.work-window`). Nights and weekends contribute zero working hours,
+  so a Friday-afternoon thread does not go stone-cold over the weekend.
+- **alive-boost** - a freshness-gated longevity lift (`alive-weight`/`alive-k`):
+  it lifts a long-lived thread only while it is still fresh, since the `* atrophy`
+  gate collapses the boost back toward 1.0 once the thread goes idle. Ships
+  display-only (`alive-weight: 0`).
+- **involvement damping** - drop-and-rebuild: posting in a thread drops its score
+  to `involved-drop`, then each unseen reply after your last post rebuilds it back
+  toward 1.0 at rate `involved-rebuild-per-msg`.
+- **tiering** - rank-aware relative tiering by default (`tier-method: relative`):
+  the top `tier-hot-count` threads paint hot and the next `tier-warm-count` warm,
+  with an absolute `tier-floor` that stops a fully-atrophied board from painting
+  its top-N hot. Set `tier-method: absolute` to tier on raw score thresholds
+  (`tier-hot`/`tier-warm`) instead.
 - **resurrection** - a long-dead thread that gets fresh activity floats back to
   the top with a `zombie` marker.
 
@@ -49,10 +71,23 @@ commented starting point.
 |-----|---------|---------|
 | `workspace` | `""` | Workspace subdomain for Slack deep links (e.g. `tatari`). |
 | `heat.channel-weights` | `{}` | Per-channel multiplier (glob-aware). e.g. `sre: 2.0`, `proj-*: 0.5`. |
-| `heat.velocity-weight` | `0.0` | How much a currently-spiking thread is boosted. |
+| `heat.velocity-weight` | `0.0` | How much a currently-spiking thread is boosted (feeds `activity`). |
 | `heat.velocity-window-minutes` | `30` | Window over which velocity is measured. |
-| `heat.decay-hours` | `24` | Linear recency ramp length (renamed from `decay-half-life-hours`, still accepted). |
-| `heat.decay-floor` | `0.01` | Minimum recency multiplier for very old threads. |
+| `heat.atrophy-half-life-work-hours` | `3.0` | Exponential half-life of atrophy in *working* hours (6am-6pm PT Mon-Fri). |
+| `heat.base-cap` | `50.0` | Asymptotic ceiling `base-norm` approaches as volume grows. |
+| `heat.base-k` | `15.0` | Half-saturation point of the `base-norm` ceiling (in volume units). |
+| `heat.activity-cap` | `20.0` | Upper bound on the additive `activity` burst term. |
+| `heat.alive-weight` | `0.0` | Strength of the freshness-gated longevity lift (`0` = display-only). |
+| `heat.alive-k` | `6.0` | Half-point of the time-alive ramp (working hours of thread life). |
+| `heat.involved-drop` | `0.8` | Score multiplier the moment you post in a thread (`1.0` disables). |
+| `heat.involved-rebuild-per-msg` | `0.15` | How fast unseen replies after your post rebuild toward 1.0. |
+| `heat.tier-method` | `relative` | `relative` (rank-aware top-N) or `absolute` (raw score thresholds). |
+| `heat.tier-hot-count` | `3` | Relative mode: number of top threads painted hot. |
+| `heat.tier-warm-count` | `10` | Relative mode: number of next threads painted warm. |
+| `heat.tier-floor` | `5.0` | Relative mode: absolute floor below which a thread is never hot/warm. |
+| `heat.tier-hot` / `heat.tier-warm` | `50.0` / `20.0` | Absolute mode: raw score thresholds for hot / warm. |
+| `heat.decay-hours` | `24` | Legacy. No longer feeds the main score; still used by the 🔥 heated-exchange signal. |
+| `heat.decay-floor` | `0.01` | Legacy. No longer read by the main score (retained for backward-compat). |
 | `heat.resurrection-gap-hours` | `24` | Quiet gap after which new activity counts as a resurrection. |
 | `heat.resurrection-age-days` | `2` | A thread must be older than this to qualify as a zombie. |
 | `heat.resurrection-display-hours` | `24` | How long the `zombie` marker shows after revival. |
