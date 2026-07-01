@@ -1,0 +1,38 @@
+# Local deploy for slack-dashboard. Bring up with the secrets in the environment:
+#   eval "$(manifest age decrypt ~/repos/scottidler/secrets/.secrets)" && docker compose up -d --build
+#
+# The four secrets are passed through from that shell (no values are stored here).
+# Config is bind-mounted read-only from ~/.config; mutable state (observed.db,
+# dismissed.jsonl) persists in the named volume so it survives restarts without
+# leaving root-owned files in ~/.config.
+services:
+  slack-dashboard:
+    build: .
+    image: slack-dashboard:local
+    container_name: slack-dashboard
+    restart: unless-stopped
+    ports:
+      # Host:container. The app binds server.port (8889) from the config below.
+      - "8889:8889"
+    environment:
+      # Pass-through from the manifest-decrypted shell (interpolated into the config).
+      - SLACK_DASHBOARD_SLACK_USER_TOKEN
+      - SLACK_DASHBOARD_SLACK_APP_TOKEN
+      - SLACK_TEAM_ID
+      - ANTHROPIC_API_KEY
+      # Point the app at the mounted config dir instead of /root/.config.
+      - XDG_CONFIG_HOME=/config
+    volumes:
+      # Persist first-observed timestamps + dismissals across restarts.
+      - slack-dashboard-state:/config/slack-dashboard
+      # The config itself comes from the host, read-only, overlaid on the volume.
+      - ${HOME}/.config/slack-dashboard/slack-dashboard.yml:/config/slack-dashboard/slack-dashboard.yml:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8889/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  slack-dashboard-state:
