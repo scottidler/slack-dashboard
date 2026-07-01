@@ -88,6 +88,8 @@ class HeatConfig(_KebabModel):
     decay_hours: int = 24
     decay_floor: float = 0.01
     max_thread_age_days: int = 3
+    # Legacy absolute tier thresholds. Retained for backward-compat and migrated onto the
+    # new tier-hot / tier-warm knobs (see _migrate_tier_thresholds); no longer read directly.
     hot_threshold: int = 50
     warm_threshold: int = 20
     retitle_reply_growth: int = 5
@@ -134,25 +136,54 @@ class HeatConfig(_KebabModel):
     heated_structural_scale: float = 1.0
     heated_tone_weight: float = 3.0
 
-    # Involvement damping: a thread the user has RECENTLY posted in is lower priority -
-    # you have already weighed in. The reduction is strongest right after your post and
-    # fades back to none (multiplier 1.0) as your message is buried by later messages AND
-    # as time passes, at which point the thread may need you again and regains its rank.
-    # The 👤 presence glyph is unaffected; this only scales heat.
-    #   msg_fade  = max(0, 1 - messages_after / involved_decay_messages)
-    #   time_fade = max(0, 1 - hours_since    / involved_decay_hours)
-    #   heat *= 1 - involved_damping * (msg_fade * time_fade)
-    # involved_damping is the peak cut: 0.0 disables the feature, 0.5 halves heat right
-    # after your post, 1.0 can drive it to zero. Set a decay knob to 0 to disable that axis.
-    involved_damping: float = 0.5
-    involved_decay_messages: int = 10
-    involved_decay_hours: float = 24.0
-
     # Working-hours band the atrophy clock runs on (heat.work-window). Nights and weekends
     # contribute zero working hours, so a Friday-afternoon thread does not go stone-cold
-    # over the weekend. Consumed by worktime.business_hours_between (wired into the score
-    # in a later phase); nested here (not on AppConfig) since it is a heat-model concern.
+    # over the weekend. Consumed by worktime.business_hours_between via heat_breakdown;
+    # nested here (not on AppConfig) since it is a heat-model concern.
     work_window: WorkWindowConfig = WorkWindowConfig()
+
+    # ---- Re-shaped score knobs (heat_breakdown, single arithmetic path) ----
+    # atrophy = 0.5 ** (time_since_last_work_hours / atrophy_half_life_work_hours). A thread
+    # idle 3 work-hours is at 0.5; idle ~12 work-hours (>1 working day) is ~0.06 -> cold.
+    atrophy_half_life_work_hours: float = 3.0
+    # base_norm = base_cap * volume / (volume + base_k): a HARD asymptotic ceiling (-> base_cap
+    # as volume -> inf), monotone, so a huge stale thread cannot dominate a small fresh one.
+    # Seeds: base_cap 50 keeps the historical scale roughly intact (a well-populated thread
+    # approaches ~50, the old absolute hot line); base_k 15 places the half-saturation point
+    # near volume 15 (~a handful of messages + a couple people), so the curve bends within the
+    # everyday message-count range rather than staying near-linear. Calibration (Phase 4) tunes.
+    base_cap: float = 50.0
+    base_k: float = 15.0
+    # activity = min(activity_cap, velocity * velocity_weight): a bounded additive burst term
+    # kept OUTSIDE the volume ceiling. Seed cap 20 = a strong spike can add up to ~40% of a
+    # saturated base_norm without letting velocity run the score away. velocity_weight defaults
+    # 0.0 in code (the live ~/.config sets 5.0), so activity is 0 until velocity is weighted.
+    activity_cap: float = 20.0
+    # alive_boost = 1 + alive_weight * f(time_alive) * atrophy; f = time_alive/(time_alive+alive_k).
+    # alive_weight 0.0 seed = time-alive is DISPLAY-ONLY until calibration says otherwise (per the
+    # design doc). alive_k 6.0 places f's half-point near 6 work-hours (~a full working day of
+    # life) so the longevity lift ramps over a realistic incident lifetime, not instantly.
+    alive_weight: float = 0.0
+    alive_k: float = 6.0
+    # Drop-and-rebuild involvement (replaces involved_damping/involved_decay_*). Posting drops
+    # the score to involved_drop (0.8 -> a 20% cut, a bigger initial drop than the old 0.5-cut
+    # default), then each unseen reply after the user's last post rebuilds toward 1.0 at rate
+    # involved_rebuild_per_msg (0.15 -> ~7 unseen messages fully restores). Clamped to
+    # [involved_drop, 1]. involved_drop = 1.0 disables the feature (no drop).
+    involved_drop: float = 0.8
+    involved_rebuild_per_msg: float = 0.15
+    # Tiering (see heat.classify_tier). tier_method: "absolute" (score thresholds) or "relative"
+    # (rank-aware top-N with an absolute floor). Seeds: absolute mode active by default; tier_hot
+    # 50 / tier_warm 20 mirror the historical hot/warm lines but are now meaningful because
+    # base_norm is ceilinged. tier_hot_count 3 / tier_warm_count 10 = relative-mode top-N sizes.
+    # tier_floor 5.0 = the absolute floor in relative mode that keeps a fully-atrophied board
+    # from painting top-N hot; a thread scoring below 5 is never hot/warm even if top-ranked.
+    tier_method: str = "absolute"
+    tier_hot: float = 50.0
+    tier_warm: float = 20.0
+    tier_hot_count: int = 3
+    tier_warm_count: int = 10
+    tier_floor: float = 5.0
 
     @model_validator(mode="before")
     @classmethod
@@ -167,6 +198,32 @@ class HeatConfig(_KebabModel):
                 logger.debug("Migrating legacy config key %s -> decay-hours", legacy)
                 data["decay-hours"] = data[legacy]
         return data
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_tier_thresholds(cls, data: Any) -> Any:
+        # Backward-compat: the absolute tier thresholds were hot-threshold / warm-threshold.
+        # Map them onto the new tier-hot / tier-warm knobs when the new keys are absent so
+        # existing config files keep loading (mirrors _migrate_decay_half_life).
+        if not isinstance(data, dict):
+            return data
+        for legacy, new in (("hot-threshold", "tier-hot"), ("warm-threshold", "tier-warm")):
+            legacy_snake = legacy.replace("-", "_")
+            new_snake = new.replace("-", "_")
+            has_new = new in data or new_snake in data
+            if not has_new and (legacy in data or legacy_snake in data):
+                value = data.get(legacy, data.get(legacy_snake))
+                logger.debug("Migrating legacy config key %s -> %s", legacy, new)
+                data[new] = value
+        return data
+
+    @model_validator(mode="after")
+    def _validate_tier_method(self) -> "HeatConfig":
+        if self.tier_method not in ("absolute", "relative"):
+            raise ValueError(
+                f"heat tier-method {self.tier_method!r} must be 'absolute' or 'relative'"
+            )
+        return self
 
 
 class LlmConfig(_KebabModel):

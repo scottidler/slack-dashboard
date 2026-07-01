@@ -114,7 +114,7 @@ class HeatChip:
 def _heat_strip(breakdown: HeatBreakdown, config: HeatConfig, channel_name: str) -> list[HeatChip]:
     """Build the fixed overall+5 chip strip for the hover popup from one breakdown.
 
-    Order matches the design doc: overall, channel_weight, base, velocity, recency,
+    Order matches the design doc: overall, channel_weight, base, velocity, atrophy,
     damping. Dimmed (no-op-for-the-score) cases: channel_weight == 1.00 (no multiplier
     effect), velocity_weight == 0.0 (the default - velocity contributes nothing to the
     score even though the chip still reports the raw rate), and damping == 1.00 (not
@@ -149,8 +149,8 @@ def _heat_strip(breakdown: HeatBreakdown, config: HeatConfig, channel_name: str)
         ),
         HeatChip(
             glyph=_RECENCY,
-            value=f"{breakdown.recency:.2f}",
-            tooltip="hours since last activity, decayed toward the floor",
+            value=f"{breakdown.atrophy:.2f}",
+            tooltip="working-hours atrophy multiplier (exponential decay since last activity)",
         ),
         HeatChip(
             glyph=_INVOLVED,

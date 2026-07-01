@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from slack_dashboard.config import HeatConfig, resolve_channel_weight, resolve_person_weight
 from slack_dashboard.thread import ThreadEntry
+from slack_dashboard.worktime import business_hours_between
 
 logger = logging.getLogger(__name__)
 
@@ -20,14 +21,18 @@ class HeatBreakdown:
 
     overall: float  # the ranking score (== compute_heat result)
     channel_weight: float  # multiplier
-    base: float  # message_count*reply_weight + people_term (capped)
+    base: float  # base_norm: hard-ceilinged saturation of volume -> [0, base_cap)
     message_count: int  # for the Nm face value
     people_count: int  # len(participants), for the Np face value
     people_term: float  # weighted, capped sum (tooltip / precision)
     has_vip: bool  # any participant above default weight -> append crown
     velocity: float  # raw replies/min in window
-    recency: float  # decay multiplier in [decay_floor, 1.0]
-    damping: float  # involvement-damping multiplier in [1-involved_damping, 1.0]
+    atrophy: float  # working-hours exponential decay multiplier in (0, 1]
+    activity: float  # freshness burst = min(activity_cap, velocity*velocity_weight)
+    alive_boost: float  # longevity lift, freshness-gated: 1 + alive_weight*f(time_alive)*atrophy
+    damping: float  # drop-and-rebuild multiplier in [involved_drop, 1.0]
+    time_alive: float  # working hours, first_post -> last_post
+    time_since_last: float  # working hours, last_post -> now (the atrophy input)
 
 
 def is_vip(thread: ThreadEntry, config: HeatConfig) -> bool:
@@ -97,46 +102,41 @@ def involvement_damping(
     self_user_id: str | None,
     now_ts: float,
 ) -> float:
-    """Heat multiplier that lowers priority for a thread the user recently posted in.
+    """Drop-and-rebuild heat multiplier for a thread the user recently posted in.
 
-    Returns 1.0 (no change) when the feature is off (involved_damping <= 0), the user is
-    unresolved (None), or the user has no retained post in this thread. Otherwise the
-    user's last post drives a reduction strongest immediately (nothing after it, just
-    posted) that fades back to 1.0 as later messages bury it and as time passes - at which
-    point the thread may need the user again and regains its rank:
+    Returns 1.0 (no change) when the feature is off (involved_drop >= 1.0), the user is
+    unresolved (None), or the user has no retained post in this thread. Otherwise posting
+    drops the thread hard - right after the user posts (nothing unseen after it) the
+    multiplier is the full ``involved_drop`` cut. Each reply *after* the user's last post
+    (``messages_after``, the proxy for "unseen activity") rebuilds the score back toward
+    1.0 at rate ``involved_rebuild_per_msg``, so a thread that moved on without the user
+    re-surfaces:
 
-        msg_fade  = max(0, 1 - messages_after / involved_decay_messages)
-        time_fade = max(0, 1 - hours_since    / involved_decay_hours)
-        damping   = 1 - involved_damping * (msg_fade * time_fade)   # in [1-damping, 1]
+        damping = involved_drop + (1 - involved_drop) * (messages_after * involved_rebuild_per_msg)
 
-    A decay knob of 0 disables that axis (treated as always-fresh on it). Logs the inputs
-    and resulting multiplier per the logging rule.
+    Clamped to ``[involved_drop, 1.0]``: the rebuild can restore a thread toward neutral
+    but never boost it above a not-involved thread. Logs the inputs and resulting
+    multiplier per the logging rule.
     """
-    if self_user_id is None or config.involved_damping <= 0:
+    if self_user_id is None or config.involved_drop >= 1.0:
         return 1.0
     mine = [r.ts for r in thread.replies if r.author_id == self_user_id]
     if not mine:
         return 1.0
     last_ts = max(mine)
     messages_after = sum(1 for r in thread.replies if r.ts > last_ts)
-    hours_since = max(0.0, (now_ts - last_ts) / 3600)
-    # A decay knob of 0 disables that axis (fade fixed at 1.0 = always fresh on it).
-    decay_msgs = config.involved_decay_messages
-    decay_hrs = config.involved_decay_hours
-    msg_fade = max(0.0, 1.0 - messages_after / decay_msgs) if decay_msgs > 0 else 1.0
-    time_fade = max(0.0, 1.0 - hours_since / decay_hrs) if decay_hrs > 0 else 1.0
-    freshness = msg_fade * time_fade
-    damping = 1.0 - config.involved_damping * freshness
+    # Rebuild fraction: 0 unseen -> full drop; grows with unseen messages, clamped to 1.0.
+    rebuild = min(1.0, max(0.0, messages_after * config.involved_rebuild_per_msg))
+    damping = config.involved_drop + (1.0 - config.involved_drop) * rebuild
+    damping = min(1.0, max(config.involved_drop, damping))
     logger.debug(
-        "involvement_damping: channel=%s thread_ts=%s messages_after=%d hours_since=%.2f "
-        "msg_fade=%.3f time_fade=%.3f freshness=%.3f damping=%.3f",
+        "involvement_damping: channel=%s thread_ts=%s messages_after=%d "
+        "involved_drop=%.3f rebuild=%.3f damping=%.3f",
         thread.channel_name,
         thread.thread_ts,
         messages_after,
-        hours_since,
-        msg_fade,
-        time_fade,
-        freshness,
+        config.involved_drop,
+        rebuild,
         damping,
     )
     return damping
@@ -153,9 +153,20 @@ def heat_breakdown(
     This is the single arithmetic path for the ranking score: ``compute_heat`` is a thin
     wrapper that returns ``.overall``. ``now`` is a float Unix timestamp defaulting to the
     current UTC instant, matching ``velocity``/``involvement_damping``/``structural_heat``.
-    ``recency`` derives ``hours_since`` from the float ``now`` (the ``structural_heat``
-    pattern), which assumes a tz-aware ``last_activity`` (the poller creates it aware,
-    though ``ThreadEntry`` does not enforce it).
+
+    The re-shaped score (one line):
+
+        score       = channel_weight * (base_norm + activity) * atrophy * alive_boost * damping
+        volume      = message_count*reply_weight + people_term(capped)
+        base_norm   = base_cap * volume / (volume + base_k)          # HARD-ceilinged, monotone
+        activity    = min(activity_cap, velocity * velocity_weight)  # burst, OUTSIDE the ceiling
+        atrophy     = 0.5 ** (time_since_last / atrophy_half_life_work_hours)  # working-hours
+        alive_boost = 1 + alive_weight * f(time_alive) * atrophy     # freshness-gated lift
+        damping     = drop_and_rebuild(...) in [involved_drop, 1]
+
+    ``time_since_last`` (last-post -> now) and ``time_alive`` (first-post -> last-post) are
+    both fractional WORKING hours via ``business_hours_between``: nights and weekends
+    contribute zero, so a Friday-afternoon thread does not go stone-cold over the weekend.
     """
     if now is None:
         now = datetime.now(UTC).timestamp()
@@ -169,7 +180,6 @@ def heat_breakdown(
         self_user_id,
         now,
     )
-    hours_since = (now - thread.last_activity.timestamp()) / 3600
     # Participant term is the SUM of per-person weights (each defaults to participant_weight),
     # so important people raise a thread without erasing volume gravity. Bounded by
     # people_weight_cap so a pile-up of weighted people cannot run the score away.
@@ -178,40 +188,75 @@ def heat_breakdown(
         people_term = min(people_term, config.people_weight_cap)
     message_count = thread.message_count
     people_count = len(thread.participants)
-    base = (message_count * config.reply_weight) + people_term
+    volume = (message_count * config.reply_weight) + people_term
+    # HARD asymptotic ceiling: base_norm -> base_cap as volume -> inf, monotone. A huge
+    # stale thread and a modest one both approach base_cap, so volume can no longer dominate.
+    base_norm = config.base_cap * volume / (volume + config.base_k) if volume > 0 else 0.0
+
     channel_weight = resolve_channel_weight(thread.channel_name, config)
     vel = velocity(thread, config, now)
-    recency = max(config.decay_floor, 1.0 - (hours_since / config.decay_hours))
+    # Velocity kept OUTSIDE the volume ceiling as its own bounded additive burst term.
+    activity = min(config.activity_cap, vel * config.velocity_weight)
+
+    # time_since_last: last-post -> now (the atrophy input). last_activity is the last-post
+    # instant; business_hours_between clamps < 0 to 0 (after-hours post -> atrophy 1.0).
+    time_since_last = business_hours_between(
+        thread.last_activity.timestamp(), now, config.work_window
+    )
+    atrophy = 0.5 ** (time_since_last / config.atrophy_half_life_work_hours)
+
+    # time_alive: first-post -> last-post. first_seen_ts is the thread root epoch; fall back
+    # to float(thread_ts) when unset. A monologue has time_alive == 0 (alive_boost no-op).
+    first_post_ts = thread.first_seen_ts if thread.first_seen_ts > 0 else float(thread.thread_ts)
+    time_alive = business_hours_between(
+        first_post_ts, thread.last_activity.timestamp(), config.work_window
+    )
+    # f(time_alive) in [0, 1); alive_boost lifts a long-lived thread ONLY while it is fresh
+    # (x atrophy gate), so an idle long-lived thread collapses back toward 1.0 as atrophy -> 0.
+    alive_f = time_alive / (time_alive + config.alive_k) if time_alive > 0 else 0.0
+    alive_boost = 1.0 + config.alive_weight * alive_f * atrophy
+
     damping = involvement_damping(thread, config, self_user_id, now)
     has_vip = is_vip(thread, config)
-    score = channel_weight * (base + vel * config.velocity_weight) * recency * damping
+    score = channel_weight * (base_norm + activity) * atrophy * alive_boost * damping
     logger.debug(
-        "heat_breakdown: channel=%s base=%.1f message_count=%d people_count=%d "
-        "people_term=%.1f has_vip=%s velocity=%.3f weight=%.2f recency=%.3f "
-        "damping=%.3f score=%.1f",
+        "heat_breakdown: channel=%s volume=%.1f base_norm=%.3f message_count=%d "
+        "people_count=%d people_term=%.1f has_vip=%s velocity=%.3f activity=%.3f "
+        "weight=%.2f atrophy=%.3f alive_boost=%.3f time_alive=%.2f time_since_last=%.2f "
+        "damping=%.3f tier_method=%s score=%.3f",
         thread.channel_name,
-        base,
+        volume,
+        base_norm,
         message_count,
         people_count,
         people_term,
         has_vip,
         vel,
+        activity,
         channel_weight,
-        recency,
+        atrophy,
+        alive_boost,
+        time_alive,
+        time_since_last,
         damping,
+        config.tier_method,
         score,
     )
     return HeatBreakdown(
         overall=score,
         channel_weight=channel_weight,
-        base=base,
+        base=base_norm,
         message_count=message_count,
         people_count=people_count,
         people_term=people_term,
         has_vip=has_vip,
         velocity=vel,
-        recency=recency,
+        atrophy=atrophy,
+        activity=activity,
+        alive_boost=alive_boost,
         damping=damping,
+        time_alive=time_alive,
+        time_since_last=time_since_last,
     )
 
 
@@ -390,10 +435,32 @@ def is_involved(thread: ThreadEntry, self_user_id: str | None) -> bool:
     return self_user_id is not None and self_user_id in thread.participants
 
 
-def classify_tier(score: float, config: HeatConfig) -> str:
-    if score >= config.hot_threshold:
+def classify_tier(score: float, rank: int, total: int, config: HeatConfig) -> str:
+    """Assign a heat tier, selected by ``tier-method``. Must be called POST-SORT.
+
+    ``rank`` is the thread's zero-based index in the final descending-by-score order and
+    ``total`` is the board size; both are needed by relative mode. The absolute mode
+    ignores them. This is the only tiering path - neither call site re-implements it.
+
+    - **absolute**: ``score >= tier_hot`` -> hot, ``>= tier_warm`` -> warm, else cold.
+    - **relative** (hybrid): hot when ``rank < tier_hot_count AND score >= tier_floor``;
+      warm when ``rank < tier_warm_count AND score >= tier_floor``; else cold. The
+      absolute ``tier_floor`` makes ``stale_is_cold`` hold even in relative mode - on a
+      fully-atrophied board, top-N still yields zero hot because nothing clears the floor.
+      Counts clamp to ``min(count, total)`` so a small board never errors.
+    """
+    if config.tier_method == "relative":
+        hot_count = min(config.tier_hot_count, total)
+        warm_count = min(config.tier_warm_count, total)
+        if rank < hot_count and score >= config.tier_floor:
+            return "hot"
+        if rank < warm_count and score >= config.tier_floor:
+            return "warm"
+        return "cold"
+    # absolute (default)
+    if score >= config.tier_hot:
         return "hot"
-    if score >= config.warm_threshold:
+    if score >= config.tier_warm:
         return "warm"
     return "cold"
 
@@ -403,10 +470,15 @@ def rank_threads(
     config: HeatConfig,
     self_user_id: str | None = None,
 ) -> list[ThreadEntry]:
+    # Pass 1: compute the score for every thread, then sort descending.
     for thread in threads:
         thread.heat_score = compute_heat(thread, config, self_user_id)
-        thread.heat_tier = classify_tier(thread.heat_score, config)
-    return sorted(threads, key=lambda t: t.heat_score, reverse=True)
+    ranked = sorted(threads, key=lambda t: t.heat_score, reverse=True)
+    # Pass 2: classify over the sorted list with the post-sort rank (relative mode needs it).
+    total = len(ranked)
+    for rank, thread in enumerate(ranked):
+        thread.heat_tier = classify_tier(thread.heat_score, rank, total, config)
+    return ranked
 
 
 def filter_stale_threads(

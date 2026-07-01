@@ -143,9 +143,21 @@ def test_defaults() -> None:
     assert heat.warm_threshold == 20
     assert heat.retitle_reply_growth == 5
     assert heat.retitle_reply_percent == 25
-    assert heat.involved_damping == 0.5
-    assert heat.involved_decay_messages == 10
-    assert heat.involved_decay_hours == 24.0
+    # Re-shaped score knobs (Phase 2 seed defaults).
+    assert heat.atrophy_half_life_work_hours == 3.0
+    assert heat.base_cap == 50.0
+    assert heat.base_k == 15.0
+    assert heat.activity_cap == 20.0
+    assert heat.alive_weight == 0.0
+    assert heat.alive_k == 6.0
+    assert heat.involved_drop == 0.8
+    assert heat.involved_rebuild_per_msg == 0.15
+    assert heat.tier_method == "absolute"
+    assert heat.tier_hot == 50.0
+    assert heat.tier_warm == 20.0
+    assert heat.tier_hot_count == 3
+    assert heat.tier_warm_count == 10
+    assert heat.tier_floor == 5.0
     llm = LlmConfig()
     assert llm.provider == "anthropic"
     assert llm.model == "claude-haiku-4-5-20251001"

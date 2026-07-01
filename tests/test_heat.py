@@ -26,6 +26,11 @@ from slack_dashboard.thread import ReplyRecord, ThreadEntry
 _compute_heat = compute_heat
 
 
+def _compute_heat_at(thread: ThreadEntry, config: HeatConfig, now: float) -> float:
+    """Deterministic score at a pinned ``now`` (single-path via heat_breakdown.overall)."""
+    return heat_breakdown(thread, config, None, now).overall
+
+
 def _make_thread(
     message_count: int = 5,
     participants: int = 2,
@@ -46,57 +51,117 @@ def _make_thread(
     )
 
 
+def _work_now() -> float:
+    """A fixed 'now' inside the working-hours window (Tue 2026-06-30 10:00 PT)."""
+    return datetime(2026, 6, 30, 17, 0, tzinfo=UTC).timestamp()  # 10:00 PT (UTC-7)
+
+
+def _work_thread(
+    message_count: int = 5,
+    participants: int = 2,
+    work_hours_ago: float = 0.0,
+    channel_name: str = "general",
+    thread_ts: str = "1111111111.111111",
+    now: float | None = None,
+) -> ThreadEntry:
+    """A thread whose last_activity is ``work_hours_ago`` before a working-hours ``now``.
+
+    Because ``now`` sits mid-morning, subtracting whole hours stays inside the daily window
+    for the small offsets these tests use, so working-hours-since-last == wall-clock hours.
+    """
+    now = now if now is not None else _work_now()
+    return ThreadEntry(
+        channel_id="C123",
+        channel_name=channel_name,
+        thread_ts=thread_ts,
+        first_message="Test message",
+        started_by="U1",
+        message_count=message_count,
+        participants={f"U{i}": 1 for i in range(participants)},
+        last_activity=datetime.fromtimestamp(now - work_hours_ago * 3600, tz=UTC),
+    )
+
+
 def test_compute_heat_recent_thread() -> None:
+    # base_norm = 50 * 29 / (29 + 15) ~ 32.95; atrophy 1.0 (0 work-hours since); no involvement.
     config = HeatConfig()
-    thread = _make_thread(message_count=10, participants=3, hours_ago=0.0)
-    score = compute_heat(thread, config)
-    # base = (10 * 2) + (3 * 3) = 29, decay ~ 1.0
-    assert abs(score - 29.0) < 1.0
+    now = _work_now()
+    thread = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
+    score = _compute_heat_at(thread, config, now)
+    assert abs(score - (50.0 * 29.0 / 44.0)) < 0.5
 
 
 def test_compute_heat_decays_with_age() -> None:
-    config = HeatConfig()
-    recent = _make_thread(message_count=10, participants=3, hours_ago=0.0)
-    old = _make_thread(message_count=10, participants=3, hours_ago=12.0)
-    recent_score = compute_heat(recent, config)
-    old_score = compute_heat(old, config)
+    config = HeatConfig()  # atrophy_half_life_work_hours = 3.0
+    now = _work_now()
+    recent = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
+    old = _work_thread(message_count=10, participants=3, work_hours_ago=3.0, now=now)
+    recent_score = _compute_heat_at(recent, config, now)
+    old_score = _compute_heat_at(old, config, now)
     assert recent_score > old_score
-    # At 12 hours with 24h half-life: decay = 1.0 - (12/24) = 0.5
-    # old_score ~ 29 * 0.5 = 14.5
-    assert abs(old_score - 14.5) < 1.0
+    # 3 work-hours == one half-life -> atrophy 0.5 -> old_score ~ half of recent.
+    assert abs(old_score - recent_score * 0.5) < 0.5
 
 
 def test_compute_heat_near_zero_after_full_decay() -> None:
     config = HeatConfig()
-    thread = _make_thread(message_count=10, participants=3, hours_ago=24.0)
-    score = compute_heat(thread, config)
-    # decay = max(0.01, 1.0 - 24/24) = max(0.01, 0.0) = 0.01
-    assert score < 1.0
+    now = _work_now()  # Tue 2026-06-30 10:00 PT
+    # Last activity Mon 2026-06-29 10:00 PT: a full working day earlier. Working hours
+    # between = Mon 10:00->18:00 (8) + Tue 06:00->10:00 (4) = 12 work-hours == 4 half-lives
+    # -> atrophy 0.5^4 = 0.0625 -> a ~33 base collapses to ~2.
+    last = datetime(2026, 6, 29, 17, 0, tzinfo=UTC).timestamp()  # Mon 10:00 PT
+    thread = _work_thread(message_count=10, participants=3, now=now)
+    thread.last_activity = datetime.fromtimestamp(last, tz=UTC)
+    score = _compute_heat_at(thread, config, now)
+    assert score < 3.0
 
 
 def test_compute_heat_zero_replies() -> None:
     config = HeatConfig()
-    thread = _make_thread(message_count=0, participants=0, hours_ago=0.0)
-    score = compute_heat(thread, config)
+    now = _work_now()
+    thread = _work_thread(message_count=0, participants=0, work_hours_ago=0.0, now=now)
+    score = _compute_heat_at(thread, config, now)
     assert score == 0.0
 
 
 def test_classify_tier_hot() -> None:
-    config = HeatConfig()
-    assert classify_tier(50.0, config) == "hot"
-    assert classify_tier(100.0, config) == "hot"
+    config = HeatConfig()  # absolute mode, tier_hot 50 / tier_warm 20
+    assert classify_tier(50.0, 0, 10, config) == "hot"
+    assert classify_tier(100.0, 5, 10, config) == "hot"
 
 
 def test_classify_tier_warm() -> None:
     config = HeatConfig()
-    assert classify_tier(20.0, config) == "warm"
-    assert classify_tier(49.9, config) == "warm"
+    assert classify_tier(20.0, 0, 10, config) == "warm"
+    assert classify_tier(49.9, 0, 10, config) == "warm"
 
 
 def test_classify_tier_cold() -> None:
     config = HeatConfig()
-    assert classify_tier(0.0, config) == "cold"
-    assert classify_tier(19.9, config) == "cold"
+    assert classify_tier(0.0, 0, 10, config) == "cold"
+    assert classify_tier(19.9, 0, 10, config) == "cold"
+
+
+def test_classify_tier_relative_top_n_with_floor() -> None:
+    # Relative mode: top tier_hot_count (3) are hot IF they clear tier_floor; next up to
+    # tier_warm_count (10) are warm; below the floor is always cold regardless of rank.
+    config = HeatConfig(tier_method="relative", tier_hot_count=3, tier_warm_count=5, tier_floor=5.0)
+    assert classify_tier(40.0, 0, 20, config) == "hot"  # top-3, above floor
+    assert classify_tier(40.0, 2, 20, config) == "hot"
+    assert classify_tier(40.0, 3, 20, config) == "warm"  # rank 3 -> warm band
+    assert classify_tier(40.0, 4, 20, config) == "warm"
+    assert classify_tier(40.0, 5, 20, config) == "cold"  # past warm count
+    # Below the absolute floor -> cold even at the very top (fully-atrophied board).
+    assert classify_tier(4.0, 0, 20, config) == "cold"
+
+
+def test_classify_tier_relative_counts_clamp_on_small_board() -> None:
+    # A board smaller than the counts must not error; counts clamp to total.
+    config = HeatConfig(
+        tier_method="relative", tier_hot_count=3, tier_warm_count=10, tier_floor=1.0
+    )
+    assert classify_tier(10.0, 0, 1, config) == "hot"
+    assert classify_tier(10.0, 0, 2, config) == "hot"
 
 
 def test_rank_threads() -> None:
@@ -131,23 +196,36 @@ def test_filter_stale_threads() -> None:
 
 
 def test_high_reply_old_thread_scores_low() -> None:
-    """The key insight of the redesign: old threads with many replies score near zero."""
+    """The redesign's key insight: a big-but-stale thread sinks below a small-but-fresh one.
+
+    The HARD base ceiling makes it achievable - a 200-message thread and a 10-message thread
+    both approach base_cap, so once atrophy is applied the stale one falls below the fresh one.
+    """
     config = HeatConfig()
-    old_hot = _make_thread(message_count=200, participants=20, hours_ago=25)
-    new_warm = _make_thread(message_count=10, participants=3, hours_ago=0)
-    old_score = compute_heat(old_hot, config)
-    new_score = compute_heat(new_warm, config)
+    now = _work_now()
+    # Big thread idle ~12 work-hours (4 half-lives, atrophy 0.0625); small thread fresh.
+    old_hot = _work_thread(message_count=200, participants=20, work_hours_ago=8.0, now=now)
+    new_warm = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
+    old_score = _compute_heat_at(old_hot, config, now)
+    new_score = _compute_heat_at(new_warm, config, now)
     assert new_score > old_score
 
 
 def test_channel_weight_orders_threads() -> None:
     config = HeatConfig(channel_weights={"sre": 2.0, "proj-atlas": 0.5})
-    sre = _make_thread(message_count=10, participants=3, hours_ago=0.0, channel_name="sre")
-    proj = _make_thread(message_count=10, participants=3, hours_ago=0.0, channel_name="proj-atlas")
-    neutral = _make_thread(message_count=10, participants=3, hours_ago=0.0, channel_name="random")
-    sre_score = _compute_heat(sre, config)
-    proj_score = _compute_heat(proj, config)
-    neutral_score = _compute_heat(neutral, config)
+    now = _work_now()
+    sre = _work_thread(
+        message_count=10, participants=3, work_hours_ago=0.0, channel_name="sre", now=now
+    )
+    proj = _work_thread(
+        message_count=10, participants=3, work_hours_ago=0.0, channel_name="proj-atlas", now=now
+    )
+    neutral = _work_thread(
+        message_count=10, participants=3, work_hours_ago=0.0, channel_name="random", now=now
+    )
+    sre_score = _compute_heat_at(sre, config, now)
+    proj_score = _compute_heat_at(proj, config, now)
+    neutral_score = _compute_heat_at(neutral, config, now)
     assert sre_score > neutral_score > proj_score
     # 2.0x and 0.5x multipliers relative to the neutral 1.0 channel
     assert abs(sre_score - 2.0 * neutral_score) < 0.01
@@ -241,13 +319,18 @@ def test_is_zombie_false_without_event() -> None:
     assert is_zombie(thread, config) is False
 
 
-def test_decay_rename_equivalence() -> None:
-    # decay_hours=24 + decay_floor=0.01 reproduces the prior half-life-named behavior
-    config = HeatConfig(decay_hours=24, decay_floor=0.01)
-    thread = _make_thread(message_count=10, participants=3, hours_ago=12.0)
-    score = _compute_heat(thread, config)
-    # base=29, decay=1-12/24=0.5 -> 14.5
-    assert abs(score - 14.5) < 1.0
+def test_decay_half_life_migration_still_loads() -> None:
+    # The legacy decay-half-life-hours key still maps onto decay-hours (structural_heat
+    # consumes decay_hours); the re-shaped ranking score no longer uses either knob.
+    config = HeatConfig.model_validate({"decay-half-life-hours": 12})
+    assert config.decay_hours == 12
+
+
+def test_tier_threshold_migration_maps_legacy_keys() -> None:
+    # Legacy hot-threshold / warm-threshold migrate onto the new tier-hot / tier-warm knobs.
+    config = HeatConfig.model_validate({"hot-threshold": 42, "warm-threshold": 17})
+    assert config.tier_hot == 42.0
+    assert config.tier_warm == 17.0
 
 
 def test_prune_timestamps_dedups_by_normalized_key() -> None:
@@ -317,22 +400,26 @@ def test_people_weight_raises_score() -> None:
 
 
 def test_people_weight_default_matches_participant_weight() -> None:
-    # With no people-weights set, each participant contributes participant_weight exactly,
-    # so the score is identical to the pre-Phase-2 formula.
+    # With no people-weights set, each participant contributes participant_weight exactly:
+    # volume = 10*2 + 3*3 = 29 -> base_norm = 50*29/(29+15) = 32.95..., fresh, neutral.
     config = HeatConfig()
-    thread = _make_thread(message_count=10, participants=3, hours_ago=0.0)
-    # base = 10*2 + 3*3 = 29 (decay ~1.0)
-    assert abs(compute_heat(thread, config) - 29.0) < 1.0
+    now = _work_now()
+    thread = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
+    assert abs(heat_breakdown(thread, config, None, now).overall - (50.0 * 29.0 / 44.0)) < 1e-6
 
 
 def test_people_weight_cap_bounds_contribution() -> None:
-    # The cap clamps the total people term so a crowd of weighted people cannot run away.
+    # The cap clamps the people term BEFORE base_norm saturation, so a crowd cannot run away.
     capped = HeatConfig(people_weights={"U0": 100, "U1": 100, "U2": 100}, people_weight_cap=10)
     uncapped = HeatConfig(people_weights={"U0": 100, "U1": 100, "U2": 100})
-    thread = _make_thread(message_count=0, participants=3, hours_ago=0.0)
-    # capped people_term = min(300, 10) = 10; uncapped = 300
-    assert abs(compute_heat(thread, capped) - 10.0) < 0.5
-    assert abs(compute_heat(thread, uncapped) - 300.0) < 5.0
+    now = _work_now()
+    thread = _work_thread(message_count=0, participants=3, work_hours_ago=0.0, now=now)
+    # capped volume = min(300, 10) = 10 -> base_norm = 50*10/25 = 20; uncapped volume 300
+    # -> base_norm = 50*300/315 = 47.6. The cap keeps the score well below the uncapped one.
+    capped_score = heat_breakdown(thread, capped, None, now).overall
+    uncapped_score = heat_breakdown(thread, uncapped, None, now).overall
+    assert abs(capped_score - (50.0 * 10.0 / 25.0)) < 1e-6
+    assert capped_score < uncapped_score
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +590,7 @@ def test_is_involved_false_when_self_unresolved() -> None:
     assert not is_involved(thread, None)
 
 
-# involvement_damping tests (recent self-post lowers priority, fades as it is buried)
+# involvement_damping tests (drop-and-rebuild: posting drops hard, unseen msgs rebuild)
 
 
 def _involved_thread(self_ago_s: float, messages_after: int, self_id: str = "U1") -> ThreadEntry:
@@ -532,8 +619,9 @@ def test_involvement_damping_none_self_is_noop() -> None:
 
 
 def test_involvement_damping_disabled_is_noop() -> None:
+    # involved_drop = 1.0 disables the feature (no drop possible).
     thread = _involved_thread(self_ago_s=0, messages_after=0)
-    config = HeatConfig(involved_damping=0.0)
+    config = HeatConfig(involved_drop=1.0)
     assert involvement_damping(thread, config, "U1", _time.time()) == 1.0
 
 
@@ -543,48 +631,48 @@ def test_involvement_damping_noop_when_user_has_no_post() -> None:
     assert involvement_damping(thread, HeatConfig(), "UZZZ", _time.time()) == 1.0
 
 
-def test_involvement_damping_strongest_right_after_post() -> None:
-    # Just posted (0s ago), nothing after -> freshness 1 -> damping = 1 - involved_damping.
-    config = HeatConfig(involved_damping=0.5, involved_decay_messages=10, involved_decay_hours=24)
+def test_involvement_damping_full_drop_right_after_post() -> None:
+    # Just posted, 0 unseen messages -> full drop -> damping == involved_drop.
+    config = HeatConfig(involved_drop=0.8, involved_rebuild_per_msg=0.15)
     thread = _involved_thread(self_ago_s=0, messages_after=0)
-    assert abs(involvement_damping(thread, config, "U1", _time.time()) - 0.5) < 1e-6
+    assert abs(involvement_damping(thread, config, "U1", _time.time()) - 0.8) < 1e-6
 
 
-def test_involvement_damping_fades_as_messages_pile_up() -> None:
-    config = HeatConfig(involved_damping=0.5, involved_decay_messages=10, involved_decay_hours=24)
+def test_involvement_damping_rebuilds_with_unseen_messages() -> None:
+    # Each unseen reply after my post rebuilds toward 1.0 at involved_rebuild_per_msg.
+    config = HeatConfig(involved_drop=0.8, involved_rebuild_per_msg=0.15)
     now = _time.time()
-    fresh = involvement_damping(_involved_thread(0, 0), config, "U1", now)
-    buried = involvement_damping(_involved_thread(0, 5), config, "U1", now)
-    # More messages after my post -> less reduction -> damping closer to 1.0.
-    assert fresh < buried < 1.0
+    fresh = involvement_damping(_involved_thread(0, 0), config, "U1", now)  # 0.8
+    partial = involvement_damping(_involved_thread(0, 3), config, "U1", now)
+    # 3 unseen: rebuild = 0.45 -> damping = 0.8 + 0.2*0.45 = 0.89
+    assert fresh < partial < 1.0
+    assert abs(partial - (0.8 + 0.2 * 0.45)) < 1e-6
 
 
 def test_involvement_damping_fully_restored_when_superseded() -> None:
-    config = HeatConfig(involved_damping=0.5, involved_decay_messages=10, involved_decay_hours=24)
-    # messages_after >= involved_decay_messages -> msg_fade 0 -> no reduction.
-    thread = _involved_thread(self_ago_s=0, messages_after=10)
+    # Enough unseen messages (>= 1/involved_rebuild_per_msg) fully restores to 1.0.
+    config = HeatConfig(involved_drop=0.8, involved_rebuild_per_msg=0.15)
+    thread = _involved_thread(self_ago_s=0, messages_after=10)  # rebuild clamps to 1.0
     assert involvement_damping(thread, config, "U1", _time.time()) == 1.0
 
 
-def test_involvement_damping_fades_over_time() -> None:
-    config = HeatConfig(involved_damping=0.5, involved_decay_messages=10, involved_decay_hours=24)
+def test_involvement_damping_clamped_to_floor_and_ceiling() -> None:
+    config = HeatConfig(involved_drop=0.8, involved_rebuild_per_msg=0.15)
     now = _time.time()
-    recent = involvement_damping(_involved_thread(0, 0), config, "U1", now)
-    aged = involvement_damping(_involved_thread(12 * 3600, 0), config, "U1", now)
-    # 12h after my post (half the decay window) -> half the reduction.
-    assert recent < aged < 1.0
-    # Past the full time window -> fully restored.
-    old = involvement_damping(_involved_thread(25 * 3600, 0), config, "U1", now)
-    assert old == 1.0
+    # Never below the involved_drop floor.
+    assert involvement_damping(_involved_thread(0, 0), config, "U1", now) >= 0.8
+    # Never above 1.0 even with an enormous unseen backlog.
+    assert involvement_damping(_involved_thread(0, 100), config, "U1", now) == 1.0
 
 
-def test_compute_heat_applies_involvement_damping() -> None:
-    config = HeatConfig(involved_damping=0.5, involved_decay_messages=10, involved_decay_hours=24)
+def test_compute_heat_applies_involvement_drop() -> None:
+    config = HeatConfig(involved_drop=0.8, involved_rebuild_per_msg=0.15)
+    now = _time.time()
     thread = _involved_thread(self_ago_s=0, messages_after=0)
-    damped = compute_heat(thread, config, "U1")
-    undamped = compute_heat(thread, config, None)
+    damped = heat_breakdown(thread, config, "U1", now).overall
+    undamped = heat_breakdown(thread, config, None, now).overall
     assert damped < undamped
-    assert abs(damped - undamped * 0.5) < 1e-6
+    assert abs(damped - undamped * 0.8) < 1e-6
 
 
 # ---------------------------------------------------------------------------
@@ -593,84 +681,135 @@ def test_compute_heat_applies_involvement_damping() -> None:
 
 
 def test_heat_breakdown_fields_match_hand_computed() -> None:
-    # message_count=10, participants=3 (all default weight 3.0), recent, neutral channel.
+    # message_count=10, participants=3 (all default weight 3.0), fresh, neutral channel.
     config = HeatConfig()
-    now = _time.time()
-    thread = _make_thread(message_count=10, participants=3, hours_ago=0.0)
+    now = _work_now()
+    thread = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
     bd = heat_breakdown(thread, config, None, now)
     # people_term = 3 * participant_weight(3.0) = 9.0 (no cap hit at default cap)
     assert abs(bd.people_term - 9.0) < 1e-6
-    # base = message_count*reply_weight + people_term = 10*2 + 9 = 29.0
-    assert abs(bd.base - 29.0) < 1e-6
+    # volume = 10*2 + 9 = 29; base_norm = base_cap(50) * 29 / (29 + base_k(15)) = 32.9545...
+    assert abs(bd.base - (50.0 * 29.0 / 44.0)) < 1e-6
     assert bd.message_count == 10
     assert bd.people_count == 3
     assert bd.channel_weight == 1.0  # neutral channel
     assert bd.velocity == 0.0  # no reply timestamps
-    assert abs(bd.recency - 1.0) < 1e-6  # hours_ago=0 -> decay 1.0
-    assert bd.damping == 1.0  # self_user_id None -> no damping
+    assert bd.activity == 0.0  # velocity 0 -> no burst term
+    assert abs(bd.atrophy - 1.0) < 1e-6  # 0 work-hours since -> 0.5^0 = 1.0
+    assert abs(bd.alive_boost - 1.0) < 1e-6  # alive_weight 0.0 seed -> no lift
+    assert bd.damping == 1.0  # self_user_id None -> no involvement drop
     assert bd.has_vip is False  # all default-weight participants
-    # overall = channel_weight * (base + vel*velocity_weight) * recency * damping = 29.0
-    assert abs(bd.overall - 29.0) < 1e-6
+    assert bd.time_since_last == 0.0  # last_activity == now
+    # overall = channel_weight * (base_norm + activity) * atrophy * alive_boost * damping
+    assert abs(bd.overall - (50.0 * 29.0 / 44.0)) < 1e-6
 
 
 def test_heat_breakdown_channel_weight_factor() -> None:
     config = HeatConfig(channel_weights={"sre": 2.0})
-    now = _time.time()
-    thread = _make_thread(message_count=10, participants=3, hours_ago=0.0, channel_name="sre")
+    now = _work_now()
+    thread = _work_thread(
+        message_count=10, participants=3, work_hours_ago=0.0, channel_name="sre", now=now
+    )
     bd = heat_breakdown(thread, config, None, now)
     assert bd.channel_weight == 2.0
-    # overall = 2.0 * 29.0 * 1.0 * 1.0 = 58.0
-    assert abs(bd.overall - 58.0) < 1e-6
+    # overall = 2.0 * base_norm * 1.0 * 1.0 * 1.0
+    assert abs(bd.overall - 2.0 * (50.0 * 29.0 / 44.0)) < 1e-6
 
 
-def test_heat_breakdown_recency_factor() -> None:
-    # 12 hours old, decay_hours=24 -> recency = 1 - 12/24 = 0.5
+def test_heat_breakdown_atrophy_factor() -> None:
+    # 3 working hours idle == one half-life (atrophy_half_life_work_hours=3) -> atrophy 0.5.
     config = HeatConfig()
-    now = _time.time()
-    thread = _make_thread(message_count=10, participants=3, hours_ago=12.0)
+    now = _work_now()
+    thread = _work_thread(message_count=10, participants=3, work_hours_ago=3.0, now=now)
     bd = heat_breakdown(thread, config, None, now)
-    assert abs(bd.recency - 0.5) < 0.01
-    assert abs(bd.overall - 29.0 * 0.5) < 0.5
+    assert abs(bd.atrophy - 0.5) < 1e-6
+    assert abs(bd.time_since_last - 3.0) < 1e-3
+    assert abs(bd.overall - (50.0 * 29.0 / 44.0) * 0.5) < 1e-3
 
 
-def test_heat_breakdown_velocity_factor() -> None:
-    config = HeatConfig(velocity_window_minutes=30)
-    now = _time.time()
-    thread = _make_thread(message_count=10, participants=3, hours_ago=0.0)
+def test_heat_breakdown_activity_outside_ceiling() -> None:
+    # Velocity contributes an additive burst term, capped at activity_cap, OUTSIDE base_norm.
+    config = HeatConfig(velocity_window_minutes=30, velocity_weight=10.0, activity_cap=20.0)
+    now = _work_now()
+    thread = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
     thread.replies = [
         ReplyRecord(ts=now - 60 * i, author_id="U1", text="", is_root=(i == 0)) for i in range(6)
     ]
     bd = heat_breakdown(thread, config, None, now)
-    # 6 replies in the 30-min window -> 6/30 = 0.2 replies/min
+    # 6 replies / 30 min = 0.2 rep/min; activity = min(20, 0.2*10) = 2.0
     assert abs(bd.velocity - 6 / 30) < 1e-6
+    assert abs(bd.activity - 2.0) < 1e-6
+    # overall = (base_norm + activity) * 1.0
+    assert abs(bd.overall - ((50.0 * 29.0 / 44.0) + 2.0)) < 1e-3
+
+
+def test_heat_breakdown_activity_capped() -> None:
+    # A huge velocity is clamped to activity_cap so a burst cannot run the score away.
+    config = HeatConfig(velocity_window_minutes=30, velocity_weight=1000.0, activity_cap=20.0)
+    now = _work_now()
+    thread = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
+    thread.replies = [
+        ReplyRecord(ts=now - 5 * i, author_id="U1", text="", is_root=(i == 0)) for i in range(20)
+    ]
+    bd = heat_breakdown(thread, config, None, now)
+    assert bd.activity == 20.0
+
+
+def test_heat_breakdown_alive_boost_freshness_gated() -> None:
+    # With alive_weight > 0, a long-lived AND fresh thread is lifted; the same thread once
+    # idle collapses back toward 1.0 as atrophy -> 0 (the x atrophy gate).
+    config = HeatConfig(alive_weight=1.0, alive_k=6.0)
+    now = _work_now()
+    fresh = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
+    fresh.first_seen_ts = now - 6 * 3600  # 6 work-hours of life before last post
+    fresh_bd = heat_breakdown(fresh, config, None, now)
+    # time_alive ~ 6 work-hours -> f = 6/(6+6) = 0.5; atrophy 1.0 -> alive_boost = 1 + 1*0.5*1 = 1.5
+    assert fresh_bd.time_alive > 0.0
+    assert fresh_bd.alive_boost > 1.0
 
 
 def test_heat_breakdown_damping_factor() -> None:
-    config = HeatConfig(involved_damping=0.5, involved_decay_messages=10, involved_decay_hours=24)
+    config = HeatConfig(involved_drop=0.8, involved_rebuild_per_msg=0.15)
     now = _time.time()
     thread = _involved_thread(self_ago_s=0, messages_after=0)
     bd = heat_breakdown(thread, config, "U1", now)
-    # Just posted, nothing after -> damping = 1 - involved_damping = 0.5
-    assert abs(bd.damping - 0.5) < 1e-6
+    # Just posted, 0 unseen -> full drop -> damping == involved_drop == 0.8
+    assert abs(bd.damping - 0.8) < 1e-6
 
 
 def test_heat_breakdown_people_term_capped() -> None:
     config = HeatConfig(people_weights={"U0": 100, "U1": 100, "U2": 100}, people_weight_cap=10)
-    now = _time.time()
-    thread = _make_thread(message_count=0, participants=3, hours_ago=0.0)
+    now = _work_now()
+    thread = _work_thread(message_count=0, participants=3, work_hours_ago=0.0, now=now)
     bd = heat_breakdown(thread, config, None, now)
     # people_term = min(300, 10) = 10; has_vip True (above-default weights present)
     assert abs(bd.people_term - 10.0) < 1e-6
-    assert abs(bd.base - 10.0) < 1e-6
+    # volume = 0*2 + 10 = 10; base_norm = 50 * 10 / (10 + 15) = 20.0
+    assert abs(bd.base - (50.0 * 10.0 / 25.0)) < 1e-6
     assert bd.has_vip is True
 
 
 def test_heat_breakdown_has_vip_true_with_pinned_participant() -> None:
     config = HeatConfig(people_weights={"U0": 50})
-    now = _time.time()
-    thread = _make_thread(message_count=10, participants=3, hours_ago=0.0)
+    now = _work_now()
+    thread = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
     bd = heat_breakdown(thread, config, None, now)
     assert bd.has_vip is True
+
+
+def test_heat_breakdown_monologue_boost_and_damping_noop() -> None:
+    # Root only, no replies: time_alive 0, velocity 0 -> alive_boost 1.0, activity 0; a thread
+    # the user never posted in -> damping 1.0.
+    config = HeatConfig(alive_weight=1.0)
+    now = _work_now()
+    thread = _work_thread(message_count=1, participants=1, work_hours_ago=0.0, now=now)
+    thread.first_seen_ts = now  # first == last -> time_alive 0
+    bd = heat_breakdown(thread, config, "UZZZ", now)
+    assert bd.time_alive == 0.0
+    assert bd.velocity == 0.0
+    assert bd.activity == 0.0
+    assert abs(bd.alive_boost - 1.0) < 1e-6
+    assert bd.damping == 1.0
 
 
 def test_single_path_invariant() -> None:
@@ -684,31 +823,31 @@ def test_single_path_invariant() -> None:
     ]
     for thread in fixtures:
         # compute_heat is a thin wrapper over heat_breakdown(...).overall; with a fresh
-        # default now on each, the two agree to within sub-second decay drift on a 24h curve.
+        # default now on each, the two agree to within sub-second atrophy drift.
         assert abs(compute_heat(thread, config) - heat_breakdown(thread, config).overall) < 1e-3
 
 
 def test_single_path_invariant_with_involvement() -> None:
-    config = HeatConfig(involved_damping=0.5, involved_decay_messages=10, involved_decay_hours=24)
+    config = HeatConfig(involved_drop=0.8, involved_rebuild_per_msg=0.15)
     thread = _involved_thread(self_ago_s=0, messages_after=0)
     now = _time.time()
     # Pinned now: heat_breakdown is deterministic, so compute_heat (its .overall) agrees.
     bd = heat_breakdown(thread, config, "U1", now)
     assert bd.overall == heat_breakdown(thread, config, "U1", now).overall
-    assert abs(bd.damping - 0.5) < 1e-6
+    assert abs(bd.damping - 0.8) < 1e-6
 
 
-def test_compute_heat_numeric_result_unchanged() -> None:
-    # Pin the refactor: a known fixture's score is exactly what the pre-refactor formula gave.
-    # base = 10*2 + 3*3 = 29; neutral channel; recent (recency ~1.0); no damping -> 29.0.
+def test_compute_heat_numeric_result_pinned() -> None:
+    # Pin the re-shaped formula: volume=29 -> base_norm = 50*29/44 = 32.95..., fresh, neutral.
     config = HeatConfig()
-    thread = _make_thread(message_count=10, participants=3, hours_ago=0.0)
-    assert abs(compute_heat(thread, config) - 29.0) < 1.0
+    now = _work_now()
+    thread = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
+    assert abs(heat_breakdown(thread, config, None, now).overall - (50.0 * 29.0 / 44.0)) < 1e-6
 
 
 def test_heat_breakdown_overall_equals_compute_heat_default_now() -> None:
     # With the default now (each call captures its own), the two paths agree to within
-    # the sub-second decay drift between calls on a 24h curve - i.e. effectively equal.
+    # the sub-second atrophy drift between calls - i.e. effectively equal.
     config = HeatConfig()
     thread = _make_thread(message_count=10, participants=3, hours_ago=0.5)
     assert abs(compute_heat(thread, config) - heat_breakdown(thread, config).overall) < 1e-3

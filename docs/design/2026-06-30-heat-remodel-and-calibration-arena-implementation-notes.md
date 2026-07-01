@@ -43,3 +43,88 @@ Design doc: `docs/design/2026-06-30-heat-remodel-and-calibration-arena.md`
 
 ### Open questions
 - None.
+
+## Phase 2: Re-model the score in heat_breakdown
+
+### Design decisions
+- The whole re-shaped score lives in the ONE formula line in `heat.py:heat_breakdown`:
+  `score = channel_weight * (base_norm + activity) * atrophy * alive_boost * damping`.
+  `compute_heat` is still a thin wrapper over `.overall` (single-path invariant preserved and
+  tested at `test_heat.py::test_single_path_invariant`).
+- `base_norm` is a HARD asymptotic ceiling: `base_cap * volume / (volume + base_k)` -> `base_cap`
+  as volume -> inf, monotone. `volume = message_count*reply_weight + people_term(capped)`. This
+  is what lets a big stale thread fall below a small fresh one once atrophy applies.
+  `heat.py:heat_breakdown`.
+- `activity = min(activity_cap, velocity * velocity_weight)` is kept OUTSIDE the volume ceiling as
+  its own bounded additive burst term, so a short active thread's spike is not washed out by a big
+  thread's message-count saturation. `heat.py:heat_breakdown`.
+- `atrophy = 0.5 ** (time_since_last / atrophy_half_life_work_hours)` - a true exponential
+  half-life over WORKING hours via `worktime.business_hours_between(last_activity, now, work_window)`.
+  Nights/weekends contribute 0, so a Friday-afternoon thread does not go stone-cold over the weekend.
+  `heat.py:heat_breakdown`.
+- `alive_boost = 1 + alive_weight * f(time_alive) * atrophy`, `f = time_alive/(time_alive+alive_k)`.
+  The `* atrophy` gate means a long-lived thread is lifted only while fresh; once idle, atrophy -> 0
+  collapses the boost back to ~1.0. `time_alive` is working hours from first-post (first_seen_ts, or
+  float(thread_ts) fallback) to last-post. `heat.py:heat_breakdown`.
+- `involvement_damping` reshaped into drop-and-rebuild:
+  `damping = involved_drop + (1 - involved_drop) * min(1, messages_after * involved_rebuild_per_msg)`,
+  clamped to `[involved_drop, 1.0]`. Posting drops the score to `involved_drop`; each unseen reply
+  after the user's last post rebuilds toward 1.0. `involved_drop >= 1.0` disables it.
+  `heat.py:involvement_damping`.
+- `HeatBreakdown` gained `atrophy`, `activity`, `alive_boost`, `time_alive`, `time_since_last`
+  (all fractional working hours for the two time fields) and the `recency` field was RENAMED to
+  `atrophy`; `base` now carries `base_norm`. `heat.py:HeatBreakdown`.
+- Tiering moved AFTER the sort in both call sites. `classify_tier(score, rank, total, config)` with
+  a `tier-method` switch: absolute (score thresholds) or relative (rank-aware top-N with an absolute
+  `tier_floor`, counts clamped to `min(count, total)`). `rank_threads` (`heat.py`) and
+  `poller.ranked_threads` are now two-pass: score+sort, then classify over the sorted list. Neither
+  re-implements the formula. `heat.py:classify_tier`, `heat.py:rank_threads`,
+  `poller.py:ranked_threads`.
+- `poller._update_heat` (per-entry ingest update, no board context) classifies the entry as rank 0
+  of 1; the authoritative rank-aware tier is set post-sort in `ranked_threads` at render time.
+  `poller.py:_update_heat`.
+- DEBUG log in `heat_breakdown` extended to emit `volume`, `base_norm`, `activity`, `atrophy`,
+  `alive_boost`, `time_alive`, `time_since_last`, and the selected `tier_method`. `heat.py:heat_breakdown`.
+- Config migration: added `_migrate_tier_thresholds` (mirrors `_migrate_decay_half_life`) mapping
+  legacy `hot-threshold`/`warm-threshold` onto the new `tier-hot`/`tier-warm`, and a
+  `_validate_tier_method` after-validator. `config.py:HeatConfig`.
+- Seed default knob values chosen (calibration tunes them in Phase 4):
+  - `atrophy-half-life-work-hours` = 3.0 (per the doc's starting guess; 3 work-hrs -> 0.5, 12 -> ~0.06).
+  - `base-cap` = 50.0 (keeps the historical hot-line scale: a well-populated thread approaches ~50).
+  - `base-k` = 15.0 (half-saturation near volume 15, so the curve bends within everyday message counts).
+  - `activity-cap` = 20.0 (a strong spike adds up to ~40% of a saturated base_norm, no runaway).
+  - `alive-weight` = 0.0 (per doc: time-alive is DISPLAY-ONLY until calibration says otherwise).
+  - `alive-k` = 6.0 (f half-point near ~6 work-hours of thread life).
+  - `involved-drop` = 0.8 (a 20% cut, a bigger initial drop than the old 0.5 default).
+  - `involved-rebuild-per-msg` = 0.15 (~7 unseen messages fully restores).
+  - `tier-method` = "absolute" (per doc default).
+  - `tier-hot` = 50.0, `tier-warm` = 20.0 (mirror historical lines, now meaningful given the ceiling).
+  - `tier-hot-count` = 3, `tier-warm-count` = 10 (relative-mode top-N sizes, per doc).
+  - `tier-floor` = 5.0 (chosen seed: absolute floor keeping a fully-atrophied board from painting
+    top-N hot in relative mode; the doc left this open, so 5.0 is a starting guess for calibration).
+
+### Deviations
+- Removed the now-unused legacy involvement knobs `involved_damping`, `involved_decay_messages`,
+  `involved_decay_hours` from `HeatConfig` (drop-and-rebuild fully replaces them). `hot_threshold` /
+  `warm_threshold` were RETAINED (backward-compat + migration source) but are no longer read by the
+  score; `decay_hours`/`decay_floor` were retained because `structural_heat` still consumes them.
+- Updated `web.py:_heat_strip` to read `breakdown.atrophy` where it previously read
+  `breakdown.recency` (the field rename), so the module still compiles. The strip's chip set /
+  new time-alive+time-since-last chips are Phase 3 work; this was the minimal compile fix only.
+- Test fixtures for the score were made deterministic with a pinned working-hours `now`
+  (`_work_now`, Tue 2026-06-30 10:00 PT) and a `_work_thread` helper, because atrophy now depends on
+  the position of `now` in the work window. Pre-existing `_make_thread`/default-now tests that only
+  assert ORDERING (rank, single-path invariant) were left as-is since ordering holds regardless.
+
+### Tradeoffs
+- Field rename `recency -> atrophy` vs. keeping `recency` and adding `atrophy` alongside. Chose the
+  rename: `recency` was the old linear-ramp semantics and keeping both would invite a second
+  code path reading the stale name. web.py (the only external reader) was updated in the same change.
+- `_update_heat` classifies as rank 0/1 (best-effort provisional) rather than deferring tier entirely
+  to render. Chose provisional-then-overwrite so an entry always has a sane `heat_tier` between
+  ingest and the next `ranked_threads`; the authoritative value is always the post-sort one.
+
+### Open questions
+- `tier-floor` seed (5.0) is a guess; the doc leaves it open and Phase 4 calibration should set it.
+- `base-cap`/`base-k`/`activity-cap`/`alive-k` seeds are reasonable starting shapes but are the
+  primary knobs the calibration arena (Phase 4) is meant to tune against the live board.

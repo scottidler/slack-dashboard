@@ -103,10 +103,15 @@ class SlackPoller:
             if self._dismiss is None or not self._dismiss.is_dismissed(t.channel_id, t.thread_ts)
         ]
         threads = filter_stale_threads(live, self._config.heat)
+        # Pass 1: score every thread, then sort descending.
         for t in threads:
             t.heat_score = compute_heat(t, self._config.heat, self._self_user_id)
-            t.heat_tier = classify_tier(t.heat_score, self._config.heat)
-        return sorted(threads, key=lambda t: t.heat_score, reverse=True)
+        ranked = sorted(threads, key=lambda t: t.heat_score, reverse=True)
+        # Pass 2: classify over the sorted list with the post-sort rank (relative mode needs it).
+        total = len(ranked)
+        for rank, t in enumerate(ranked):
+            t.heat_tier = classify_tier(t.heat_score, rank, total, self._config.heat)
+        return ranked
 
     def dismiss_thread(self, channel_id: str, thread_ts: str) -> None:
         logger.debug("dismiss_thread: channel=%s thread=%s", channel_id, thread_ts)
@@ -446,8 +451,12 @@ class SlackPoller:
         return await self._slack.resolve_user(user_id)
 
     def _update_heat(self, entry: ThreadEntry) -> None:
+        # Provisional per-entry update on ingest; the authoritative, rank-aware tier is set
+        # POST-SORT in ranked_threads at render time. With no board context here we classify
+        # the entry as the sole thread (rank 0 of 1), so absolute mode is exact and relative
+        # mode gives a best-effort value that ranked_threads later overwrites.
         entry.heat_score = compute_heat(entry, self._config.heat, self._self_user_id)
-        entry.heat_tier = classify_tier(entry.heat_score, self._config.heat)
+        entry.heat_tier = classify_tier(entry.heat_score, 0, 1, self._config.heat)
 
     def _maybe_trigger_llm(self, entry: ThreadEntry, reply_texts: list[str]) -> None:
         if self._on_title_needed and entry.needs_retitle(
