@@ -100,11 +100,15 @@ heat:
 
   # Tiering (see heat.classify_tier). tier-method: "absolute" (score thresholds tier-hot /
   # tier-warm) or "relative" (rank-aware top-N with an absolute floor so a fully-atrophied
-  # board still yields zero hot). tier-hot / tier-warm mirror the historical hot/warm
-  # lines but are now meaningful because base-norm is ceilinged. tier-hot-count /
-  # tier-warm-count are the relative-mode top-N sizes; tier-floor is the absolute floor
-  # relative mode checks before marking anything hot/warm.
-  tier-method: absolute
+  # board still yields zero hot). DEFAULT is relative: the calibration arena (Phase 4,
+  # docs/design/2026-06-30-calibration-trace.md) found it is the one decisive knob, taking
+  # Scott's busy board from 3/7 to 7/7 criteria passing over the other seed shapes, because
+  # rank-awareness stops a busy-but-idle thread from crowding out fresher, smaller ones the
+  # way a fixed absolute line does. tier-hot / tier-warm mirror the historical hot/warm
+  # lines and stay meaningful in absolute mode because base-norm is ceilinged.
+  # tier-hot-count / tier-warm-count are the relative-mode top-N sizes; tier-floor is the
+  # absolute floor relative mode checks before marking anything hot/warm.
+  tier-method: relative
   tier-hot: 50.0
   tier-warm: 20.0
   tier-hot-count: 3

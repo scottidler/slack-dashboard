@@ -152,7 +152,11 @@ def test_defaults() -> None:
     assert heat.alive_k == 6.0
     assert heat.involved_drop == 0.8
     assert heat.involved_rebuild_per_msg == 0.15
-    assert heat.tier_method == "absolute"
+    # tier-method default is "relative": the calibration arena (Phase 4/5, see
+    # docs/design/2026-06-30-calibration-trace.md) found flipping this one knob over the
+    # Phase 2 seed shapes is the decisive change taking the busy board from 3/7 to 7/7
+    # criteria passing.
+    assert heat.tier_method == "relative"
     assert heat.tier_hot == 50.0
     assert heat.tier_warm == 20.0
     assert heat.tier_hot_count == 3

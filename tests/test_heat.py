@@ -125,19 +125,21 @@ def test_compute_heat_zero_replies() -> None:
 
 
 def test_classify_tier_hot() -> None:
-    config = HeatConfig()  # absolute mode, tier_hot 50 / tier_warm 20
+    # Absolute mode, tier_hot 50 / tier_warm 20 (the default is "relative" since
+    # Phase 5's calibration flip; explicitly select absolute here to test that path).
+    config = HeatConfig(tier_method="absolute")
     assert classify_tier(50.0, 0, 10, config) == "hot"
     assert classify_tier(100.0, 5, 10, config) == "hot"
 
 
 def test_classify_tier_warm() -> None:
-    config = HeatConfig()
+    config = HeatConfig(tier_method="absolute")
     assert classify_tier(20.0, 0, 10, config) == "warm"
     assert classify_tier(49.9, 0, 10, config) == "warm"
 
 
 def test_classify_tier_cold() -> None:
-    config = HeatConfig()
+    config = HeatConfig(tier_method="absolute")
     assert classify_tier(0.0, 0, 10, config) == "cold"
     assert classify_tier(19.9, 0, 10, config) == "cold"
 

@@ -173,12 +173,17 @@ class HeatConfig(_KebabModel):
     involved_drop: float = 0.8
     involved_rebuild_per_msg: float = 0.15
     # Tiering (see heat.classify_tier). tier_method: "absolute" (score thresholds) or "relative"
-    # (rank-aware top-N with an absolute floor). Seeds: absolute mode active by default; tier_hot
-    # 50 / tier_warm 20 mirror the historical hot/warm lines but are now meaningful because
-    # base_norm is ceilinged. tier_hot_count 3 / tier_warm_count 10 = relative-mode top-N sizes.
-    # tier_floor 5.0 = the absolute floor in relative mode that keeps a fully-atrophied board
-    # from painting top-N hot; a thread scoring below 5 is never hot/warm even if top-ranked.
-    tier_method: str = "absolute"
+    # (rank-aware top-N with an absolute floor). Seed: relative mode is the DEFAULT - the
+    # calibration arena (Phase 4, docs/design/2026-06-30-calibration-trace.md) found it is the
+    # one decisive knob that takes the busy board from 3/7 to 7/7 criteria passing over the
+    # Phase 2 seed shapes, because it is rank-aware where absolute mode is not: a bounded
+    # score against a fixed absolute line still lets a busy-but-idle thread crowd out fresher,
+    # smaller ones. tier_hot 50 / tier_warm 20 mirror the historical hot/warm lines and remain
+    # meaningful in absolute mode because base_norm is ceilinged. tier_hot_count 3 /
+    # tier_warm_count 10 = relative-mode top-N sizes. tier_floor 5.0 = the absolute floor in
+    # relative mode that keeps a fully-atrophied board from painting top-N hot; a thread
+    # scoring below 5 is never hot/warm even if top-ranked.
+    tier_method: str = "relative"
     tier_hot: float = 50.0
     tier_warm: float = 20.0
     tier_hot_count: int = 3

@@ -341,3 +341,82 @@ Design doc: `docs/design/2026-06-30-heat-remodel-and-calibration-arena.md`
   Resolved-Questions note). The pathology reproduces and the criteria hold for the
   synthesized ages; if a future criterion needs exact timing, refine `board.py` from a real
   dump.
+
+## Phase 5: Lock + freeze
+
+### Design decisions
+- Flipped `HeatConfig.tier_method`'s default from `"absolute"` to `"relative"` in
+  `config.py`, per the Phase 4 calibration trace's finding: this ONE change over the
+  Phase 2 seed shapes takes the busy board from 3/7 to 7/7 criteria passing. Verified
+  directly before editing (`tests/calibration/score.score_board(HeatConfig(tier_method="relative"))`
+  -> `(7, [], 0.0)`; the code-default absolute mode with the same seeds ->
+  `(6, ["weekend_frozen"], ...)`). `config.py:HeatConfig.tier_method`.
+- Kept every other Phase 2 seed value unchanged (`atrophy_half_life_work_hours` 3.0,
+  `base_cap` 50.0, `base_k` 15.0, `activity_cap` 20.0, `alive_weight` 0.0, `alive_k` 6.0,
+  `involved_drop` 0.8, `involved_rebuild_per_msg` 0.15, `tier_hot` 50.0, `tier_warm` 20.0,
+  `tier_hot_count` 3, `tier_warm_count` 10, `tier_floor` 5.0) per Phase 4's own
+  recommendation: they are in the winning 7/7 tie-set and are safer/better-motivated than
+  the loop's first-found tie member (e.g. `atrophy_half_life_work_hours` 3.0 gives
+  `weekend_frozen` more margin than the loop's 1.5, and matches the doc's worked example).
+  `config.py:HeatConfig`.
+- Updated `slack-dashboard.example.yml`'s `tier-method` line to `relative` with a comment
+  explaining why (the decisive Phase 4 finding), matching `config.py`'s new default and
+  comment. Confirmed every other documented seed value already matched `config.py`
+  verbatim (base-cap 50.0, base-k 15.0, activity-cap 20.0, alive-weight 0.0, alive-k 6.0,
+  involved-drop 0.8, involved-rebuild-per-msg 0.15, tier-hot 50.0, tier-warm 20.0,
+  tier-hot-count 3, tier-warm-count 10, tier-floor 5.0, atrophy-half-life-work-hours 3.0) -
+  no other example.yml edits were needed. `slack-dashboard.example.yml`.
+- Froze the arena as `tests/calibration/test_calibration.py`: one test per named criterion
+  (`at_most_N_red`, `lunchtime_threads_demoted`, `active_recent_top3`, `stale_is_cold`,
+  `weekend_frozen`, `involvement_drop_then_rebuild`, `vip_lift_capped`) plus an aggregate
+  "all criteria pass" test and a `pass_count == len(CRITERIA)` test, all against the
+  DEFAULT `HeatConfig()` (no overrides) on both `board.busy_board()` and
+  `board.contrast_board()` via `score.rank_board`/`score.score_board`. Per-criterion
+  assertions (not brittle exact-score equality) so a future regression names which
+  specific behavior broke, not just an opaque count. Also asserts
+  `HeatConfig().tier_method == "relative"` directly, since that is the one knob a future
+  edit is most likely to silently revert. `tests/calibration/test_calibration.py`.
+- Updated `CLAUDE.md`'s chip-vocabulary bullet (the one Phase 3 explicitly deferred - see
+  Phase 3's Deviations note) to add the two Phase 3 chips: `⌛` time-alive (working hours,
+  first-post -> last-post; dimmed when `alive_weight` is 0) and `⏲` time-since-last
+  (working hours, last-post -> now; the atrophy input), placed between `⚡` velocity and
+  `⏱️` recency to match their actual render order in `web.py:_heat_strip`. `CLAUDE.md`.
+- Updated the design doc's `**Status:**` line from `Draft` to `Implemented`.
+
+### Deviations
+- `test_config.py::test_defaults` and `test_heat.py::test_classify_tier_hot/warm/cold`
+  asserted the OLD `tier_method == "absolute"` default and relied on it implicitly
+  (`HeatConfig()` with no override, expecting absolute-threshold behavior). Updated
+  `test_defaults` to assert the new default (`"relative"`) with a comment pointing at the
+  calibration trace, and updated the three `classify_tier` tests to explicitly construct
+  `HeatConfig(tier_method="absolute")` so they keep testing absolute-mode behavior on
+  purpose rather than by accident of the default. This is a necessary consequence of
+  flipping the default, not a scope deviation, and no other test in the suite depended on
+  the tiering default (verified: no other test file reads `heat_tier`/`classify_tier`/
+  `tier_method` outside `test_config.py`, `test_heat.py`, and `tests/calibration/`).
+
+### Tradeoffs
+- Per-criterion frozen tests (7 focused tests + 1 aggregate `failures == []` test + 1
+  `pass_count` test) vs. a single `assert score_board(...) == (7, [], 0.0)` one-liner.
+  Chose per-criterion per the phase's explicit "make the assertions robust... not
+  brittle exact-score equality" instruction: a one-liner would fail as an opaque count on
+  any regression, while naming each criterion means the failure message says exactly
+  which North-Star property broke (e.g. "stale threads no longer go cold" vs "score
+  changed"). The soft `soft_distance` float is intentionally NOT asserted to an exact
+  value anywhere, only that `failures == []`, since soft_distance is documented as a
+  tie-breaking gradient for the optimizer, not a judged quantity.
+- Kept the Phase 4 loop's first-found tie-set values out of the shipped config (declined
+  `atrophy_half_life_work_hours=1.5`, `base_cap=80.0`, `base_k=10.0` even though the
+  trace file shows them as the loop's literal final state) in favor of the Phase 2 seeds.
+  Chose the seeds because Phase 4's own notes documented this as the right call (more
+  `weekend_frozen` margin, matches the worked example, and both are members of the same
+  passing tie-set so there is no criterion-coverage cost) - Phase 5 only had to verify
+  the claim, not re-decide it.
+
+### Open questions
+- None new. Phase 4's open question about `base_cap`/`base_k`/`atrophy` being
+  under-constrained within the 7/7 tie-set (the criteria as written do not distinguish
+  the doc seeds from the loop's first-found values) still stands as a live open question
+  for a future calibration pass if a new board ever shows drift; Phase 5 did not add a
+  tie-breaking criterion, per the phase's scope (freeze the arena as it stands, do not
+  extend it).
