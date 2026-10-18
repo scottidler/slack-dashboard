@@ -72,6 +72,23 @@ def test_display_title_fallback() -> None:
     assert entry.display_title == entry.first_message[:80]
 
 
+def test_display_title_fallback_strips_wire_tokens() -> None:
+    # No LLM title yet: the raw root must not leak <!subteam^...> / <@U...> into the row,
+    # and newlines collapse so the row stays one line.
+    entry = ThreadEntry(
+        channel_id="C123",
+        channel_name="data-platform",
+        thread_ts="1111111111.111111",
+        first_message="impromptu datahub meeting now <!subteam^S02DL6LHZAQ>?\n<@U123> anyone",
+        started_by="U1",
+        message_count=5,
+        participants={"U1": 1},
+        last_activity=datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC),
+    )
+    assert entry.display_title == "impromptu datahub meeting now @group? @user anyone"
+    assert "<" not in entry.display_title
+
+
 def test_needs_retitle_no_existing_title() -> None:
     entry = ThreadEntry(
         channel_id="C123",

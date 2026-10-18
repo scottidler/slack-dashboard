@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 
+from slack_dashboard.slack.mrkdwn import strip_mrkdwn
+
 # Maximum number of reply records retained per thread.  Oldest are dropped past
 # this cap.  Matches the prior MAX_REPLY_TIMESTAMPS cap from heat.py so the
 # projection never grows larger than before.
@@ -99,9 +101,14 @@ class ThreadEntry:
 
     @property
     def display_title(self) -> str:
+        """The LLM title, or the root message stripped of Slack wire tokens and truncated.
+
+        The fallback is the one title path with no LLM in front of it, so it strips mrkdwn
+        itself: a raw ``<!subteam^S...>`` or ``<@U...>`` must never reach a row.
+        """
         if self.title:
             return self.title
-        return self.first_message[:80]
+        return " ".join(strip_mrkdwn(self.first_message).split())[:80]
 
     def needs_retitle(self, retitle_reply_growth: int, retitle_reply_percent: int) -> bool:
         if self.title is None:

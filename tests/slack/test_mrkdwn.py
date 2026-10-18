@@ -52,6 +52,34 @@ def test_combined() -> None:
     assert ":" not in result or result.count(":") == 1  # only the colon after "details"
 
 
+def test_strip_usergroup_mention_no_label() -> None:
+    # The form Slack delivers on most payloads; leaked into live titles on 2026-10-17.
+    text = "impromptu datahub meeting now <!subteam^S02DL6LHZAQ>? anyone"
+    assert strip_mrkdwn(text) == "impromptu datahub meeting now @group? anyone"
+
+
+def test_strip_usergroup_mention_with_label() -> None:
+    text = "ping <!subteam^S02DL6LHZAQ|@datahub> please"
+    assert strip_mrkdwn(text) == "ping @datahub please"
+
+
+def test_strip_here_channel_everyone() -> None:
+    assert strip_mrkdwn("<!here> deploy starting") == "@here deploy starting"
+    assert strip_mrkdwn("<!channel> heads up") == "@channel heads up"
+    assert strip_mrkdwn("<!everyone> all hands") == "@everyone all hands"
+
+
+def test_strip_date_token_uses_fallback_label() -> None:
+    text = "due <!date^1392734382^{date_short}|Feb 18, 2014>"
+    assert strip_mrkdwn(text) == "due Feb 18, 2014"
+
+
+def test_no_wire_token_survives() -> None:
+    text = "<@U1> <#C1|ops> <!subteam^S1> <!here> <https://x.com|x> <!date^1^{date}|d>"
+    result = strip_mrkdwn(text)
+    assert "<" not in result and ">" not in result
+
+
 def test_empty_string() -> None:
     assert strip_mrkdwn("") == ""
 
