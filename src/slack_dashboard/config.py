@@ -368,6 +368,26 @@ def _interpolate_recursive(data: object) -> object:
     return data
 
 
+def require_secrets(config: AppConfig) -> None:
+    """Fail at boot when a required secret is empty or still an unresolved ``${VAR}``.
+
+    ``_interpolate_env`` leaves a placeholder in place when its env var is unset, so without
+    this check the literal ``${ANTHROPIC_API_KEY}`` ships as the API key and every LLM call
+    401s while the app reports healthy (2026-10-10 -> 2026-10-16).
+    """
+    required = (
+        ("slack.token", config.slack.token),
+        ("llm.api-key", config.llm.api_key),
+    )
+    for name, value in required:
+        unresolved = _ENV_VAR_RE.search(value)
+        if unresolved:
+            raise ValueError(f"{name}: env var {unresolved.group(1)} is not set")
+        if not value:
+            raise ValueError(f"{name} must not be empty")
+    logger.debug("require_secrets: all required secrets resolved")
+
+
 def load_config(path: Path) -> AppConfig:
     logger.debug("load_config: path=%s", path)
     raw = yaml.safe_load(path.read_text()) or {}

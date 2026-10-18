@@ -46,13 +46,15 @@ uv run pytest    # tests only
 
 ## Run locally
 
-Needs config at `~/.config/slack-dashboard/slack-dashboard.yml` and three env vars
+Needs config at `~/.config/slack-dashboard/slack-dashboard.yml` and four env vars
 (`SLACK_DASHBOARD_SLACK_USER_TOKEN`, `SLACK_DASHBOARD_SLACK_APP_TOKEN`, `SLACK_TEAM_ID`,
-`ANTHROPIC_API_KEY`) decrypted from `scottidler/secrets` via `manifest age`:
+`ANTHROPIC_API_KEY`) decrypted from `scottidler/keep` via `manifest age`. keep stores the
+Anthropic key as `ESCOTE_ANTHROPIC_API_KEY`, so map it at launch. The app exits at boot
+when a required secret is empty or an unresolved `${VAR}`:
 
 ```bash
-eval "$(manifest age decrypt ~/repos/scottidler/secrets/.secrets)"
-uv run slack-dashboard   # serves on server.host:server.port (currently 0.0.0.0:8889)
+eval "$(manifest age decrypt ~/repos/scottidler/keep/.secrets)"
+ANTHROPIC_API_KEY="$ESCOTE_ANTHROPIC_API_KEY" uv run slack-dashboard   # serves on server.host:server.port (currently 0.0.0.0:8889)
 ```
 
 There is no global install step (run via `uv run` or the Dockerfile); `/shipit` should

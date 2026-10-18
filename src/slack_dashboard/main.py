@@ -10,7 +10,7 @@ import uvicorn
 from anthropic import AsyncAnthropic
 from fastapi import FastAPI
 
-from slack_dashboard.config import AppConfig, load_config
+from slack_dashboard.config import AppConfig, load_config, require_secrets
 from slack_dashboard.connection import ConnectionState, monitor_connection
 from slack_dashboard.dismiss import DismissStore
 from slack_dashboard.llm.provider import AnthropicProvider
@@ -155,6 +155,11 @@ def main() -> None:
         level=getattr(logging, config.server.log_level.upper(), logging.INFO),
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+    try:
+        require_secrets(config)
+    except ValueError as e:
+        logger.error("Config error: %s", e)
+        raise SystemExit(1) from e
     app, _ = _build_app(config)
     uvicorn.run(
         app,

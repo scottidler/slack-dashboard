@@ -13,6 +13,7 @@ from slack_dashboard.config import (
     ServerConfig,
     SlackConfig,
     load_config,
+    require_secrets,
     resolve_channel_weight,
     resolve_min_replies,
 )
@@ -294,3 +295,31 @@ def test_all_deprecated_involved_keys_warn(caplog: pytest.LogCaptureFixture) -> 
         with caplog.at_level(logging.WARNING):
             HeatConfig.model_validate({legacy: 1})
         assert any(legacy in record.message for record in caplog.records), legacy
+
+
+def test_require_secrets_rejects_unresolved_placeholder(tmp_path: Path) -> None:
+    # An unset env var leaves the literal ${VAR}; it must not ship as the API key.
+    data = {
+        "slack": {"token": "xoxp-set"},
+        "llm": {"api-key": "${SLACK_DASHBOARD_TEST_MISSING_KEY}"},
+    }
+    config = load_config(write_config(tmp_path, data))
+    with pytest.raises(ValueError, match="llm.api-key: env var SLACK_DASHBOARD_TEST_MISSING_KEY"):
+        require_secrets(config)
+
+
+def test_require_secrets_rejects_empty() -> None:
+    config = AppConfig(slack=SlackConfig(token="xoxp-set"), llm=LlmConfig(api_key=""))
+    with pytest.raises(ValueError, match="llm.api-key must not be empty"):
+        require_secrets(config)
+
+
+def test_require_secrets_rejects_unresolved_slack_token() -> None:
+    config = AppConfig(slack=SlackConfig(token="${UNSET}"), llm=LlmConfig(api_key="sk-set"))
+    with pytest.raises(ValueError, match="slack.token: env var UNSET"):
+        require_secrets(config)
+
+
+def test_require_secrets_accepts_resolved() -> None:
+    config = AppConfig(slack=SlackConfig(token="xoxp-set"), llm=LlmConfig(api_key="sk-set"))
+    require_secrets(config)
