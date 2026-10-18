@@ -96,6 +96,14 @@ def test_index_returns_html(client: TestClient) -> None:
     assert "thread-list" in response.text
 
 
+def test_index_shows_the_running_version(client: TestClient) -> None:
+    from importlib.metadata import version
+
+    response = client.get("/")
+    shown = f'title="running version">v{version("slack-dashboard")}</span>'
+    assert shown in response.text
+
+
 def test_threads_returns_partial(client: TestClient) -> None:
     response = client.get("/threads")
     assert response.status_code == 200

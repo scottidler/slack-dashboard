@@ -46,6 +46,7 @@
         .group-choice { margin: 0; }
         .group-choice.active { font-weight: 700; text-decoration: underline; color: var(--pico-color); }
         .group-sep { color: var(--pico-muted-color); opacity: 0.6; }
+        h1 .version { font-size: 0.4em; font-weight: 400; color: var(--pico-muted-color); vertical-align: middle; }
         .legend { margin-left: auto; cursor: help; opacity: 0.85; font-size: 0.85em; color: var(--pico-muted-color); }
         /* Compact fold: hide the below-fold tail (and any group entirely below the fold)
            via pure CSS. Every row stays in the DOM; only its visibility changes. */
@@ -152,7 +153,7 @@
 </head>
 <body>
     <main class="container">
-        <h1>Slack Dashboard</h1>
+        <h1>Slack Dashboard <span class="version" title="running version">v{{ version }}</span></h1>
         {% block content %}{% endblock %}
     </main>
     <script>

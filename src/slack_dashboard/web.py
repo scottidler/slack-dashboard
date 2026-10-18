@@ -1,6 +1,7 @@
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from importlib.metadata import version
 from pathlib import Path
 from typing import Annotated
 
@@ -587,6 +588,7 @@ def create_routes(
     if templates is None:
         templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
     templates.env.filters["markdown"] = _markdown_filter
+    templates.env.globals["version"] = version("slack-dashboard")
     # Every read route (and the two event routes) builds its config from the yml plus the
     # request's heat.* overrides; a rejected override is a 422 whose body is the reason.
     view_config = request_config(config)
