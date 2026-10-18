@@ -210,8 +210,8 @@ const KNOBS = [
   ['k-burst', 'velocity_weight', 'velocity weight', 0, 60, 1],
   ['k-burst', 'velocity_window_minutes', 'window (min)', 5, 240, 5],
   ['k-burst', 'activity_cap', 'activity cap', 0, 100, 5],
-  ['k-inv', 'involved_drop', 'drop (1=off)', 0, 1, 0.05],
-  ['k-inv', 'involved_rebuild_per_msg', 'rebuild per msg', 0, 1, 0.05],
+  ['k-inv', 'followed_drop', 'drop (1=off)', 0, 1, 0.05],
+  ['k-inv', 'followed_rebuild_per_msg', 'rebuild per msg', 0, 1, 0.05],
   ['k-topic', 'social_drop', 'social: drop', 0, 1, 0.05],
   ['k-topic', 'resolved_drop', 'resolved: drop', 0, 1, 0.05],
   ['k-topic', 'leader_weight', 'needs leader: weight', 0, 100, 5],
@@ -270,8 +270,8 @@ const HELP = {
   'velocity_weight': 'How much a reply-per-minute rate lifts the score before the cap. Live: 5. Pair with the window: 5 replies in 30 minutes x 5 = 0.83 points, tiny next to base, which is why this sweeps flat. For bursts to matter, think 30+.',
   'velocity_window_minutes': 'How far back "right now" reaches for the burst term. Short windows are a cliff: a reply at minute 31 vanishes. At 3 looks a day, a window near the gap between looks (180-240) behaves more like "since I last looked".',
   'activity_cap': 'Ceiling on the burst vote so a flood cannot outrank everything. Measured against base, which tops out at base cap.',
-  'involved_drop': 'Multiplier applied the moment you post (0.8 = a 20% cut, 1 = off, 0 = your threads vanish until replies rebuild them). Both labels exclude threads you were already in, so a hard drop costs nothing on this page; in the live board it is what makes "caught up sinks".',
-  'involved_rebuild_per_msg': 'How fast unseen replies after your post restore the score: 0.15 = ~7 unseen replies back to full. Low = your threads stay down; high = one reply and it is back.',
+  'followed_drop': 'Multiplier on a thread Slack follows for you (started, commented, mentioned, followed; here: started or posted before the look). 0.8 = a 20% cut, 1 = off, 0 = followed threads vanish until replies rebuild them. Owner policy: the loop never moves it. Both labels exclude threads you were already in, so a hard drop costs nothing on this page; on the live board it keeps the threads Slack already tells you about out of the top.',
+  'followed_rebuild_per_msg': 'How fast unread replies (after your Slack last_read; here: after your last post) restore the score: 0.15 = ~7 unread replies back to full, 0 = followed threads stay down. Owner policy: the loop never moves it.',
   'social_drop': 'Gate: score x (1 - drop x p(social)). At 1, a thread jev is sure is social goes to zero; at 0.5 it halves. The "we made it" thread is p(social) 0.90. Watch the misses list: a social thread you did reply to would show up there.',
   'resolved_drop': 'Gate: score x (1 - drop x p(resolved)). The biggest single gain in every sweep so far: nothing in the live formula knows a thread is over. Check the board after raising it; jev calls some live threads resolved at 0.6-0.7.',
   'leader_weight': 'Vote: + weight x p(needs leader), inside the brackets next to base. 45 = a thread jev is sure needs a leader gets as much lift as a full-size thread. The Director-shaped signal; second biggest gain in the sweep.',
@@ -416,9 +416,9 @@ function evalThread(t, c) {
   let after = 0;
   if (myLast) for (const r of reps) if (r[0] > myLast) after++;
   let damp = 1;
-  if (myLast && K.involved_drop < 1) {
-    const rebuild = Math.min(1, after * K.involved_rebuild_per_msg);
-    damp = Math.min(1, Math.max(K.involved_drop, K.involved_drop + (1 - K.involved_drop) * rebuild));
+  if (myLast && K.followed_drop < 1) {
+    const rebuild = Math.min(1, after * K.followed_rebuild_per_msg);
+    damp = Math.min(1, Math.max(K.followed_drop, K.followed_drop + (1 - K.followed_drop) * rebuild));
   }
   const votes = K.leader_weight * p(t, 'leader') + K.incident_weight * p(t, 'incident') + K.question_weight * p(t, 'question');
   const gates = (1 - K.social_drop * p(t, 'social')) * (1 - K.resolved_drop * p(t, 'resolved')) *

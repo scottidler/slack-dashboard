@@ -41,9 +41,10 @@ score       = channel-weight * (base-norm + activity + votes) * atrophy * alive-
   it lifts a long-lived thread only while it is still fresh, since the `* atrophy`
   gate collapses the boost back toward 1.0 once the thread goes idle. Ships
   display-only (`alive-weight: 0`).
-- **involvement damping** - drop-and-rebuild: posting in a thread drops its score
-  to `involved-drop`, then each unseen reply after your last post rebuilds it back
-  toward 1.0 at rate `involved-rebuild-per-msg`.
+- **following damping** - a thread Slack follows for you (started, commented, @'d,
+  or followed by hand; Slack's `subscribed` on the root) drops to `followed-drop`,
+  then each reply after your Slack `last_read` rebuilds it back toward 1.0 at rate
+  `followed-rebuild-per-msg`.
 - **topic terms** - jev (TypeSafe's typed-decision model) rates each thread for
   p(needs a leader) and p(resolved). A leader thread gets a vote (`leader-weight`),
   escapes the leader gate (`leader-gate-floor`) and keeps its heat longer
@@ -89,8 +90,8 @@ commented starting point.
 | `heat.activity-cap` | `20.0` | Upper bound on the additive `activity` burst term. |
 | `heat.alive-weight` | `0.0` | Strength of the freshness-gated longevity lift (`0` = display-only). |
 | `heat.alive-k` | `6.0` | Half-point of the time-alive ramp (working hours of thread life). |
-| `heat.involved-drop` | `0.8` | Score multiplier the moment you post in a thread (`1.0` disables). |
-| `heat.involved-rebuild-per-msg` | `0.15` | How fast unseen replies after your post rebuild toward 1.0. |
+| `heat.followed-drop` | `0.8` | Score multiplier on a thread Slack follows for you (`1.0` disables). |
+| `heat.followed-rebuild-per-msg` | `0.15` | How fast replies after your Slack `last_read` rebuild toward 1.0. |
 | `heat.atrophy-curve` | `exponential` | `exponential` (`0.5 ** (t/h)`) or `hyperbolic` (`1 / (1 + t/h)`, same half point, longer tail). |
 | `heat.atrophy-leader-stretch` | `0.0` | Half-life multiplier `1 + stretch * (p(leader) - 0.5)`. Tuned: `1.0`. |
 | `heat.leader-weight` | `0.0` | Additive vote `leader-weight * p(leader)`. Tuned: `45`. |
@@ -121,8 +122,8 @@ startup; there is no hot-reload yet).
   per working hour over the last 12 (newest right; height = posts in that hour: 1, 2-3,
   4-7, 8+; a floor line for none), `Nh` is working hours since the last post, and the
   marks are twelve fixed slots, lit when the state applies and dim when not: 👔 needs
-  a leader, 🔑 access, 🚨 incident, ✅ resolved, 🎉 social (jev, 60%+), then 🙋 you
-  posted, 👑 vip, ✨ new, 📈 spiking, 🌶️ heated, ⏪ revived, ❓ unanswered. Hover a slot
+  a leader, 🔑 access, 🚨 incident, ✅ resolved, 🎉 social (jev, 60%+), then 🔔 Slack
+  follows it for you, 👑 vip, ✨ new, 📈 spiking, 🌶️ heated, ⏪ revived, ❓ unanswered. Hover a slot
   for its meaning. The glyphs are `display.marks` in the yml.
 - **Group by** - `channel | size | velocity | participants`.
 - **Hover** a row for the AI summary; **click** to open the Slack thread.

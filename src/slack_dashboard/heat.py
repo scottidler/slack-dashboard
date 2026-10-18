@@ -30,7 +30,7 @@ class HeatBreakdown:
     atrophy: float  # working-hours exponential decay multiplier in (0, 1]
     activity: float  # freshness burst = min(activity_cap, velocity*velocity_weight)
     alive_boost: float  # longevity lift, freshness-gated: 1 + alive_weight*f(time_alive)*atrophy
-    damping: float  # drop-and-rebuild multiplier in [involved_drop, 1.0]
+    damping: float  # following drop-and-rebuild multiplier in [followed_drop, 1.0]
     time_alive: float  # working hours, first_post -> last_post
     time_since_last: float  # working hours, last_post -> now (the atrophy input)
     # Topic terms (jev). votes is additive beside base and activity; gates multiplies the
@@ -103,48 +103,41 @@ def velocity(thread: ThreadEntry, config: HeatConfig, now_ts: float | None = Non
     return replies_in_window(thread, config, now_ts) / config.velocity_window_minutes
 
 
-def involvement_damping(
-    thread: ThreadEntry,
-    config: HeatConfig,
-    self_user_id: str | None,
-    now_ts: float,
-) -> float:
-    """Drop-and-rebuild heat multiplier for a thread the user recently posted in.
+def following_damping(thread: ThreadEntry, config: HeatConfig, now_ts: float) -> float:
+    """Drop-and-rebuild heat multiplier for a thread Slack follows for me.
 
-    Returns 1.0 (no change) when the feature is off (involved_drop >= 1.0), the user is
-    unresolved (None), or the user has no retained post in this thread. Otherwise posting
-    drops the thread hard - right after the user posts (nothing unseen after it) the
-    multiplier is the full ``involved_drop`` cut. Each reply *after* the user's last post
-    (``messages_after``, the proxy for "unseen activity") rebuilds the score back toward
-    1.0 at rate ``involved_rebuild_per_msg``, so a thread that moved on without the user
-    re-surfaces:
+    Returns 1.0 (no change) when the thread is not followed or the feature is off
+    (``followed_drop >= 1.0``). A followed thread drops to ``followed_drop``; each retained
+    non-root reply after my Slack ``last_read`` (unread in Slack) rebuilds it toward 1.0 at
+    rate ``followed_rebuild_per_msg``:
 
-        damping = involved_drop + (1 - involved_drop) * (messages_after * involved_rebuild_per_msg)
+        damping = followed_drop + (1 - followed_drop) * (unread * followed_rebuild_per_msg)
 
-    Clamped to ``[involved_drop, 1.0]``: the rebuild can restore a thread toward neutral
-    but never boost it above a not-involved thread. Logs the inputs and resulting
-    multiplier per the logging rule.
+    An unknown ``last_read`` (None) counts no unread replies: unknown read state is not
+    "unread everything". Clamped to ``[followed_drop, 1.0]``.
     """
-    if self_user_id is None or config.involved_drop >= 1.0:
+    if not is_following(thread) or config.followed_drop >= 1.0:
         return 1.0
-    mine = [r.ts for r in thread.replies if r.author_id == self_user_id]
-    if not mine:
-        return 1.0
-    last_ts = max(mine)
-    messages_after = sum(1 for r in thread.replies if r.ts > last_ts)
-    # Rebuild fraction: 0 unseen -> full drop; grows with unseen messages, clamped to 1.0.
-    rebuild = min(1.0, max(0.0, messages_after * config.involved_rebuild_per_msg))
-    damping = config.involved_drop + (1.0 - config.involved_drop) * rebuild
-    damping = min(1.0, max(config.involved_drop, damping))
+    last_read = thread.last_read
+    unread = (
+        0
+        if last_read is None
+        else sum(1 for r in thread.replies if not r.is_root and r.ts > last_read)
+    )
+    rebuild = min(1.0, max(0.0, unread * config.followed_rebuild_per_msg))
+    damping = config.followed_drop + (1.0 - config.followed_drop) * rebuild
+    damping = min(1.0, max(config.followed_drop, damping))
     logger.debug(
-        "involvement_damping: channel=%s thread_ts=%s messages_after=%d "
-        "involved_drop=%.3f rebuild=%.3f damping=%.3f",
+        "following_damping: channel=%s thread_ts=%s last_read=%s unread=%d "
+        "followed_drop=%.3f rebuild=%.3f damping=%.3f now=%.3f",
         thread.channel_name,
         thread.thread_ts,
-        messages_after,
-        config.involved_drop,
+        last_read,
+        unread,
+        config.followed_drop,
         rebuild,
         damping,
+        now_ts,
     )
     return damping
 
@@ -152,14 +145,13 @@ def involvement_damping(
 def heat_breakdown(
     thread: ThreadEntry,
     config: HeatConfig,
-    self_user_id: str | None = None,
     now: float | None = None,
 ) -> HeatBreakdown:
     """Compute every factor behind a thread's heat score in one place.
 
     This is the single arithmetic path for the ranking score: ``compute_heat`` is a thin
     wrapper that returns ``.overall``. ``now`` is a float Unix timestamp defaulting to the
-    current UTC instant, matching ``velocity``/``involvement_damping``/``structural_heat``.
+    current UTC instant, matching ``velocity``/``following_damping``/``structural_heat``.
 
     The re-shaped score (one line):
 
@@ -172,7 +164,7 @@ def heat_breakdown(
         half        = half_life * (1 + atrophy_leader_stretch * (p(leader) - 0.5))
         atrophy     = 0.5 ** (time_since_last / half)                # or 1 / (1 + t / half)
         alive_boost = 1 + alive_weight * f(time_alive) * atrophy     # freshness-gated lift
-        damping     = drop_and_rebuild(...) in [involved_drop, 1]
+        damping     = following_damping(...) in [followed_drop, 1]
         gates       = (floor + (1 - floor) * p(leader)) * (1 - resolved_drop * p(resolved))
 
     The topic terms read ``thread.topics`` (jev probabilities, see ``topics.py``). An unrated
@@ -188,12 +180,12 @@ def heat_breakdown(
         now = datetime.now(UTC).timestamp()
     logger.debug(
         "heat_breakdown: channel=%s thread_ts=%s message_count=%d participants=%d "
-        "self_user_id=%s now=%.6f",
+        "subscribed=%s now=%.6f",
         thread.channel_name,
         thread.thread_ts,
         thread.message_count,
         len(thread.participants),
-        self_user_id,
+        thread.subscribed,
         now,
     )
     # Participant term is the SUM of per-person weights (each defaults to participant_weight),
@@ -240,7 +232,7 @@ def heat_breakdown(
     alive_f = time_alive / (time_alive + config.alive_k) if time_alive > 0 else 0.0
     alive_boost = 1.0 + config.alive_weight * alive_f * atrophy
 
-    damping = involvement_damping(thread, config, self_user_id, now)
+    damping = following_damping(thread, config, now)
     has_vip = is_vip(thread, config)
     votes = config.leader_weight * p_leader if p_leader is not None else 0.0
     gates = 1.0
@@ -301,8 +293,8 @@ def heat_breakdown(
     )
 
 
-def compute_heat(thread: ThreadEntry, config: HeatConfig, self_user_id: str | None = None) -> float:
-    return heat_breakdown(thread, config, self_user_id).overall
+def compute_heat(thread: ThreadEntry, config: HeatConfig) -> float:
+    return heat_breakdown(thread, config).overall
 
 
 def detect_resurrection(prior_last_activity_ts: float, event_ts: float, config: HeatConfig) -> bool:
@@ -463,17 +455,13 @@ def is_heated(thread: ThreadEntry, config: HeatConfig, now_ts: float | None = No
     return fired
 
 
-def is_involved(thread: ThreadEntry, self_user_id: str | None) -> bool:
-    """True when the current user has personally posted in this thread.
+def is_following(thread: ThreadEntry) -> bool:
+    """True when Slack follows this thread for me (Slack's ``subscribed`` on the root).
 
-    Membership is a plain lookup against ``participants`` (keyed by stable Slack
-    user_id, includes every message author - root and replies). ``self_user_id``
-    is None until auth.test resolves it (or if that fails), in which case this is
-    always False so the 👤 glyph stays dark rather than misfiring.
-
-    Trivial membership check - no logging per the logging rule.
+    Slack's definition: I started it, commented in it, was @'d in it, or followed it by
+    hand. Trivial field read - no logging per the logging rule.
     """
-    return self_user_id is not None and self_user_id in thread.participants
+    return thread.subscribed
 
 
 def classify_tier(score: float, rank: int, total: int, config: HeatConfig) -> str:
@@ -509,11 +497,10 @@ def classify_tier(score: float, rank: int, total: int, config: HeatConfig) -> st
 def rank_threads(
     threads: list[ThreadEntry],
     config: HeatConfig,
-    self_user_id: str | None = None,
 ) -> list[ThreadEntry]:
     # Pass 1: compute the score for every thread, then sort descending.
     for thread in threads:
-        thread.heat_score = compute_heat(thread, config, self_user_id)
+        thread.heat_score = compute_heat(thread, config)
     ranked = sorted(threads, key=lambda t: t.heat_score, reverse=True)
     # Pass 2: classify over the sorted list with the post-sort rank (relative mode needs it).
     total = len(ranked)

@@ -9,8 +9,9 @@ one it should not have filled the top with.
 
 - catch: for each thread he stepped into, the best it did on any board before his first
   reply, 1 inside the top 10 else 10/rank. "Would the board have shown it to me first."
-- purity: per look, the share of the top 10 that he stepped into at some point. "Is the top
-  of the board the kind of thread I actually join."
+- purity: per look, the share of the top 10 that he steps into AFTER that look (needed at
+  the look). A thread he is already in is one Slack follows for him, so showing it earns
+  nothing. "Is the top of the board the threads I am about to join."
 
 objective = (catch + purity) / 2, on the hourly looks so no formula can tune itself to three
 instants of the day. The jev judge from bin/judge.py (p(needs) >= NEEDS_AT) is printed on the
@@ -109,7 +110,7 @@ def _features(
         hours_alive=max(0.0, last_wh - t["wh"]),
         replies_in_window=in_window,
         replies_after_me=after,
-        i_posted=bool(my_last),
+        following=bool(my_last),
         p_social=tp.get("social", 0.0),
         p_resolved=tp.get("resolved", 0.0),
         p_leader=tp.get("leader", 0.0),
@@ -278,7 +279,7 @@ def _metrics(boards: list[dict[str, Any]]) -> dict[str, Any]:
                 jbest[tid] = max(jbest.get(tid, 0.0), min(1.0, TOP / e["rank"]))
         head = b["rows"][:TOP]
         if head:
-            purity.append(sum(1 for e in head if e["joined"]) / len(head))
+            purity.append(sum(1 for e in head if e["before_me"]) / len(head))
             jpurity.append(sum(1 for e in head if e["judged"]) / len(head))
     m["joined"] = len(best)
     m["catch"] = sum(best.values()) / len(best) if best else 0.0
@@ -317,6 +318,10 @@ def run(
     # max age 1 day, objective +0.06 for free). These two come from the live config only.
     k["min_replies"] = float(config.fetch.min_replies)
     k["max_thread_age_days"] = float(config.heat.max_thread_age_days)
+    # Following is owner policy, not a tunable: a followed thread drops by design, and a loop
+    # free to move these would buy purity by hiding or surfacing what Slack already covers.
+    k["followed_drop"] = float(config.heat.followed_drop)
+    k["followed_rebuild_per_msg"] = float(config.heat.followed_rebuild_per_msg)
     scheduled = [c for c in data["checkpoints"] if c["h"] in schedule]
     split_ts = data["meta"]["pulled_at"] - holdout_days * 86400
     boards = _labeled_boards(data, scheduled, k, formula)

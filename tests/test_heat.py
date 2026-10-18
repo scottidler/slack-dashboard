@@ -8,10 +8,10 @@ from slack_dashboard.heat import (
     compute_heat,
     detect_resurrection,
     filter_stale_threads,
+    following_damping,
     heat_breakdown,
-    involvement_damping,
+    is_following,
     is_heated,
-    is_involved,
     is_vip,
     is_zombie,
     prune_timestamps,
@@ -28,7 +28,7 @@ _compute_heat = compute_heat
 
 def _compute_heat_at(thread: ThreadEntry, config: HeatConfig, now: float) -> float:
     """Deterministic score at a pinned ``now`` (single-path via heat_breakdown.overall)."""
-    return heat_breakdown(thread, config, None, now).overall
+    return heat_breakdown(thread, config, now).overall
 
 
 def _make_thread(
@@ -83,7 +83,7 @@ def _work_thread(
 
 
 def test_compute_heat_recent_thread() -> None:
-    # base_norm = 50 * 29 / (29 + 15) ~ 32.95; atrophy 1.0 (0 work-hours since); no involvement.
+    # base_norm = 50 * 29 / (29 + 15) ~ 32.95; atrophy 1.0 (0 work-hours since); not followed.
     config = HeatConfig()
     now = _work_now()
     thread = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
@@ -407,7 +407,7 @@ def test_people_weight_default_matches_participant_weight() -> None:
     config = HeatConfig()
     now = _work_now()
     thread = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
-    assert abs(heat_breakdown(thread, config, None, now).overall - (50.0 * 29.0 / 44.0)) < 1e-6
+    assert abs(heat_breakdown(thread, config, now).overall - (50.0 * 29.0 / 44.0)) < 1e-6
 
 
 def test_people_weight_cap_bounds_contribution() -> None:
@@ -418,8 +418,8 @@ def test_people_weight_cap_bounds_contribution() -> None:
     thread = _work_thread(message_count=0, participants=3, work_hours_ago=0.0, now=now)
     # capped volume = min(300, 10) = 10 -> base_norm = 50*10/25 = 20; uncapped volume 300
     # -> base_norm = 50*300/315 = 47.6. The cap keeps the score well below the uncapped one.
-    capped_score = heat_breakdown(thread, capped, None, now).overall
-    uncapped_score = heat_breakdown(thread, uncapped, None, now).overall
+    capped_score = heat_breakdown(thread, capped, now).overall
+    uncapped_score = heat_breakdown(thread, uncapped, now).overall
     assert abs(capped_score - (50.0 * 10.0 / 25.0)) < 1e-6
     assert capped_score < uncapped_score
 
@@ -560,7 +560,7 @@ def test_is_heated_false_when_score_below_threshold() -> None:
     assert not is_heated(thread, config, now)
 
 
-# is_involved tests (👤 the current user has posted in this thread)
+# is_following tests (🔔 Slack follows this thread for me)
 
 
 def _thread_with_participants(participants: dict[str, int]) -> ThreadEntry:
@@ -576,103 +576,118 @@ def _thread_with_participants(participants: dict[str, int]) -> ThreadEntry:
     )
 
 
-def test_is_involved_true_when_self_in_participants() -> None:
+def test_is_following_reads_subscribed() -> None:
     thread = _thread_with_participants({"U1": 2, "U2": 1})
-    assert is_involved(thread, "U1")
+    assert not is_following(thread)
+    thread.subscribed = True
+    assert is_following(thread)
 
 
-def test_is_involved_false_when_self_not_participant() -> None:
-    thread = _thread_with_participants({"U1": 2, "U2": 1})
-    assert not is_involved(thread, "UZZZ")
+def test_is_following_ignores_participation() -> None:
+    # Posting is not the signal: a thread I posted in that Slack does not follow (I
+    # unfollowed it) is not following, and a thread I never posted in can be.
+    posted = _thread_with_participants({"USELF": 1, "U2": 1})
+    assert not is_following(posted)
+    mentioned = _thread_with_participants({"U2": 3})
+    mentioned.subscribed = True
+    assert is_following(mentioned)
 
 
-def test_is_involved_false_when_self_unresolved() -> None:
-    # None self_user_id (auth.test failed / not yet run) never matches.
-    thread = _thread_with_participants({"U1": 2})
-    assert not is_involved(thread, None)
+# following_damping tests (followed drops; unread replies after last_read rebuild)
 
 
-# involvement_damping tests (drop-and-rebuild: posting drops hard, unseen msgs rebuild)
-
-
-def _involved_thread(self_ago_s: float, messages_after: int, self_id: str = "U1") -> ThreadEntry:
+def _followed_thread(
+    unread: int, read: int = 1, last_read_known: bool = True, subscribed: bool = True
+) -> ThreadEntry:
+    """A thread with a root, ``read`` replies up to last_read, then ``unread`` replies."""
     now = _time.time()
-    my_ts = now - self_ago_s
-    replies = [ReplyRecord(ts=my_ts, author_id=self_id, text="me", is_root=False)]
-    for i in range(messages_after):
-        replies.append(ReplyRecord(ts=my_ts + (i + 1), author_id="UOTHER", text="x", is_root=False))
-    thread = ThreadEntry(
+    root_ts = now - 1000
+    replies = [ReplyRecord(ts=root_ts, author_id="U9", text="root", is_root=True)]
+    for i in range(read):
+        replies.append(ReplyRecord(ts=root_ts + 1 + i, author_id="U2", text="r", is_root=False))
+    last_read = replies[-1].ts
+    for i in range(unread):
+        replies.append(ReplyRecord(ts=last_read + 1 + i, author_id="U3", text="u", is_root=False))
+    return ThreadEntry(
         channel_id="C1",
         channel_name="sre",
-        thread_ts="100.000000",
+        thread_ts=f"{root_ts:.6f}",
         first_message="root",
         started_by="U9",
-        message_count=1 + messages_after,
-        participants={self_id: 1, "UOTHER": messages_after},
+        message_count=len(replies),
+        participants={"U9": 1, "U2": read, "U3": unread},
         last_activity=datetime.now(UTC),
+        replies=replies,
+        subscribed=subscribed,
+        last_read=last_read if last_read_known else None,
     )
-    thread.replies = replies
-    return thread
 
 
-def test_involvement_damping_none_self_is_noop() -> None:
-    thread = _involved_thread(self_ago_s=0, messages_after=0)
-    assert involvement_damping(thread, HeatConfig(), None, _time.time()) == 1.0
+def test_following_damping_off_when_not_following() -> None:
+    thread = _followed_thread(unread=0, subscribed=False)
+    assert following_damping(thread, HeatConfig(), _time.time()) == 1.0
 
 
-def test_involvement_damping_disabled_is_noop() -> None:
-    # involved_drop = 1.0 disables the feature (no drop possible).
-    thread = _involved_thread(self_ago_s=0, messages_after=0)
-    config = HeatConfig(involved_drop=1.0)
-    assert involvement_damping(thread, config, "U1", _time.time()) == 1.0
+def test_following_damping_disabled_is_noop() -> None:
+    # followed_drop = 1.0 disables the feature (no drop possible).
+    thread = _followed_thread(unread=0)
+    config = HeatConfig(followed_drop=1.0)
+    assert following_damping(thread, config, _time.time()) == 1.0
 
 
-def test_involvement_damping_noop_when_user_has_no_post() -> None:
-    thread = _involved_thread(self_ago_s=0, messages_after=0, self_id="U1")
-    # The user "UZZZ" never posted, so there is nothing to damp.
-    assert involvement_damping(thread, HeatConfig(), "UZZZ", _time.time()) == 1.0
-
-
-def test_involvement_damping_full_drop_right_after_post() -> None:
-    # Just posted, 0 unseen messages -> full drop -> damping == involved_drop.
-    config = HeatConfig(involved_drop=0.8, involved_rebuild_per_msg=0.15)
-    thread = _involved_thread(self_ago_s=0, messages_after=0)
-    assert abs(involvement_damping(thread, config, "U1", _time.time()) - 0.8) < 1e-6
-
-
-def test_involvement_damping_rebuilds_with_unseen_messages() -> None:
-    # Each unseen reply after my post rebuilds toward 1.0 at involved_rebuild_per_msg.
-    config = HeatConfig(involved_drop=0.8, involved_rebuild_per_msg=0.15)
+def test_following_damping_flat_at_drop_with_rebuild_zero() -> None:
+    # My yml: drop 0.2, rebuild 0. Unread replies change nothing; the drop is flat.
+    config = HeatConfig(followed_drop=0.2, followed_rebuild_per_msg=0.0)
     now = _time.time()
-    fresh = involvement_damping(_involved_thread(0, 0), config, "U1", now)  # 0.8
-    partial = involvement_damping(_involved_thread(0, 3), config, "U1", now)
-    # 3 unseen: rebuild = 0.45 -> damping = 0.8 + 0.2*0.45 = 0.89
+    for unread in (0, 1, 10, 100):
+        assert abs(following_damping(_followed_thread(unread), config, now) - 0.2) < 1e-9
+
+
+def test_following_damping_full_drop_when_all_read() -> None:
+    config = HeatConfig(followed_drop=0.8, followed_rebuild_per_msg=0.15)
+    thread = _followed_thread(unread=0)
+    assert abs(following_damping(thread, config, _time.time()) - 0.8) < 1e-9
+
+
+def test_following_damping_rebuilds_with_unread_replies() -> None:
+    config = HeatConfig(followed_drop=0.8, followed_rebuild_per_msg=0.15)
+    now = _time.time()
+    fresh = following_damping(_followed_thread(0), config, now)
+    partial = following_damping(_followed_thread(3), config, now)
+    # 3 unread: rebuild = 0.45 -> damping = 0.8 + 0.2*0.45 = 0.89
     assert fresh < partial < 1.0
-    assert abs(partial - (0.8 + 0.2 * 0.45)) < 1e-6
+    assert abs(partial - (0.8 + 0.2 * 0.45)) < 1e-9
 
 
-def test_involvement_damping_fully_restored_when_superseded() -> None:
-    # Enough unseen messages (>= 1/involved_rebuild_per_msg) fully restores to 1.0.
-    config = HeatConfig(involved_drop=0.8, involved_rebuild_per_msg=0.15)
-    thread = _involved_thread(self_ago_s=0, messages_after=10)  # rebuild clamps to 1.0
-    assert involvement_damping(thread, config, "U1", _time.time()) == 1.0
+def test_following_damping_counts_only_non_root_replies_after_last_read() -> None:
+    # last_read before the root: the root is never counted, only the 2 replies are.
+    config = HeatConfig(followed_drop=0.5, followed_rebuild_per_msg=0.1)
+    thread = _followed_thread(unread=0, read=2)
+    thread.last_read = thread.replies[0].ts - 1
+    assert abs(following_damping(thread, config, _time.time()) - (0.5 + 0.5 * 0.2)) < 1e-9
 
 
-def test_involvement_damping_clamped_to_floor_and_ceiling() -> None:
-    config = HeatConfig(involved_drop=0.8, involved_rebuild_per_msg=0.15)
+def test_following_damping_counts_none_when_last_read_unknown() -> None:
+    # Unknown read state is not "unread everything": the full drop applies.
+    config = HeatConfig(followed_drop=0.8, followed_rebuild_per_msg=0.15)
+    thread = _followed_thread(unread=10, last_read_known=False)
+    assert abs(following_damping(thread, config, _time.time()) - 0.8) < 1e-9
+
+
+def test_following_damping_clamped_to_floor_and_ceiling() -> None:
+    config = HeatConfig(followed_drop=0.8, followed_rebuild_per_msg=0.15)
     now = _time.time()
-    # Never below the involved_drop floor.
-    assert involvement_damping(_involved_thread(0, 0), config, "U1", now) >= 0.8
-    # Never above 1.0 even with an enormous unseen backlog.
-    assert involvement_damping(_involved_thread(0, 100), config, "U1", now) == 1.0
+    assert following_damping(_followed_thread(0), config, now) >= 0.8
+    assert following_damping(_followed_thread(100), config, now) == 1.0
 
 
-def test_compute_heat_applies_involvement_drop() -> None:
-    config = HeatConfig(involved_drop=0.8, involved_rebuild_per_msg=0.15)
+def test_compute_heat_applies_following_drop() -> None:
+    config = HeatConfig(followed_drop=0.8, followed_rebuild_per_msg=0.15)
     now = _time.time()
-    thread = _involved_thread(self_ago_s=0, messages_after=0)
-    damped = heat_breakdown(thread, config, "U1", now).overall
-    undamped = heat_breakdown(thread, config, None, now).overall
+    followed = _followed_thread(unread=0)
+    unfollowed = _followed_thread(unread=0, subscribed=False)
+    damped = heat_breakdown(followed, config, now).overall
+    undamped = heat_breakdown(unfollowed, config, now).overall
     assert damped < undamped
     assert abs(damped - undamped * 0.8) < 1e-6
 
@@ -687,7 +702,7 @@ def test_heat_breakdown_fields_match_hand_computed() -> None:
     config = HeatConfig()
     now = _work_now()
     thread = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
-    bd = heat_breakdown(thread, config, None, now)
+    bd = heat_breakdown(thread, config, now)
     # people_term = 3 * participant_weight(3.0) = 9.0 (no cap hit at default cap)
     assert abs(bd.people_term - 9.0) < 1e-6
     # volume = 10*2 + 9 = 29; base_norm = base_cap(50) * 29 / (29 + base_k(15)) = 32.9545...
@@ -699,7 +714,7 @@ def test_heat_breakdown_fields_match_hand_computed() -> None:
     assert bd.activity == 0.0  # velocity 0 -> no burst term
     assert abs(bd.atrophy - 1.0) < 1e-6  # 0 work-hours since -> 0.5^0 = 1.0
     assert abs(bd.alive_boost - 1.0) < 1e-6  # alive_weight 0.0 seed -> no lift
-    assert bd.damping == 1.0  # self_user_id None -> no involvement drop
+    assert bd.damping == 1.0  # not followed -> no drop
     assert bd.has_vip is False  # all default-weight participants
     assert bd.time_since_last == 0.0  # last_activity == now
     # overall = channel_weight * (base_norm + activity) * atrophy * alive_boost * damping
@@ -712,7 +727,7 @@ def test_heat_breakdown_channel_weight_factor() -> None:
     thread = _work_thread(
         message_count=10, participants=3, work_hours_ago=0.0, channel_name="sre", now=now
     )
-    bd = heat_breakdown(thread, config, None, now)
+    bd = heat_breakdown(thread, config, now)
     assert bd.channel_weight == 2.0
     # overall = 2.0 * base_norm * 1.0 * 1.0 * 1.0
     assert abs(bd.overall - 2.0 * (50.0 * 29.0 / 44.0)) < 1e-6
@@ -723,7 +738,7 @@ def test_heat_breakdown_atrophy_factor() -> None:
     config = HeatConfig()
     now = _work_now()
     thread = _work_thread(message_count=10, participants=3, work_hours_ago=3.0, now=now)
-    bd = heat_breakdown(thread, config, None, now)
+    bd = heat_breakdown(thread, config, now)
     assert abs(bd.atrophy - 0.5) < 1e-6
     assert abs(bd.time_since_last - 3.0) < 1e-3
     assert abs(bd.overall - (50.0 * 29.0 / 44.0) * 0.5) < 1e-3
@@ -737,7 +752,7 @@ def test_heat_breakdown_activity_outside_ceiling() -> None:
     thread.replies = [
         ReplyRecord(ts=now - 60 * i, author_id="U1", text="", is_root=(i == 0)) for i in range(6)
     ]
-    bd = heat_breakdown(thread, config, None, now)
+    bd = heat_breakdown(thread, config, now)
     # 6 replies / 30 min = 0.2 rep/min; activity = min(20, 0.2*10) = 2.0
     assert abs(bd.velocity - 6 / 30) < 1e-6
     assert abs(bd.activity - 2.0) < 1e-6
@@ -753,7 +768,7 @@ def test_heat_breakdown_activity_capped() -> None:
     thread.replies = [
         ReplyRecord(ts=now - 5 * i, author_id="U1", text="", is_root=(i == 0)) for i in range(20)
     ]
-    bd = heat_breakdown(thread, config, None, now)
+    bd = heat_breakdown(thread, config, now)
     assert bd.activity == 20.0
 
 
@@ -764,18 +779,18 @@ def test_heat_breakdown_alive_boost_freshness_gated() -> None:
     now = _work_now()
     fresh = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
     fresh.first_seen_ts = now - 6 * 3600  # 6 work-hours of life before last post
-    fresh_bd = heat_breakdown(fresh, config, None, now)
+    fresh_bd = heat_breakdown(fresh, config, now)
     # time_alive ~ 6 work-hours -> f = 6/(6+6) = 0.5; atrophy 1.0 -> alive_boost = 1 + 1*0.5*1 = 1.5
     assert fresh_bd.time_alive > 0.0
     assert fresh_bd.alive_boost > 1.0
 
 
 def test_heat_breakdown_damping_factor() -> None:
-    config = HeatConfig(involved_drop=0.8, involved_rebuild_per_msg=0.15)
+    config = HeatConfig(followed_drop=0.8, followed_rebuild_per_msg=0.15)
     now = _time.time()
-    thread = _involved_thread(self_ago_s=0, messages_after=0)
-    bd = heat_breakdown(thread, config, "U1", now)
-    # Just posted, 0 unseen -> full drop -> damping == involved_drop == 0.8
+    thread = _followed_thread(unread=0)
+    bd = heat_breakdown(thread, config, now)
+    # Followed, nothing unread -> full drop -> damping == followed_drop == 0.8
     assert abs(bd.damping - 0.8) < 1e-6
 
 
@@ -783,7 +798,7 @@ def test_heat_breakdown_people_term_capped() -> None:
     config = HeatConfig(people_weights={"U0": 100, "U1": 100, "U2": 100}, people_weight_cap=10)
     now = _work_now()
     thread = _work_thread(message_count=0, participants=3, work_hours_ago=0.0, now=now)
-    bd = heat_breakdown(thread, config, None, now)
+    bd = heat_breakdown(thread, config, now)
     # people_term = min(300, 10) = 10; has_vip True (above-default weights present)
     assert abs(bd.people_term - 10.0) < 1e-6
     # volume = 0*2 + 10 = 10; base_norm = 50 * 10 / (10 + 15) = 20.0
@@ -795,18 +810,18 @@ def test_heat_breakdown_has_vip_true_with_pinned_participant() -> None:
     config = HeatConfig(people_weights={"U0": 50})
     now = _work_now()
     thread = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
-    bd = heat_breakdown(thread, config, None, now)
+    bd = heat_breakdown(thread, config, now)
     assert bd.has_vip is True
 
 
 def test_heat_breakdown_monologue_boost_and_damping_noop() -> None:
     # Root only, no replies: time_alive 0, velocity 0 -> alive_boost 1.0, activity 0; a thread
-    # the user never posted in -> damping 1.0.
+    # Slack does not follow -> damping 1.0.
     config = HeatConfig(alive_weight=1.0)
     now = _work_now()
     thread = _work_thread(message_count=1, participants=1, work_hours_ago=0.0, now=now)
     thread.first_seen_ts = now  # first == last -> time_alive 0
-    bd = heat_breakdown(thread, config, "UZZZ", now)
+    bd = heat_breakdown(thread, config, now)
     assert bd.time_alive == 0.0
     assert bd.velocity == 0.0
     assert bd.activity == 0.0
@@ -829,13 +844,13 @@ def test_single_path_invariant() -> None:
         assert abs(compute_heat(thread, config) - heat_breakdown(thread, config).overall) < 1e-3
 
 
-def test_single_path_invariant_with_involvement() -> None:
-    config = HeatConfig(involved_drop=0.8, involved_rebuild_per_msg=0.15)
-    thread = _involved_thread(self_ago_s=0, messages_after=0)
+def test_single_path_invariant_with_following() -> None:
+    config = HeatConfig(followed_drop=0.8, followed_rebuild_per_msg=0.15)
+    thread = _followed_thread(unread=0)
     now = _time.time()
     # Pinned now: heat_breakdown is deterministic, so compute_heat (its .overall) agrees.
-    bd = heat_breakdown(thread, config, "U1", now)
-    assert bd.overall == heat_breakdown(thread, config, "U1", now).overall
+    bd = heat_breakdown(thread, config, now)
+    assert bd.overall == heat_breakdown(thread, config, now).overall
     assert abs(bd.damping - 0.8) < 1e-6
 
 
@@ -844,7 +859,7 @@ def test_compute_heat_numeric_result_pinned() -> None:
     config = HeatConfig()
     now = _work_now()
     thread = _work_thread(message_count=10, participants=3, work_hours_ago=0.0, now=now)
-    assert abs(heat_breakdown(thread, config, None, now).overall - (50.0 * 29.0 / 44.0)) < 1e-6
+    assert abs(heat_breakdown(thread, config, now).overall - (50.0 * 29.0 / 44.0)) < 1e-6
 
 
 def test_heat_breakdown_overall_equals_compute_heat_default_now() -> None:
@@ -909,7 +924,7 @@ def test_unrated_thread_is_neutral_under_the_tuned_knobs() -> None:
     plain = HeatConfig(atrophy_curve="hyperbolic", atrophy_half_life_work_hours=0.5)
     thread = _work_thread(work_hours_ago=1.0)
     assert abs(_compute_heat_at(thread, _TUNED, now) - _compute_heat_at(thread, plain, now)) < 1e-9
-    breakdown = heat_breakdown(thread, _TUNED, None, now)
+    breakdown = heat_breakdown(thread, _TUNED, now)
     assert breakdown.votes == 0.0
     assert breakdown.gates == 1.0
     assert breakdown.p_leader is None
@@ -926,14 +941,14 @@ def test_resolved_gate_empties_an_answered_thread() -> None:
     assert full > 0
     assert abs(_compute_heat_at(half_done, config, now) - full / 2) < 1e-9
     assert _compute_heat_at(done, config, now) == 0.0
-    assert heat_breakdown(done, config, None, now).gates == 0.0
+    assert heat_breakdown(done, config, now).gates == 0.0
 
 
 def test_leader_vote_and_gate_lift_a_leader_thread() -> None:
     config = HeatConfig(leader_weight=45.0, leader_gate_floor=0.3)
     now = _work_now()
-    leader = heat_breakdown(_rated(_work_thread(), leader=1.0), config, None, now)
-    nobody = heat_breakdown(_rated(_work_thread(), leader=0.0), config, None, now)
+    leader = heat_breakdown(_rated(_work_thread(), leader=1.0), config, now)
+    nobody = heat_breakdown(_rated(_work_thread(), leader=0.0), config, now)
     assert leader.votes == 45.0
     assert leader.gates == 1.0
     assert nobody.votes == 0.0
@@ -949,11 +964,11 @@ def test_hyperbolic_atrophy_shares_the_half_point_and_keeps_a_tail() -> None:
     hyperbolic = HeatConfig(atrophy_half_life_work_hours=1.0, atrophy_curve="hyperbolic")
     now = _work_now()
     at_half = _work_thread(work_hours_ago=1.0)
-    assert abs(heat_breakdown(at_half, exponential, None, now).atrophy - 0.5) < 1e-9
-    assert abs(heat_breakdown(at_half, hyperbolic, None, now).atrophy - 0.5) < 1e-9
+    assert abs(heat_breakdown(at_half, exponential, now).atrophy - 0.5) < 1e-9
+    assert abs(heat_breakdown(at_half, hyperbolic, now).atrophy - 0.5) < 1e-9
     later = _work_thread(work_hours_ago=3.0)
-    assert abs(heat_breakdown(later, exponential, None, now).atrophy - 0.125) < 1e-9
-    assert abs(heat_breakdown(later, hyperbolic, None, now).atrophy - 0.25) < 1e-9
+    assert abs(heat_breakdown(later, exponential, now).atrophy - 0.125) < 1e-9
+    assert abs(heat_breakdown(later, hyperbolic, now).atrophy - 0.25) < 1e-9
 
 
 def test_leader_stretch_lengthens_the_half_life_for_leader_threads() -> None:
@@ -961,18 +976,18 @@ def test_leader_stretch_lengthens_the_half_life_for_leader_threads() -> None:
     now = _work_now()
     # p = 1 -> half-life 1.5 h: at 1.5 h the thread is at exactly half.
     leader = _rated(_work_thread(work_hours_ago=1.5), leader=1.0)
-    assert abs(heat_breakdown(leader, config, None, now).atrophy - 0.5) < 1e-9
+    assert abs(heat_breakdown(leader, config, now).atrophy - 0.5) < 1e-9
     # p = 0 -> half-life 0.5 h: at 0.5 h the thread is at exactly half.
     nobody = _rated(_work_thread(work_hours_ago=0.5), leader=0.0)
-    assert abs(heat_breakdown(nobody, config, None, now).atrophy - 0.5) < 1e-9
+    assert abs(heat_breakdown(nobody, config, now).atrophy - 0.5) < 1e-9
     # An unrated thread keeps the configured half-life.
     plain = _work_thread(work_hours_ago=1.0)
-    assert abs(heat_breakdown(plain, config, None, now).atrophy - 0.5) < 1e-9
+    assert abs(heat_breakdown(plain, config, now).atrophy - 0.5) < 1e-9
 
 
 def test_single_path_invariant_holds_with_topic_terms() -> None:
     thread = _rated(_work_thread(work_hours_ago=0.25), leader=0.6, resolved=0.2)
-    breakdown = heat_breakdown(thread, _TUNED, None, _work_now())
+    breakdown = heat_breakdown(thread, _TUNED, _work_now())
     assert breakdown.overall == _compute_heat_at(thread, _TUNED, _work_now())
     assert breakdown.p_leader == 0.6
     assert breakdown.p_resolved == 0.2

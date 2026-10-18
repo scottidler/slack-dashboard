@@ -140,7 +140,7 @@ async def test_queue_seeded_on_start() -> None:
 
 @pytest.mark.asyncio
 async def test_start_resolves_self_user_id() -> None:
-    # start() resolves the authenticated user's id once, for the 👤 involved glyph.
+    # start() resolves the authenticated user's id once, for the listener's own-post follow.
     mock_slack = _make_mock_slack()
     config = AppConfig(channels={"general": "C111"})
     poller = SlackPoller(mock_slack, config)
@@ -506,6 +506,7 @@ async def test_velocity_not_double_counted_across_listener_and_fetch() -> None:
         channel_ids={"C111"},
         channel_names={"C111": "general"},
         heat_config=config.heat,
+        self_user_id=lambda: poller.self_user_id,
     )
     listener._apply_event("C111", "general", parent, {"user": "U9", "ts": reply})
     entry = poller.threads[("C111", parent)]
@@ -699,3 +700,155 @@ async def test_open_and_dismiss_record_events_with_board_position(tmp_path) -> N
     # The dismiss is recorded BEFORE eviction, so it still carries the board position.
     assert rows[2]["on_board"] is True
     assert ("C111", _NOW) not in poller.threads
+
+
+def _root(ts: str, **follow: object) -> dict[str, object]:
+    return {"ts": ts, "user": "U1", "text": "root", "reply_count": 2, **follow}
+
+
+class TestSubscribed:
+    """Slack's follow state (root ``subscribed`` / ``last_read``) on every path into the entry."""
+
+    @pytest.mark.asyncio
+    async def test_full_fetch_reads_follow_state_from_the_root_by_ts(self) -> None:
+        mock_slack = _make_mock_slack()
+        # The root is NOT the first item: it is found by ts == thread_ts.
+        mock_slack.fetch_replies = AsyncMock(
+            return_value=[
+                {"ts": _REPLY_1, "user": "U2", "text": "r1", "subscribed": False},
+                _root(_NOW, subscribed=True, last_read=_REPLY_1),
+            ]
+        )
+        poller = SlackPoller(mock_slack, AppConfig(channels={"general": "C111"}))
+        await poller._fetch_thread("C111", "general", _NOW, incremental=False)
+        entry = poller.threads[("C111", _NOW)]
+        assert entry.subscribed is True
+        assert entry.last_read == float(_REPLY_1)
+
+    @pytest.mark.asyncio
+    async def test_incremental_fetch_reads_follow_state(self) -> None:
+        mock_slack = _make_mock_slack()
+        mock_slack.fetch_replies = AsyncMock(return_value=[_root(_NOW, subscribed=False)])
+        poller = SlackPoller(mock_slack, AppConfig(channels={"general": "C111"}))
+        await poller._fetch_thread("C111", "general", _NOW, incremental=False)
+        assert poller.threads[("C111", _NOW)].subscribed is False
+        # Incremental: oldest set, Slack returns the root (still carrying the flag) + new reply.
+        mock_slack.fetch_replies = AsyncMock(
+            return_value=[
+                _root(_NOW, subscribed=True, last_read=_REPLY_2),
+                {"ts": _REPLY_3, "user": "U3", "text": "new"},
+            ]
+        )
+        await poller._fetch_thread("C111", "general", _NOW, incremental=True)
+        entry = poller.threads[("C111", _NOW)]
+        assert mock_slack.fetch_replies.call_args.kwargs["oldest"] is not None
+        assert entry.subscribed is True
+        assert entry.last_read == float(_REPLY_2)
+
+    @pytest.mark.asyncio
+    async def test_rebuild_reads_new_state_and_carries_it_when_the_key_is_missing(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        mock_slack = _make_mock_slack()
+        mock_slack.fetch_replies = AsyncMock(
+            return_value=[_root(_NOW, subscribed=True, last_read=_NOW)]
+        )
+        poller = SlackPoller(mock_slack, AppConfig(channels={"general": "C111"}))
+        await poller._fetch_thread("C111", "general", _NOW, incremental=False)
+        # A full-fetch rebuild whose root lacks the key keeps the known state and warns.
+        mock_slack.fetch_replies = AsyncMock(return_value=[_root(_NOW)])
+        with caplog.at_level("WARNING"):
+            await poller._fetch_thread("C111", "general", _NOW, incremental=False)
+        entry = poller.threads[("C111", _NOW)]
+        assert entry.subscribed is True
+        assert entry.last_read == float(_NOW)
+        assert any("no subscribed key" in r.message for r in caplog.records)
+        # A rebuild whose root says unfollowed replaces it; no last_read -> unknown.
+        mock_slack.fetch_replies = AsyncMock(return_value=[_root(_NOW, subscribed=False)])
+        await poller._fetch_thread("C111", "general", _NOW, incremental=False)
+        entry = poller.threads[("C111", _NOW)]
+        assert entry.subscribed is False
+        assert entry.last_read is None
+
+    @pytest.mark.asyncio
+    async def test_unfollow_without_new_reply_reaches_the_board(self) -> None:
+        mock_slack = _make_mock_slack()
+        mock_slack.fetch_replies = AsyncMock(
+            return_value=[
+                _root(_NOW, subscribed=True, last_read=_REPLY_1),
+                {"ts": _REPLY_1, "user": "U2", "text": "r1"},
+            ]
+        )
+        config = AppConfig(channels={"general": "C111"})
+        poller = SlackPoller(mock_slack, config)
+        poller._channel_map = config.channels
+        await poller._fetch_thread("C111", "general", _NOW, incremental=False)
+        followed_score = poller.ranked_threads()[0].heat_score
+        mock_slack.fetch_replies.reset_mock()
+        # Unfollowed in Slack; no reply since. Only the channel parent knows.
+        mock_slack.fetch_threads = AsyncMock(return_value=[_root(_NOW, subscribed=False)])
+        await poller._sweep_metadata()
+        entry = poller.threads[("C111", _NOW)]
+        assert entry.subscribed is False
+        assert entry.last_read is None
+        assert mock_slack.fetch_threads.call_args.kwargs["oldest"] is None
+        mock_slack.fetch_replies.assert_not_called()  # the sweep never fetches replies
+        assert poller.ranked_threads()[0].heat_score > followed_score
+
+    @pytest.mark.asyncio
+    async def test_sweep_follows_and_sets_last_read_on_a_quiet_thread(self) -> None:
+        mock_slack = _make_mock_slack()
+        mock_slack.fetch_replies = AsyncMock(return_value=[_root(_NOW, subscribed=False)])
+        poller = SlackPoller(mock_slack, AppConfig(channels={"general": "C111"}))
+        poller._channel_map = {"general": "C111"}
+        await poller._fetch_thread("C111", "general", _NOW, incremental=False)
+        mock_slack.fetch_threads = AsyncMock(
+            return_value=[
+                _root(_NOW, subscribed=True, last_read=_REPLY_2),
+                _root("999.000000", subscribed=True),  # not on the board: ignored
+                {"ts": "998.000000", "text": "no replies, no key", "reply_count": 0},
+            ]
+        )
+        await poller._sweep_metadata()
+        entry = poller.threads[("C111", _NOW)]
+        assert entry.subscribed is True
+        assert entry.last_read == float(_REPLY_2)
+        assert ("C111", "999.000000") not in poller.threads
+
+    @pytest.mark.asyncio
+    async def test_sweep_survives_a_failed_channel(self) -> None:
+        mock_slack = _make_mock_slack()
+        mock_slack.fetch_replies = AsyncMock(return_value=[_root(_NOW, subscribed=False)])
+        poller = SlackPoller(mock_slack, AppConfig(channels={"bad": "C000", "general": "C111"}))
+        poller._channel_map = {"bad": "C000", "general": "C111"}
+        await poller._fetch_thread("C111", "general", _NOW, incremental=False)
+
+        async def history(channel_id: str, **_: object) -> list[dict[str, object]]:
+            if channel_id == "C000":
+                raise RuntimeError("boom")
+            return [_root(_NOW, subscribed=True)]
+
+        mock_slack.fetch_threads = AsyncMock(side_effect=history)
+        await poller._sweep_metadata()
+        assert poller.threads[("C111", _NOW)].subscribed is True
+
+    @pytest.mark.asyncio
+    async def test_refresh_loop_runs_the_subscribed_sweep(self) -> None:
+        import asyncio
+
+        mock_slack = _make_mock_slack()
+        config = AppConfig(channels={"general": "C111"})
+        config.fetch.refresh_interval_minutes = 0
+        poller = SlackPoller(mock_slack, config)
+        poller._channel_map = {"general": "C111"}
+        swept = asyncio.Event()
+
+        async def sweep() -> None:
+            swept.set()
+
+        poller._sweep_metadata = sweep  # type: ignore[method-assign]
+        task = asyncio.create_task(poller._refresh_loop())
+        await asyncio.wait_for(swept.wait(), timeout=2)
+        task.cancel()
+        await task  # the loop swallows its own cancellation and returns
+        assert task.done()

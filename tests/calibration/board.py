@@ -16,7 +16,8 @@ working-hours offsets from ``now`` so the busy board reproduces the observed pat
 (nearly everything red, the two idle threads pinned top-2) under the LIVE knobs, and the
 contrast board is genuinely quiet.
 
-``self_user_id`` is :data:`SELF_ID`: the four 👤 threads carry a reply authored by it.
+The four 👤 threads carry a reply authored by :data:`SELF_ID` and are followed in Slack
+(``subscribed=True``, ``last_read`` at that reply), so one reply after it is unread.
 VIP ids are transcribed from Scott's live ``~/.config`` people-weights (weight > the
 default participant_weight of 3).
 """
@@ -69,7 +70,8 @@ def _thread(
     are synthesized between ``first_post`` and ``last_post`` so ``time_alive``,
     ``velocity``, and involvement have real records to consume. When ``involved`` is set,
     SELF_ID authored the second-to-last reply (so there is exactly one unseen message
-    after the user's last post, exercising the drop-and-rebuild floor). ``reply_gap_seconds``
+    after the user's last post, exercising the drop-and-rebuild floor), and the thread is
+    followed with ``last_read`` at that post. ``reply_gap_seconds``
     (when > 0) spaces the last two replies apart, so a fixture can be given a fresh burst
     in the velocity window regardless of when the thread started.
     """
@@ -108,6 +110,8 @@ def _thread(
         )
 
     participants = {a: sum(1 for r in replies if r.author_id == a) for a in authors}
+    # Slack follows a thread I posted in; my last read is my own post.
+    last_read = replies[-2].ts if involved and n >= 2 else None
 
     return ThreadEntry(
         channel_id=f"C_{key}",
@@ -122,6 +126,8 @@ def _thread(
         first_seen_ts=first_post,
         resurrection_event_ts=resurrection_event_ts,
         heated_tone=heated_tone,
+        subscribed=involved,
+        last_read=last_read,
     )
 
 

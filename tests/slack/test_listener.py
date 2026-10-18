@@ -55,6 +55,7 @@ def _make_thread(
 def _make_listener(
     threads: dict[tuple[str, str], ThreadEntry] | None = None,
     heat_config: HeatConfig | None = None,
+    self_user_id: str | None = "USELF",
 ) -> tuple[SocketListener, FetchQueue]:
     queue = FetchQueue()
     if threads is None:
@@ -65,6 +66,7 @@ def _make_listener(
         channel_ids={"C111", "C222"},
         channel_names={"C111": "general", "C222": "random"},
         heat_config=heat_config or HeatConfig(),
+        self_user_id=lambda: self_user_id,
     )
     return listener, queue
 
@@ -215,3 +217,50 @@ async def test_appends_reply_record_and_timestamp() -> None:
     assert len(thread.reply_timestamps) == 1
     assert thread.reply_timestamps[0] == pytest.approx(float(ts))
     assert thread.first_seen_ts == float("1234.5678")
+
+
+@pytest.mark.asyncio
+async def test_own_post_sets_subscribed_and_last_read() -> None:
+    thread = _make_thread()
+    assert not thread.subscribed and thread.last_read is None
+    listener, _ = _make_listener(threads={("C111", "1234.5678"): thread})
+    req = _make_request(user="USELF", ts="1711300000.250000")
+    await listener.handle_event(AsyncMock(), req)
+    assert thread.subscribed is True
+    assert thread.last_read == 1711300000.25
+
+
+@pytest.mark.asyncio
+async def test_someone_elses_post_leaves_follow_state() -> None:
+    thread = _make_thread()
+    listener, _ = _make_listener(threads={("C111", "1234.5678"): thread})
+    await listener.handle_event(AsyncMock(), _make_request(user="U999"))
+    assert thread.subscribed is False
+    assert thread.last_read is None
+
+
+@pytest.mark.asyncio
+async def test_unresolved_self_never_matches() -> None:
+    # auth.test failed: no event is mine, even one with an empty user.
+    thread = _make_thread()
+    listener, _ = _make_listener(threads={("C111", "1234.5678"): thread}, self_user_id=None)
+    await listener.handle_event(AsyncMock(), _make_request(user="USELF"))
+    assert thread.subscribed is False
+
+
+@pytest.mark.asyncio
+async def test_self_id_read_at_event_time_not_at_construction() -> None:
+    # The poller resolves my id in start(), after the listener is built.
+    thread = _make_thread()
+    resolved: list[str | None] = [None]
+    listener = SocketListener(
+        queue=FetchQueue(),
+        threads={("C111", "1234.5678"): thread},
+        channel_ids={"C111"},
+        channel_names={"C111": "general"},
+        heat_config=HeatConfig(),
+        self_user_id=lambda: resolved[0],
+    )
+    resolved[0] = "USELF"
+    await listener.handle_event(AsyncMock(), _make_request(user="USELF"))
+    assert thread.subscribed is True

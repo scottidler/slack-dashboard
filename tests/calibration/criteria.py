@@ -12,9 +12,9 @@ mechanically-checkable predicates:
   ``activity``/velocity signal, NOT alternation/structural_heat) is in the top 3.
 - :func:`stale_is_cold` - a thread idle > 1 full working day is cold.
 - :func:`weekend_frozen` - a Friday-4pm thread evaluated Monday-9am is still >= warm.
-- :func:`involvement_drop_then_rebuild` - a thread the user just posted in drops below
-  what it would rank at with no involvement drop, and a thread with unseen replies after
-  his post ranks above one with none.
+- :func:`involvement_drop_then_rebuild` - a thread Slack follows for the user drops below
+  what it would rank at unfollowed, and a followed thread with unread replies after
+  its last_read ranks above one with none.
 - :func:`vip_lift_capped` - VIP presence lifts a thread but the people term respects the cap.
 
 Alongside each binary predicate is a soft penalty (:func:`soft_penalty`) giving the
@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from slack_dashboard.config import HeatConfig
 from slack_dashboard.heat import classify_tier, heat_breakdown
@@ -167,7 +167,7 @@ def weekend_frozen(
     work_hours = business_hours_between(
         friday.last_activity.timestamp(), monday_9am, config.work_window
     )
-    score = heat_breakdown(friday, config, board.SELF_ID, monday_9am).overall
+    score = heat_breakdown(friday, config, monday_9am).overall
     tier = classify_tier(score, 0, 1, config)
     ok = tier in ("hot", "warm")
     logger.debug(
@@ -186,34 +186,34 @@ def involvement_drop_then_rebuild(
     config: HeatConfig,
     now: float,
 ) -> bool:
-    """Posting drops a thread; unseen replies after the user's post rebuild it.
+    """A followed thread drops; unread replies after my Slack last_read rebuild it.
 
-    Two checks over the sre-it "claude-auth-rollout" thread (👤, one unseen reply after the
-    user's post):
-    1. Its score WITH the user as self drops below its score with no involvement (self=None).
-    2. A synthetic copy with several unseen replies after the user's post scores higher than
-       one with zero unseen replies (rebuild is monotone in unseen count).
+    Two checks over the sre-it "claude-auth-rollout" thread (👤, followed, one unread reply):
+    1. A ``subscribed=True`` copy scores below a ``subscribed=False`` copy (the drop).
+    2. A followed copy with several unread replies after ``last_read`` scores higher than
+       one with none. Participants, message count and timing are held constant; only
+       ``last_read`` moves, so this half tests the rebuild and nothing else.
     """
     involved = _find(busy, "sre-it", "claude-auth-rollout")
     if involved is None:
         return False
     thread = involved.thread
-    with_self = heat_breakdown(thread, config, board.SELF_ID, now).overall
-    without_involvement = heat_breakdown(thread, config, None, now).overall
-    dropped = with_self < without_involvement
+    followed = heat_breakdown(replace(thread, subscribed=True), config, now).overall
+    not_followed = heat_breakdown(replace(thread, subscribed=False), config, now).overall
+    dropped = followed < not_followed
 
-    zero_unseen = _rebuild_variant(thread, config, unseen=0)
-    many_unseen = _rebuild_variant(thread, config, unseen=6)
-    s_zero = heat_breakdown(zero_unseen, config, board.SELF_ID, now).overall
-    s_many = heat_breakdown(many_unseen, config, board.SELF_ID, now).overall
+    zero_unread = _rebuild_variant(thread, unread=0)
+    many_unread = _rebuild_variant(thread, unread=6)
+    s_zero = heat_breakdown(zero_unread, config, now).overall
+    s_many = heat_breakdown(many_unread, config, now).overall
     rebuilds = s_many > s_zero
 
     ok = dropped and rebuilds
     logger.debug(
-        "involvement_drop_then_rebuild: with_self=%.2f without=%.2f dropped=%s "
+        "involvement_drop_then_rebuild: followed=%.2f not_followed=%.2f dropped=%s "
         "s_zero=%.2f s_many=%.2f rebuilds=%s -> %s",
-        with_self,
-        without_involvement,
+        followed,
+        not_followed,
         dropped,
         s_zero,
         s_many,
@@ -223,47 +223,20 @@ def involvement_drop_then_rebuild(
     return ok
 
 
-def _rebuild_variant(thread: ThreadEntry, config: HeatConfig, unseen: int) -> ThreadEntry:
-    """A copy of ``thread`` whose user post is followed by exactly ``unseen`` replies.
+def _rebuild_variant(thread: ThreadEntry, unread: int) -> ThreadEntry:
+    """A followed copy of ``thread`` whose ``last_read`` leaves exactly ``unread`` replies after it.
 
-    Preserves timing and channel; rewrites the reply authorship so the user posted, then
-    ``unseen`` other-authored replies land after it. Used only to test rebuild monotonicity.
+    Only ``subscribed`` and ``last_read`` differ from the original: replies, participants,
+    message count and timing are untouched. Used only to test rebuild monotonicity.
     """
-    from slack_dashboard.thread import ReplyRecord
-
-    replies = [
-        ReplyRecord(ts=r.ts, author_id=r.author_id, text=r.text, is_root=r.is_root)
-        for r in thread.replies
-    ]
-    if not replies:
-        return thread
-    # Place the user's last post before the final `unseen` replies.
-    cut = len(replies) - unseen - 1
-    cut = max(0, cut)
-    replies[cut] = ReplyRecord(
-        ts=replies[cut].ts, author_id=board.SELF_ID, text="me", is_root=replies[cut].is_root
-    )
-    for i in range(cut + 1, len(replies)):
-        if replies[i].author_id == board.SELF_ID:
-            replies[i] = ReplyRecord(
-                ts=replies[i].ts,
-                author_id="U_other",
-                text=replies[i].text,
-                is_root=replies[i].is_root,
-            )
-    participants = {a: 1 for a in {r.author_id for r in replies}}
-    return ThreadEntry(
-        channel_id=thread.channel_id,
-        channel_name=thread.channel_name,
-        thread_ts=thread.thread_ts,
-        first_message=thread.first_message,
-        started_by=thread.started_by,
-        message_count=thread.message_count,
-        participants=participants,
-        last_activity=thread.last_activity,
-        replies=replies,
-        first_seen_ts=thread.first_seen_ts,
-    )
+    non_root = [r.ts for r in thread.replies if not r.is_root]
+    if not non_root:
+        return replace(thread, subscribed=True, last_read=None)
+    # last_read sits on the reply that leaves `unread` non-root replies after it; the root
+    # when every reply is unread.
+    cut = len(non_root) - unread - 1
+    last_read = non_root[cut] if cut >= 0 else float(thread.thread_ts)
+    return replace(thread, subscribed=True, last_read=last_read)
 
 
 def vip_lift_capped(
@@ -283,16 +256,15 @@ def vip_lift_capped(
         cap_ok = True
     else:
         cap_ok = all(
-            heat_breakdown(r.thread, config, board.SELF_ID, now).people_term
-            <= config.people_weight_cap + 1e-6
+            heat_breakdown(r.thread, config, now).people_term <= config.people_weight_cap + 1e-6
             for r in busy
         )
     vip = _find(busy, "data-platform", "philo-migration")  # VIP-laden
     plain = _find(busy, "engineering", "engineering-general")  # default-weight only
     if vip is None or plain is None:
         return cap_ok
-    vip_term = heat_breakdown(vip.thread, config, board.SELF_ID, now).people_term
-    plain_term = heat_breakdown(plain.thread, config, board.SELF_ID, now).people_term
+    vip_term = heat_breakdown(vip.thread, config, now).people_term
+    plain_term = heat_breakdown(plain.thread, config, now).people_term
     lift = vip_term > plain_term
     ok = lift and cap_ok
     logger.debug(
@@ -369,7 +341,7 @@ def soft_penalty(
                 monday = datetime(
                     2026, 6, 29, 9, 0, tzinfo=ZoneInfo("America/Los_Angeles")
                 ).timestamp()
-                s = heat_breakdown(t, config, board.SELF_ID, monday).overall
+                s = heat_breakdown(t, config, monday).overall
                 tier = classify_tier(s, 0, 1, config)
                 if tier in ("hot", "warm"):
                     return 0.0

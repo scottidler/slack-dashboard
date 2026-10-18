@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
@@ -22,12 +23,16 @@ class SocketListener:
         channel_ids: set[str],
         channel_names: dict[str, str],
         heat_config: HeatConfig,
+        self_user_id: Callable[[], str | None],
     ) -> None:
         self._queue = queue
         self._threads = threads
         self._channel_ids = channel_ids
         self._channel_names = channel_names
         self._heat_config = heat_config
+        # A callable, not a value: the poller resolves my id in start(), after this
+        # listener is built.
+        self._self_user_id = self_user_id
 
     async def handle_event(self, client: AsyncBaseSocketModeClient, req: SocketModeRequest) -> None:
         await client.send_socket_mode_response(SocketModeResponse(envelope_id=req.envelope_id))
@@ -108,12 +113,21 @@ class SocketListener:
                 existing.first_seen_ts = float(thread_ts)
             if event_time > existing.last_activity:
                 existing.last_activity = event_time
+            # My own post: Slack follows the thread for me from this moment. last_read is an
+            # estimate (my post's ts) until the next metadata sweep reads Slack's value.
+            self_id = self._self_user_id()
+            if self_id is not None and user == self_id:
+                existing.subscribed = True
+                existing.last_read = event_ts
         logger.debug(
-            "_apply_event: channel=%s thread_ts=%s user=%s ts=%s message_count=%d replies=%d",
+            "_apply_event: channel=%s thread_ts=%s user=%s ts=%s message_count=%d replies=%d "
+            "subscribed=%s last_read=%s",
             channel_name,
             thread_ts,
             user,
             ts,
             existing.message_count,
             len(existing.replies),
+            existing.subscribed,
+            existing.last_read,
         )

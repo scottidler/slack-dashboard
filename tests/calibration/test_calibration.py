@@ -138,3 +138,21 @@ def test_contrast_board_long_idle_threads_are_cold() -> None:
     assert stale_helpdesk is not None and weekend_fyi is not None
     assert stale_helpdesk.tier == "cold"
     assert weekend_fyi.tier == "cold"
+
+
+def test_involvement_criterion_fails_at_rebuild_zero() -> None:
+    # The criterion bites: with no rebuild, unread replies cannot lift a followed thread, so
+    # the rebuild half of the predicate must fail. Before the repair the variant added a
+    # participant along with the replies and the predicate passed at 0.0.
+    config = HeatConfig(followed_rebuild_per_msg=0.0)
+    busy = score.rank_board(board.busy_board(), config, board.NOW)
+    contrast = score.rank_board(board.contrast_board(), config, board.NOW)
+    assert not criteria.involvement_drop_then_rebuild(busy, contrast, config, board.NOW)
+
+
+def test_involvement_criterion_fails_with_no_drop() -> None:
+    # The drop half bites too: followed_drop 1.0 turns following off.
+    config = HeatConfig(followed_drop=1.0)
+    busy = score.rank_board(board.busy_board(), config, board.NOW)
+    contrast = score.rank_board(board.contrast_board(), config, board.NOW)
+    assert not criteria.involvement_drop_then_rebuild(busy, contrast, config, board.NOW)

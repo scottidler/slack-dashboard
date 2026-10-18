@@ -17,7 +17,14 @@ def _snake_to_kebab(name: str) -> str:
 
 
 class _KebabModel(BaseModel):
-    model_config = ConfigDict(alias_generator=_snake_to_kebab, populate_by_name=True)
+    # Every config model refuses an unknown key and a nan/inf float: a typo or a renamed key
+    # must fail at boot, never run on a silent default.
+    model_config = ConfigDict(
+        alias_generator=_snake_to_kebab,
+        populate_by_name=True,
+        extra="forbid",
+        allow_inf_nan=False,
+    )
 
 
 # Canonical three-letter weekday tokens accepted in work-days, indexed to match
@@ -80,6 +87,20 @@ class FetchConfig(_KebabModel):
     refresh_interval_minutes: int = 10
     min_replies: int = 3
     channel_min_replies: dict[str, int] = {}
+
+
+# Heat keys that no longer exist, mapped to what replaced them (HeatConfig._reject_retired_keys).
+_RETIRED_HEAT_KEYS: dict[str, str] = {
+    "involved-drop": "followed-drop",
+    "involved-rebuild-per-msg": "followed-rebuild-per-msg",
+    "involved-damping": "followed-drop / followed-rebuild-per-msg",
+    "involved-decay-messages": "followed-rebuild-per-msg",
+    "involved-decay-hours": "followed-rebuild-per-msg",
+}
+
+# Numeric heat fields that may be negative. Every other int/float field, and every
+# channel/people weight, is a weight, cap, count or duration and must be >= 0.
+_SIGNED_HEAT_FIELDS = frozenset({"atrophy_leader_stretch"})
 
 
 class HeatConfig(_KebabModel):
@@ -165,13 +186,12 @@ class HeatConfig(_KebabModel):
     # life) so the longevity lift ramps over a realistic incident lifetime, not instantly.
     alive_weight: float = 0.0
     alive_k: float = 6.0
-    # Drop-and-rebuild involvement (replaces involved_damping/involved_decay_*). Posting drops
-    # the score to involved_drop (0.8 -> a 20% cut, a bigger initial drop than the old 0.5-cut
-    # default), then each unseen reply after the user's last post rebuilds toward 1.0 at rate
-    # involved_rebuild_per_msg (0.15 -> ~7 unseen messages fully restores). Clamped to
-    # [involved_drop, 1]. involved_drop = 1.0 disables the feature (no drop).
-    involved_drop: float = 0.8
-    involved_rebuild_per_msg: float = 0.15
+    # Following (heat.following_damping). A thread Slack follows for me (I started it,
+    # commented in it, was @'d in it, or followed it by hand) drops to followed_drop, then each
+    # retained reply after my Slack last_read rebuilds it toward 1.0 at
+    # followed_rebuild_per_msg. Clamped to [followed_drop, 1]. followed_drop >= 1.0 disables.
+    followed_drop: float = 0.8
+    followed_rebuild_per_msg: float = 0.15
     # Tiering (see heat.classify_tier). tier_method: "absolute" (score thresholds) or "relative"
     # (rank-aware top-N with an absolute floor). Seed: relative mode is the DEFAULT - the
     # calibration arena (Phase 4, docs/design/2026-06-30-calibration-trace.md) found it is the
@@ -222,7 +242,7 @@ class HeatConfig(_KebabModel):
         for legacy in ("decay-half-life-hours", "decay_half_life_hours"):
             if legacy in data and "decay-hours" not in data and "decay_hours" not in data:
                 logger.debug("Migrating legacy config key %s -> decay-hours", legacy)
-                data["decay-hours"] = data[legacy]
+                data["decay-hours"] = data.pop(legacy)
         return data
 
     @model_validator(mode="before")
@@ -245,30 +265,14 @@ class HeatConfig(_KebabModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _warn_deprecated_involved_keys(cls, data: Any) -> Any:
-        # The old involvement knobs (involved-damping / involved-decay-messages /
-        # involved-decay-hours) were replaced by involved-drop / involved-rebuild-per-msg when
-        # the involvement model changed from exponential decay to drop-and-rebuild. There is NO
-        # clean 1:1 value migration (the model changed shape), so unlike _migrate_tier_thresholds
-        # we do NOT map a value - we WARN and proceed with the new defaults. extra keys are
-        # ignored by the model (ConfigDict has no extra="forbid"), so without this warning an
-        # existing private config with the old keys would silently revert to defaults.
+    def _reject_retired_keys(cls, data: Any) -> Any:
+        # Retired involvement knobs fail loudly with the key that replaced them. extra="forbid"
+        # would reject them anyway; this names the replacement so the fix is one edit.
         if not isinstance(data, dict):
             return data
-        deprecated = {
-            "involved-damping": "involved-drop / involved-rebuild-per-msg",
-            "involved-decay-messages": "involved-rebuild-per-msg",
-            "involved-decay-hours": "involved-rebuild-per-msg",
-        }
-        for legacy, replacement in deprecated.items():
-            legacy_snake = legacy.replace("-", "_")
-            if legacy in data or legacy_snake in data:
-                logger.warning(
-                    "heat config key %r is deprecated and IGNORED; the involvement model is now "
-                    "drop-and-rebuild - set %s instead (defaults are in effect until you do)",
-                    legacy,
-                    replacement,
-                )
+        for legacy, replacement in _RETIRED_HEAT_KEYS.items():
+            if legacy in data or legacy.replace("-", "_") in data:
+                raise ValueError(f"heat {legacy} was removed; set {replacement} instead")
         return data
 
     @model_validator(mode="after")
@@ -334,6 +338,24 @@ class HeatConfig(_KebabModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_non_negative(self) -> "HeatConfig":
+        # Weights, caps, counts and durations are never negative: a negative weight flips the
+        # sign of a term, a negative window or count makes a mark fire on nothing.
+        for name in type(self).model_fields:
+            value = getattr(self, name)
+            if name in _SIGNED_HEAT_FIELDS or isinstance(value, bool):
+                continue
+            if isinstance(value, int | float) and value < 0:
+                raise ValueError(f"heat {_snake_to_kebab(name)} ({value}) must be >= 0")
+        for map_name in ("channel_weights", "people_weights"):
+            for key, weight in getattr(self, map_name).items():
+                if weight < 0:
+                    raise ValueError(
+                        f"heat {_snake_to_kebab(map_name)}.{key} ({weight}) must be >= 0"
+                    )
+        return self
+
 
 class LlmConfig(_KebabModel):
     provider: str = "anthropic"
@@ -371,7 +393,7 @@ MARK_STATES: tuple[str, ...] = (
     "incident",
     "resolved",
     "social",
-    "me",
+    "following",
     "vip",
     "new",
     "spiking",
@@ -385,7 +407,7 @@ DEFAULT_MARKS: dict[str, str] = {
     "incident": "\N{POLICE CARS REVOLVING LIGHT}",
     "resolved": "\N{WHITE HEAVY CHECK MARK}",
     "social": "\N{PARTY POPPER}",
-    "me": "\N{HAPPY PERSON RAISING ONE HAND}",
+    "following": "\N{BELL}",
     "vip": "\N{CROWN}",
     "new": "\N{SPARKLES}",
     "spiking": "\N{CHART WITH UPWARDS TREND}",
@@ -407,6 +429,8 @@ class DisplayConfig(_KebabModel):
 
     @model_validator(mode="after")
     def _validate_marks(self) -> "DisplayConfig":
+        if "me" in self.marks:
+            raise ValueError("display.marks.me was renamed; set display.marks.following instead")
         unknown = sorted(set(self.marks) - set(MARK_STATES))
         if unknown:
             raise ValueError(

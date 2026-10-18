@@ -43,8 +43,8 @@ class SlackClient:
     async def resolve_self(self) -> str | None:
         """Resolve the authenticated user's own Slack user_id via auth.test.
 
-        Used to mark threads the user has personally posted in (the 👤 involved
-        glyph). Returns None on any failure so the glyph simply never fires
+        The socket listener uses it to recognize my own posts and mark the thread
+        followed. Returns None on any failure so no post is recognized as mine
         rather than blocking startup.
         """
         logger.debug("resolve_self: calling auth.test")
@@ -55,7 +55,10 @@ class SlackClient:
             logger.debug("resolve_self: resolved self user_id=%s", user_id)
             return user_id
         except Exception:
-            logger.warning("resolve_self: auth.test failed; involved glyph disabled", exc_info=True)
+            logger.warning(
+                "resolve_self: auth.test failed; own posts will not mark a thread followed",
+                exc_info=True,
+            )
             return None
 
     async def resolve_user(self, user_id: str) -> str:

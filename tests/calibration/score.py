@@ -131,7 +131,6 @@ def rank_board(
     threads: list[ThreadEntry],
     config: HeatConfig,
     now: float,
-    self_user_id: str | None = board.SELF_ID,
 ) -> list[RankedThread]:
     """Two-pass rank: score every thread at ``now``, sort descending, then classify.
 
@@ -139,12 +138,11 @@ def rank_board(
     (thread, rank, score, tier) tuples the criteria read. Never re-implements the formula.
     """
     logger.debug(
-        "rank_board: threads=%d self_user_id=%s now=%.1f",
+        "rank_board: threads=%d now=%.1f",
         len(threads),
-        self_user_id,
         now,
     )
-    scored = [(t, heat_breakdown(t, config, self_user_id, now).overall) for t in threads]
+    scored = [(t, heat_breakdown(t, config, now).overall) for t in threads]
     scored.sort(key=lambda pair: pair[1], reverse=True)
     total = len(scored)
     ranked = [

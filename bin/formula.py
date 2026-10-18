@@ -26,8 +26,9 @@ KNOBS: dict[str, float] = {
     "velocity_weight": 5.0,
     "velocity_window_minutes": 30.0,
     "activity_cap": 20.0,
-    "involved_drop": 0.8,
-    "involved_rebuild_per_msg": 0.15,
+    # Owner policy, not tunable: replay.py overwrites both from the yml on every run.
+    "followed_drop": 0.2,
+    "followed_rebuild_per_msg": 0.0,
     # Topic terms (jev probabilities). 0 = the live model, which has no topic terms.
     "social_drop": 0.0,
     "resolved_drop": 1.0,
@@ -50,7 +51,7 @@ class Features:
     hours_alive: float  # working hours from root to the last reply seen
     replies_in_window: int  # replies inside the velocity window before the checkpoint
     replies_after_me: int  # replies since my last post (0 if I never posted)
-    i_posted: bool
+    following: bool  # started or posted before the look (the corpus has no subscription log)
     p_social: float  # jev probabilities, 0 when the thread was not rated
     p_resolved: float
     p_leader: float
@@ -82,9 +83,9 @@ def score(f: Features, k: dict[str, float]) -> float:
     alive_boost = 1.0 + k["alive_weight"] * alive_frac * atrophy
 
     damping = 1.0
-    if f.i_posted and k["involved_drop"] < 1:
-        rebuild = min(1.0, f.replies_after_me * k["involved_rebuild_per_msg"])
-        damping = min(1.0, k["involved_drop"] + (1 - k["involved_drop"]) * rebuild)
+    if f.following and k["followed_drop"] < 1:
+        rebuild = min(1.0, f.replies_after_me * k["followed_rebuild_per_msg"])
+        damping = min(1.0, k["followed_drop"] + (1 - k["followed_drop"]) * rebuild)
 
     votes = (
         k["leader_weight"] * f.p_leader

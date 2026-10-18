@@ -20,11 +20,12 @@ with `formula.py`, and prints one number per line. What a run found and what shi
 `objective:` is the train number: the mean of catch and purity on the involvement label.
 
 - Involvement label: a thread Scott stepped into (replied to, did not start) is *needed* at
-  every look before his first reply. "The kind of thread" for purity is any thread he ever
-  joined. Everything else is "not it".
+  every look before his first reply. Everything else is "not it", including a thread he
+  already joined: Slack follows it for him, so the board earns nothing by showing it.
 - catch: per needed thread, the best credit over its needed looks, 1 inside the top 10 else
   10/rank, averaged over threads.
-- purity: per look, the share of the top 10 the label marks, averaged over looks.
+- purity: per look, the share of the top 10 that is needed at that look (he joins it after
+  the look), averaged over looks.
 
 `train_judge:` and `train_habit:` print the same two numbers on the other labels (jev's
 p(needs Scott) >= 0.6; replied-before-the-next-look plus late bloomers). Log them, never
@@ -78,6 +79,8 @@ touching the formula, so a prior experiment is one run per candidate, not an edi
 - Change who is on the board. `min_replies` and `max_thread_age_days` come from the config
   and the harness overwrites whatever `KNOBS` says: an earlier run "won" 6 points by setting
   max age to 1 day, which moved needed threads off the board instead of catching them.
+- Move the following knobs. `followed_drop` and `followed_rebuild_per_msg` are owner policy:
+  the harness overwrites them from the yml the same way.
 - Add dependencies. Add features that need data the harness does not pass.
 - Read or optimize on `holdout:`. Log it, never steer by it.
 - Stop. If you are out of ideas, combine the near misses, or try the opposite of a discard.
@@ -92,9 +95,8 @@ touching the formula, so a prior experiment is one run per candidate, not an edi
 - A kept change should read as a sentence about Scott ("resolved threads leave the board",
   "a thread jev says needs a leader counts as a full-size thread"). If it does not, it is
   curve fitting.
-- The involvement label is blind to a thread Scott read and left alone. Any keep that works
-  by hiding threads he posted in (involved_drop toward 0, "drop damping entirely") is the
-  label's blind spot, not a finding: revert it and log why.
+- Followed threads drop by design; the loop cannot move those knobs. A thread Scott started
+  or posted in is one Slack already tells him about, so the board is for the others.
 - When done, run `--schedule 6 7 8 9 10 11 12 13 14 15 16 17` (the default) and
   `--schedule 9 16` on the final formula: a keep that only works at one schedule is suspect.
 

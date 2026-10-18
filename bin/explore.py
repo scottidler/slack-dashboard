@@ -305,8 +305,8 @@ def build(config: AppConfig, corpus: Path) -> dict[str, Any]:
         "velocity_weight": heat.velocity_weight,
         "velocity_window_minutes": heat.velocity_window_minutes,
         "activity_cap": heat.activity_cap,
-        "involved_drop": heat.involved_drop,
-        "involved_rebuild_per_msg": heat.involved_rebuild_per_msg,
+        "followed_drop": heat.followed_drop,
+        "followed_rebuild_per_msg": heat.followed_rebuild_per_msg,
         # Tiering. The live app knows "relative" (top-N counts) and "absolute" (score lines);
         # the explorer adds "median" (multiples of the board median), "gaps" (natural breaks
         # in the sorted scores) and "prob" (a logistic fit of score -> P(needs me) on the

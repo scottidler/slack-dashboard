@@ -81,6 +81,11 @@ class ThreadEntry:
     # the thread grows past it (same shape as summary_watermark).
     topics: dict[str, float] | None = None
     topics_watermark: int = 0
+    # Slack's follow state for me, read from the thread root's ``subscribed`` / ``last_read``
+    # (thread fetch and the poller's metadata sweep) and set by the listener on my own post.
+    # ``last_read`` is the ts of the last message I read in Slack; None means unknown.
+    subscribed: bool = False
+    last_read: float | None = None
 
     @property
     def reply_timestamps(self) -> list[float]:

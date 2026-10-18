@@ -92,13 +92,14 @@ heat:
   heated-structural-scale: 1.0
   heated-tone-weight: 3.0
 
-  # Drop-and-rebuild involvement: a thread you have RECENTLY posted in (the 👤 glyph) is
-  # lower priority - you already weighed in. Posting drops the score hard to
-  # involved-drop (0.8 = a 20% cut); each reply AFTER your last post rebuilds it toward
-  # 1.0 at rate involved-rebuild-per-msg, so a thread that moved on without you
-  # re-surfaces. Clamped to [involved-drop, 1.0]. involved-drop: 1.0 disables the feature.
-  involved-drop: 0.8
-  involved-rebuild-per-msg: 0.15
+  # Following: a thread Slack follows for you (you started it, commented in it, were @'d
+  # in it, or clicked "Get notified about new replies"; the 🔔 mark) is one Slack will
+  # already tell you about. Its score drops to followed-drop (0.8 = a 20% cut); each
+  # retained reply after your Slack last_read (unread in Slack) rebuilds it toward 1.0 at
+  # rate followed-rebuild-per-msg. Clamped to [followed-drop, 1.0]. followed-drop: 1.0
+  # disables the feature. Owner policy: the tuning loop never moves these two.
+  followed-drop: 0.8
+  followed-rebuild-per-msg: 0.15
 
   # Tiering (see heat.classify_tier). tier-method: "absolute" (score thresholds tier-hot /
   # tier-warm) or "relative" (rank-aware top-N with an absolute floor so a fully-atrophied
@@ -233,7 +234,7 @@ display:
     incident: "🚨"    # jev: an outage, breakage or degradation being handled
     resolved: "✅"    # jev: already answered, fixed or closed
     social: "🎉"      # jev: social or personal, or not about work
-    me: "🙋"          # you have posted in this thread
+    following: "🔔"   # Slack follows this thread for you
     vip: "👑"         # a weighted person is in the thread
     new: "✨"         # entered the dashboard's view within the last hour
     spiking: "📈"     # 15+ replies in the velocity window

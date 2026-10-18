@@ -26,7 +26,7 @@ When changing the UI, hold this line:
     contributes nothing to the score); ⌛ time-alive (working hours, first-post ->
     last-post; dimmed when `alive_weight` is 0, its display-only default); ⏲
     time-since-last (working hours, last-post -> now; the atrophy input); ⏱️ recency
-    (atrophy decay multiplier, 0..1); 👤 involvement damping (`×N.NN`); 🎯 jev p(needs a
+    (atrophy decay multiplier, 0..1); 👤 following damping (`×N.NN`); 🎯 jev p(needs a
     leader) and ✅ jev p(resolved) (`?` until rated, dimmed when no knob reads them).
 - Between the channel and the title the row carries the explorer's cells
   (`bin/explore.html`, ported 2026-10-18): an activity strip (12 CSS boxes, one per
@@ -34,8 +34,8 @@ When changing the UI, hold this line:
   floor line for none), `Nh` (working hours since the last post), then twelve mark
   slots. Every slot is always rendered at the same x, lit when its state applies and
   dimmed when not, so the board reads by column. Slot -> state: 👔 jev needs a leader;
-  🔑 access request; 🚨 incident; ✅ resolved; 🎉 social or non-work; 🙋 you posted;
-  👑 vip; ✨ new; 📈 spiking; 🌶️ heated; ⏪ revived; ❓ unanswered. Each slot's meaning is
+  🔑 access request; 🚨 incident; ✅ resolved; 🎉 social or non-work; 🔔 Slack follows
+  it for you; 👑 vip; ✨ new; 📈 spiking; 🌶️ heated; ⏪ revived; ❓ unanswered. Each slot's meaning is
   in its tooltip. The glyph per slot is `display.marks` in the yml (code defaults in
   `config.DEFAULT_MARKS`). The glyphs were chosen to read without a legend (the old ⚡/👤/🧟 set
   and the short-lived words column both failed that test); the score stays on the hover

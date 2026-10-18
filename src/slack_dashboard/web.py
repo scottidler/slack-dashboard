@@ -20,8 +20,8 @@ from slack_dashboard.connection import ConnectionState
 from slack_dashboard.heat import (
     HeatBreakdown,
     heat_breakdown,
+    is_following,
     is_heated,
-    is_involved,
     is_vip,
     is_zombie,
     replies_in_window,
@@ -37,9 +37,9 @@ logger = logging.getLogger(__name__)
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 
 # Row flags: the thread states that used to be an emoji column, now plain words with a
-# tooltip each. Render order: me (leads), unanswered, new, vip, spiking, heated, revived.
+# tooltip each. Render order: following (leads), unanswered, new, vip, spiking, heated, revived.
 _FLAG_HELP: dict[str, str] = {
-    "me": "you have posted in this thread",
+    "following": "Slack follows this thread for you (started, commented, mentioned, or followed)",
     "unanswered": "a question with few replies that has aged past the floor (opt-in proxy)",
     "new": "entered the dashboard's view within the last hour",
     "vip": "a weighted person is in the thread",
@@ -69,7 +69,7 @@ _STRIP_HOURS = 12
 # The strip still uses these three glyphs for velocity, damping and the base chip's crown.
 _VIP = "\N{CROWN}"
 _SPIKING = "\N{HIGH VOLTAGE SIGN}"
-_INVOLVED = "\N{BUST IN SILHOUETTE}"
+_FOLLOWING_DAMPING = "\N{BUST IN SILHOUETTE}"
 
 # Heat-strip glyphs (see design doc "The strip").
 _THERMO = "\N{THERMOMETER}"  # 🌡️ overall heat score
@@ -177,7 +177,7 @@ def _heat_strip(breakdown: HeatBreakdown, config: HeatConfig, channel_name: str)
     velocity_weight == 0.0 (the default - velocity contributes nothing to the score even
     though the chip still reports the raw rate), time_alive dimmed when alive_weight ==
     0.0 (the default - display-only until calibration says otherwise, per the design doc),
-    damping == 1.00 (not involved, or the feature is off), and a topic chip when the thread
+    damping == 1.00 (not followed, or the feature is off), and a topic chip when the thread
     is unrated or no knob reads that probability. Trivial assembly of already-computed
     fields - no logging per the logging rule.
     """
@@ -224,9 +224,9 @@ def _heat_strip(breakdown: HeatBreakdown, config: HeatConfig, channel_name: str)
             tooltip="working-hours atrophy multiplier (exponential decay since last activity)",
         ),
         HeatChip(
-            glyph=_INVOLVED,
+            glyph=_FOLLOWING_DAMPING,
             value=f"×{breakdown.damping:.2f}",
-            tooltip="involvement damping",
+            tooltip="following damping",
             dimmed=breakdown.damping == 1.00,
         ),
         HeatChip(
@@ -360,16 +360,13 @@ def _flags(
     config: AppConfig,
     now: float,
     app_start_at: float,
-    self_user_id: str | None = None,
 ) -> list[str]:
     """The thread's state flags for a row, as words (keys of ``_FLAG_HELP``).
 
-    Render order: me (leads), unanswered, new, vip, spiking, heated, revived.
+    Render order: following (leads), unanswered, new, vip, spiking, heated, revived.
 
     ``now`` and ``app_start_at`` are passed in (not read from the wall clock here) so the
     caller can capture them once per request and all rows use a consistent timestamp.
-    ``self_user_id`` is the authenticated user's Slack id; None when unresolved, in
-    which case "me" never fires.
     """
     riw = replies_in_window(thread, config.heat)
     new_window = config.heat.new_window_minutes * 60
@@ -393,12 +390,10 @@ def _flags(
         min_age,
     )
     flags: list[str] = []
-    # me: the current user has personally posted in this thread (leads the row as the
-    # primary triage cue, "am I already in this one?"). participants is keyed by stable
-    # Slack user_id and includes every message author, so membership is a plain lookup. An
-    # unresolved self_user_id (None) never matches.
-    if is_involved(thread, self_user_id):
-        flags.append("me")
+    # following: Slack follows this thread for me (leads the row as the primary triage
+    # cue, "will Slack tell me about this one anyway?"). Read from the root's subscribed.
+    if is_following(thread):
+        flags.append("following")
     # unanswered: arithmetic proxy for a dropped-ball question (opt-in; off by default).
     # Fires when enabled AND the first message contains "?" AND reply_count is at or below
     # the max-replies floor AND the thread is older than the age floor. The broader
@@ -437,11 +432,10 @@ def _build_row(
     config: AppConfig,
     now: float,
     app_start_at: float,
-    self_user_id: str | None = None,
     below_fold: bool = False,
 ) -> RowView:
     # The same arithmetic path that ranked the thread, read here for the atrophy input.
-    breakdown = heat_breakdown(thread, config.heat, self_user_id, now)
+    breakdown = heat_breakdown(thread, config.heat, now)
     return RowView(
         channel_id=thread.channel_id,
         channel_name=thread.channel_name,
@@ -453,7 +447,7 @@ def _build_row(
         strip=_activity_strip(thread, config.heat.work_window, now),
         since_last=breakdown.time_since_last,
         marks=_marks(
-            set(_topic_tags(thread)) | set(_flags(thread, config, now, app_start_at, self_user_id)),
+            set(_topic_tags(thread)) | set(_flags(thread, config, now, app_start_at)),
             config.display.mark_glyphs(),
         ),
         deep_link=deep_link(
@@ -471,7 +465,6 @@ def group_threads(
     config: AppConfig,
     now: float,
     app_start_at: float,
-    self_user_id: str | None = None,
 ) -> list[GroupView]:
     """Partition globally-ranked threads into display groups.
 
@@ -504,7 +497,7 @@ def group_threads(
             GroupView(
                 label="",
                 rows=[
-                    _build_row(t, config, now, app_start_at, self_user_id, below_fold=_below(i))
+                    _build_row(t, config, now, app_start_at, below_fold=_below(i))
                     for i, t in enumerate(threads)
                 ],
             )
@@ -518,9 +511,7 @@ def group_threads(
                 group = GroupView(label=thread.channel_name)
                 groups[thread.channel_name] = group
             group.rows.append(
-                _build_row(
-                    thread, config, now, app_start_at, self_user_id, below_fold=_below(index)
-                )
+                _build_row(thread, config, now, app_start_at, below_fold=_below(index))
             )
 
         # Cluster channel groups by family (the first hyphen-delimited token, so all
@@ -557,18 +548,14 @@ def group_threads(
         for index, thread in enumerate(threads):
             label = _tier_label(thread.message_count, _SIZE_TIERS)
             buckets[label].rows.append(
-                _build_row(
-                    thread, config, now, app_start_at, self_user_id, below_fold=_below(index)
-                )
+                _build_row(thread, config, now, app_start_at, below_fold=_below(index))
             )
     else:  # velocity
         buckets = {label: GroupView(label=label) for label, _ in _VELOCITY_TIERS}
         for index, thread in enumerate(threads):
             label = _tier_label(replies_in_window(thread, config.heat), _VELOCITY_TIERS)
             buckets[label].rows.append(
-                _build_row(
-                    thread, config, now, app_start_at, self_user_id, below_fold=_below(index)
-                )
+                _build_row(thread, config, now, app_start_at, below_fold=_below(index))
             )
     return [group for group in buckets.values() if group.rows]
 
@@ -600,7 +587,7 @@ def create_routes(
         now = datetime.now(UTC).timestamp()
         app_start_at = poller.app_start_at
         ranked = poller.ranked_threads()
-        groups = group_threads(ranked, group_by, config, now, app_start_at, poller.self_user_id)
+        groups = group_threads(ranked, group_by, config, now, app_start_at)
         # Disclosure contract: every ranked thread is always server-rendered (groups carry
         # the full set); compact mode only hides the below-fold tail via CSS. The visible
         # hidden count tells the user how much sits past the fold.
@@ -635,7 +622,7 @@ def create_routes(
         # success, and fresh LLM-failure alike) - only the missing-thread branch above
         # omits it.
         now = datetime.now(UTC).timestamp()
-        breakdown = heat_breakdown(entry, config.heat, poller.self_user_id, now)
+        breakdown = heat_breakdown(entry, config.heat, now)
         heat_chips = _heat_strip(breakdown, config.heat, entry.channel_name)
         # The detail header quotes the thread's first message (its real "title") and
         # attributes it to the author; bullets summarizing the thread render below.
@@ -675,9 +662,7 @@ def create_routes(
         app_start_at = poller.app_start_at
         ranked = poller.ranked_threads()
         rows = [
-            _build_row(t, config, now, app_start_at, poller.self_user_id)
-            for t in ranked
-            if t.channel_id == channel_id
+            _build_row(t, config, now, app_start_at) for t in ranked if t.channel_id == channel_id
         ]
         name = next((t.channel_name for t in ranked if t.channel_id == channel_id), channel_id)
         link = channel_link(config.workspace, channel_id, config.slack.team_id)

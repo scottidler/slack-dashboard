@@ -128,6 +128,7 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
         channel_ids=set(config.channels.values()),
         channel_names=channel_names,
         heat_config=config.heat,
+        self_user_id=lambda: poller.self_user_id,
     )
 
     connection = ConnectionState(socket_enabled=bool(config.slack.app_token))

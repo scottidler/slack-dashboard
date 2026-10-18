@@ -61,17 +61,17 @@ class SlackPoller:
         # for the first new_window after poller start (app-start storm suppressor, M2).
         self._app_start_at: float = 0.0
         # The authenticated user's own Slack user_id, resolved once in start() via
-        # auth.test. Drives the 👤 involved glyph (a thread the user has posted in).
-        # None until resolved (or if auth.test fails), in which case the glyph never fires.
+        # auth.test. The listener reads it to mark a thread followed the moment I post.
+        # None until resolved (or if auth.test fails), in which case no own post is seen.
         self._self_user_id: str | None = None
 
     @property
     def self_user_id(self) -> str | None:
         """The authenticated user's Slack user_id, or None if unresolved.
 
-        Resolved once in ``start()``; the render path uses it to mark threads the
-        user has personally posted in. None (auth.test failed/not yet run) means
-        the involved glyph stays dark.
+        Resolved once in ``start()``; the socket listener reads it (through a callable,
+        since the listener is built before ``start()``) to set the follow state on my own
+        post. None (auth.test failed/not yet run) means no event is recognized as mine.
         """
         return self._self_user_id
 
@@ -110,7 +110,7 @@ class SlackPoller:
         threads = filter_stale_threads(live, self._config.heat)
         # Pass 1: score every thread, then sort descending.
         for t in threads:
-            t.heat_score = compute_heat(t, self._config.heat, self._self_user_id)
+            t.heat_score = compute_heat(t, self._config.heat)
         ranked = sorted(threads, key=lambda t: t.heat_score, reverse=True)
         # Pass 2: classify over the sorted list with the post-sort rank (relative mode needs it).
         total = len(ranked)
@@ -273,8 +273,42 @@ class SlackPoller:
                 logger.info("Periodic refresh: re-queuing all channels")
                 self._evict_threads()
                 self._queue.seed_channels(self._channel_map, priority=PRIORITY_REFRESH)
+                await self._sweep_metadata()
         except asyncio.CancelledError:
             return
+
+    async def _sweep_metadata(self) -> None:
+        """Re-read every channel's parents and refresh the follow state on known threads.
+
+        The incremental fetch never re-reads a quiet thread, so a follow or unfollow made in
+        Slack with no new reply would never reach the board. One history call per channel
+        (``oldest=None``, paced by the client) returns every parent with ``subscribed`` and
+        ``last_read``; this copies them onto the entries without fetching replies. A failed
+        channel is logged and skipped so one bad call cannot stop the refresh loop.
+        """
+        updated = 0
+        for channel_name, channel_id in self._channel_map.items():
+            min_replies = resolve_min_replies(channel_name, self._config.fetch)
+            try:
+                parents = await self._slack.fetch_threads(
+                    channel_id, min_replies=min_replies, oldest=None
+                )
+            except Exception:
+                logger.exception("_sweep_metadata: history failed for channel=%s", channel_name)
+                continue
+            for msg in parents:
+                # Slack puts the follow state only on parents that have replies.
+                if not msg.get("reply_count"):
+                    continue
+                thread_ts = msg.get("thread_ts", msg.get("ts", ""))
+                entry = self._threads.get((channel_id, thread_ts))
+                if entry is None:
+                    continue
+                if _apply_follow_state(entry, msg):
+                    updated += 1
+        logger.debug(
+            "_sweep_metadata: channels=%d entries_updated=%d", len(self._channel_map), updated
+        )
 
     async def _process_item(self, item: FetchItem) -> None:
         try:
@@ -316,8 +350,20 @@ class SlackPoller:
         latest_ts = max(r["ts"] for r in replies)
         self._thread_watermarks[key] = latest_ts
 
+        # The root is the message whose ts == thread_ts, never "the first item": with oldest
+        # set the client concatenates pages. It carries Slack's follow state for me.
+        root = next((r for r in replies if r.get("ts") == thread_ts), None)
         existing = self._threads.get(key)
         if incremental and existing and oldest:
+            if root is None:
+                logger.warning(
+                    "_fetch_thread: no root in replies for channel=%s thread_ts=%s; "
+                    "follow state unchanged",
+                    channel_name,
+                    thread_ts,
+                )
+            else:
+                _apply_follow_state(existing, root)
             new_replies = [r for r in replies if r["ts"] != thread_ts]
             for r in new_replies:
                 # Key participants by stable Slack user_id, matching the socket listener
@@ -428,7 +474,18 @@ class SlackPoller:
             heated_tone=existing.heated_tone if existing else 0,
             topics=existing.topics if existing else None,
             topics_watermark=existing.topics_watermark if existing else 0,
+            subscribed=existing.subscribed if existing else False,
+            last_read=existing.last_read if existing else None,
         )
+        if root is None:
+            logger.warning(
+                "_fetch_thread: no root in replies for channel=%s thread_ts=%s; "
+                "follow state unchanged",
+                channel_name,
+                thread_ts,
+            )
+        else:
+            _apply_follow_state(entry, root)
         self._update_heat(entry)
         self._threads[key] = entry
         logger.debug(
@@ -492,7 +549,7 @@ class SlackPoller:
         # POST-SORT in ranked_threads at render time. With no board context here we classify
         # the entry as the sole thread (rank 0 of 1), so absolute mode is exact and relative
         # mode gives a best-effort value that ranked_threads later overwrites.
-        entry.heat_score = compute_heat(entry, self._config.heat, self._self_user_id)
+        entry.heat_score = compute_heat(entry, self._config.heat)
         entry.heat_tier = classify_tier(entry.heat_score, 0, 1, self._config.heat)
 
     def _maybe_trigger_llm(self, entry: ThreadEntry, reply_texts: list[str]) -> None:
@@ -510,3 +567,31 @@ class SlackPoller:
         needs_topics = entry.topics is None or entry.message_count > entry.topics_watermark
         if self._on_topics_needed and needs_topics:
             asyncio.create_task(self._on_topics_needed(entry))
+
+
+def _apply_follow_state(entry: ThreadEntry, root: dict[str, Any]) -> bool:
+    """Copy Slack's ``subscribed`` / ``last_read`` from a thread root (or a channel parent).
+
+    Returns True when the fields were updated. A root without the ``subscribed`` key leaves
+    both fields as they were and logs a warning: the key was present on every root in the
+    Phase 0 probe, so its absence means Slack changed shape, not that I unfollowed.
+    """
+    if "subscribed" not in root:
+        logger.warning(
+            "_apply_follow_state: root has no subscribed key channel=%s thread_ts=%s; "
+            "follow state unchanged",
+            entry.channel_name,
+            entry.thread_ts,
+        )
+        return False
+    last_read = root.get("last_read")
+    entry.subscribed = bool(root["subscribed"])
+    entry.last_read = float(last_read) if last_read else None
+    logger.debug(
+        "_apply_follow_state: channel=%s thread_ts=%s subscribed=%s last_read=%s",
+        entry.channel_name,
+        entry.thread_ts,
+        entry.subscribed,
+        entry.last_read,
+    )
+    return True

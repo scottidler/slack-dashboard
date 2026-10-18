@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from slack_dashboard.config import (
     DEFAULT_MARKS,
@@ -154,8 +155,8 @@ def test_defaults() -> None:
     assert heat.activity_cap == 20.0
     assert heat.alive_weight == 0.0
     assert heat.alive_k == 6.0
-    assert heat.involved_drop == 0.8
-    assert heat.involved_rebuild_per_msg == 0.15
+    assert heat.followed_drop == 0.8
+    assert heat.followed_rebuild_per_msg == 0.15
     # tier-method default is "relative": the calibration arena (Phase 4/5, see
     # docs/design/2026-06-30-calibration-trace.md) found flipping this one knob over the
     # Phase 2 seed shapes is the decisive change taking the busy board from 3/7 to 7/7
@@ -185,14 +186,16 @@ def test_decay_half_life_backward_compat(tmp_path: Path) -> None:
     assert config.heat.decay_hours == 48
 
 
-def test_decay_hours_wins_over_legacy(tmp_path: Path) -> None:
+def test_decay_hours_with_legacy_key_is_an_error(tmp_path: Path) -> None:
+    # Was "decay-hours wins over legacy": the legacy key rode along silently ignored. With
+    # extra="forbid" a leftover legacy key beside its replacement fails at boot instead.
     data = {
         "channels": {"general": "C111"},
         "heat": {"decay-hours": 12, "decay-half-life-hours": 48},
     }
     config_file = write_config(tmp_path, data)
-    config = load_config(config_file)
-    assert config.heat.decay_hours == 12
+    with pytest.raises(ValidationError, match="decay-half-life-hours"):
+        load_config(config_file)
 
 
 def test_workspace_config(tmp_path: Path) -> None:
@@ -268,36 +271,85 @@ def test_alive_weight_negative_rejected() -> None:
         HeatConfig(alive_weight=-0.5)
 
 
-def test_deprecated_involved_key_warns(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
-    # The old involvement knobs were replaced by involved-drop/involved-rebuild-per-msg with no
-    # 1:1 value migration; a config still carrying them must emit a clear warning (not silently
-    # revert to defaults). extra keys are ignored by the model, so this warning is the only signal.
-    import logging
-
-    data = {
-        "channels": {"general": "C111"},
-        "heat": {"involved-damping": 0.5},
-    }
-    config_file = write_config(tmp_path, data)
-    with caplog.at_level(logging.WARNING):
-        config = load_config(config_file)
-    assert any(
-        "involved-damping" in record.message and "deprecated" in record.message
-        for record in caplog.records
-    )
-    # Defaults remain in effect (no fabricated migration).
-    assert config.heat.involved_drop == 0.8
-    assert config.heat.involved_rebuild_per_msg == 0.15
+@pytest.mark.parametrize(
+    ("legacy", "replacement"),
+    [
+        ("involved-drop", "followed-drop"),
+        ("involved-rebuild-per-msg", "followed-rebuild-per-msg"),
+        ("involved-damping", "followed-drop"),
+        ("involved-decay-messages", "followed-rebuild-per-msg"),
+        ("involved-decay-hours", "followed-rebuild-per-msg"),
+    ],
+)
+def test_retired_involved_keys_are_errors_naming_the_replacement(
+    tmp_path: Path, legacy: str, replacement: str
+) -> None:
+    # Was a warning that ran on defaults; a renamed key now fails at boot and names its
+    # replacement, so the fix is one edit.
+    config_file = write_config(tmp_path, {"heat": {legacy: 0.5}})
+    with pytest.raises(ValidationError, match=replacement):
+        load_config(config_file)
 
 
-def test_all_deprecated_involved_keys_warn(caplog: pytest.LogCaptureFixture) -> None:
-    import logging
+@pytest.mark.parametrize("legacy", ["involved-drop", "involved-rebuild-per-msg"])
+def test_retired_involved_keys_rejected_in_snake_case(legacy: str) -> None:
+    # populate_by_name accepts snake keys, so the retired names are caught in either spelling.
+    with pytest.raises(ValidationError, match="removed"):
+        HeatConfig.model_validate({legacy.replace("-", "_"): 0.5})
 
-    for legacy in ("involved-damping", "involved-decay-messages", "involved-decay-hours"):
-        caplog.clear()
-        with caplog.at_level(logging.WARNING):
-            HeatConfig.model_validate({legacy: 1})
-        assert any(legacy in record.message for record in caplog.records), legacy
+
+def test_unknown_key_rejected_everywhere(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="bogus"):
+        HeatConfig.model_validate({"bogus": 1})
+    with pytest.raises(ValidationError, match="bogus"):
+        load_config(write_config(tmp_path, {"fetch": {"bogus": 1}}))
+    with pytest.raises(ValidationError, match="bogus"):
+        load_config(write_config(tmp_path, {"bogus": 1}))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_heat_rejects_nan_and_inf(value: float) -> None:
+    with pytest.raises(ValidationError):
+        HeatConfig(base_cap=value)
+    with pytest.raises(ValidationError):
+        HeatConfig(channel_weights={"sre": value})
+    with pytest.raises(ValidationError):
+        HeatConfig(people_weights={"U1": value})
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "reply_weight",
+        "participant_weight",
+        "velocity_weight",
+        "people_weight_cap",
+        "followed_drop",
+        "followed_rebuild_per_msg",
+        "tier_floor",
+        "max_thread_age_days",
+    ],
+)
+def test_heat_rejects_negative_weights_caps_and_counts(field: str) -> None:
+    with pytest.raises(ValidationError, match="must be >= 0"):
+        HeatConfig.model_validate({field: -1})
+
+
+def test_heat_rejects_negative_map_weights() -> None:
+    with pytest.raises(ValidationError, match="channel-weights.sre"):
+        HeatConfig(channel_weights={"sre": -1.0})
+    with pytest.raises(ValidationError, match="people-weights.U1"):
+        HeatConfig(people_weights={"U1": -0.5})
+
+
+def test_heat_allows_negative_leader_stretch() -> None:
+    # The one signed knob: a negative stretch shortens a leader thread's half-life.
+    assert HeatConfig(atrophy_leader_stretch=-1.0).atrophy_leader_stretch == -1.0
+
+
+def test_heat_accepts_zero_weights() -> None:
+    config = HeatConfig(followed_drop=0.0, followed_rebuild_per_msg=0.0, velocity_weight=0.0)
+    assert config.followed_drop == 0.0
 
 
 def test_require_secrets_rejects_unresolved_placeholder(tmp_path: Path) -> None:
@@ -445,7 +497,19 @@ def test_display_marks_reject_unknown_key_and_empty_glyph() -> None:
 
 def test_display_marks_load_from_kebab_yml(tmp_path: Path) -> None:
     path = tmp_path / "slack-dashboard.yml"
-    path.write_text("display:\n  compact-rows: 5\n  marks:\n    me: '\N{WAVING HAND SIGN}'\n")
+    path.write_text(
+        "display:\n  compact-rows: 5\n  marks:\n    following: '\N{WAVING HAND SIGN}'\n"
+    )
     config = load_config(path)
     assert config.display.compact_rows == 5
-    assert config.display.mark_glyphs()["me"] == "\N{WAVING HAND SIGN}"
+    assert config.display.mark_glyphs()["following"] == "\N{WAVING HAND SIGN}"
+
+
+def test_display_marks_default_following_is_bell() -> None:
+    assert DisplayConfig().mark_glyphs()["following"] == "\N{BELL}"
+    assert "me" not in MARK_STATES
+
+
+def test_display_marks_me_is_an_error_naming_following() -> None:
+    with pytest.raises(ValidationError, match="display.marks.following"):
+        DisplayConfig(marks={"me": "\N{WAVING HAND SIGN}"})

@@ -66,8 +66,7 @@ def _make_mock_poller(threads: list[ThreadEntry] | None = None) -> AsyncMock:
     # so the storm suppressor (now - app_start_at >= new_window) is always satisfied
     # in route-level tests that are not specifically testing the suppressor.
     type(poller).app_start_at = PropertyMock(return_value=_FAR_PAST_APP_START)
-    # self_user_id is a property on SlackPoller; default the mock to None so the 👤
-    # involved glyph stays dark in tests that are not specifically exercising it.
+    # self_user_id is a property on SlackPoller (the listener reads it); the routes do not.
     type(poller).self_user_id = PropertyMock(return_value=None)
     if threads is not None:
         poller.ranked_threads.return_value = threads
@@ -192,40 +191,35 @@ def test_threads_renders_pepper_emoji_for_heated() -> None:
     assert 'class="mark on" data-mark="heated"' in response.text
 
 
-_ME = "me"
+_FOLLOWING = "following"
 
 
-def test_flags_involved_fires_when_self_in_participants() -> None:
-    # _make_thread() participants include "U1"; passing it as self_user_id lights 👤.
+def test_flags_following_lit_from_subscribed_alone() -> None:
+    # Slack's subscribed flag is the whole signal: participation does not light it.
+    thread = _make_thread()  # participants include U1, subscribed False
+    assert _FOLLOWING not in _flags(thread, _CONFIG, _NOW, _FAR_PAST_APP_START)
+    thread.subscribed = True
+    thread.participants = {"U2": 1}  # I never posted (an @-mention or a manual follow)
+    assert _FOLLOWING in _flags(thread, _CONFIG, _NOW, _FAR_PAST_APP_START)
+
+
+def test_flags_following_leads_the_row() -> None:
     thread = _make_thread()
-    with_self = _flags(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, "U1")
-    without_self = _flags(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, None)
-    assert _ME in with_self
-    assert _ME not in without_self
-
-
-def test_flags_involved_absent_when_self_not_participant() -> None:
-    thread = _make_thread()  # participants: U1, U2, U3
-    glyphs = _flags(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, "UZZZ")
-    assert _ME not in glyphs
-
-
-def test_flags_involved_leads_the_row() -> None:
-    # 👤 is the primary triage cue and renders first (leftmost) when present.
-    thread = _make_thread()
+    thread.subscribed = True
     thread.heated_tone = 3  # also fire the pepper so there is a glyph to lead
-    glyphs = _flags(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, "U1")
-    assert glyphs[0] == _ME
+    glyphs = _flags(thread, _CONFIG, _NOW, _FAR_PAST_APP_START)
+    assert glyphs[0] == _FOLLOWING
 
 
-def test_threads_renders_involved_glyph_end_to_end() -> None:
+def test_threads_renders_following_mark_end_to_end() -> None:
     app = FastAPI()
-    thread = _make_thread()  # participants include U1
+    thread = _make_thread()
+    thread.subscribed = True
     poller = _make_mock_poller([thread])
-    type(poller).self_user_id = PropertyMock(return_value="U1")
     create_routes(app, poller, MockLlm(), _CONFIG)
     response = TestClient(app).get("/threads")
-    assert 'class="mark on" data-mark="me"' in response.text
+    assert 'class="mark on" data-mark="following"' in response.text
+    assert "\N{BELL}" in response.text
 
 
 def _client_with_n_threads(n: int) -> TestClient:
@@ -655,7 +649,7 @@ def test_spiking_and_fire_can_coexist() -> None:
 
 
 def test_spiking_glyph_precedes_pepper_in_render_order() -> None:
-    # Glyph order: involved, unanswered, new, vip, spiking, pepper, zombie.
+    # Glyph order: following, unanswered, new, vip, spiking, pepper, zombie.
     # Spiking must appear before the pepper.
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=20, heated_tone=3)
@@ -1153,7 +1147,7 @@ def test_marks_render_every_slot_in_order_lit_or_dim() -> None:
         "incident",
         "resolved",
         "social",
-        "me",
+        "following",
         "vip",
         "new",
         "spiking",
@@ -1181,18 +1175,21 @@ def test_threads_row_lights_the_topic_and_flag_slots() -> None:
     # The yml picks the glyph; the slot order and its tooltip stay.
     app = FastAPI()
     poller = _make_mock_poller()
-    type(poller).self_user_id = PropertyMock(return_value="U1")
     thread = _make_thread()
+    thread.subscribed = True
     thread.topics = {"work": 0.9, "leader": 0.8, "resolved": 0.1}
     poller.ranked_threads.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
-    config = AppConfig(display=DisplayConfig(marks={"me": "\N{WAVING HAND SIGN}"}))
+    config = AppConfig(display=DisplayConfig(marks={"following": "\N{WAVING HAND SIGN}"}))
     create_routes(app, poller, MockLlm(), config)
     response = TestClient(app).get("/threads")
     assert response.status_code == 200
     row = response.text.split('class="thread-row')[1].split("</div>")[0]
     assert 'class="mark on" data-mark="leader"' in row
-    assert 'class="mark on" data-mark="me"' in row
+    assert 'class="mark on" data-mark="following"' in row
     assert 'class="mark off" data-mark="resolved"' in row
     assert row.count('class="mark on"') == 2
-    assert 'title="you have posted in this thread">\N{WAVING HAND SIGN}</span>' in row
+    assert (
+        'title="Slack follows this thread for you (started, commented, mentioned, or followed)">'
+        "\N{WAVING HAND SIGN}</span>"
+    ) in row
