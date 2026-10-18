@@ -46,7 +46,7 @@
         .group-choice { margin: 0; }
         .group-choice.active { font-weight: 700; text-decoration: underline; color: var(--pico-color); }
         .group-sep { color: var(--pico-muted-color); opacity: 0.6; }
-        .legend { margin-left: auto; cursor: help; opacity: 0.85; letter-spacing: 0.1em; }
+        .legend { margin-left: auto; cursor: help; opacity: 0.85; font-size: 0.85em; color: var(--pico-muted-color); }
         /* Compact fold: hide the below-fold tail (and any group entirely below the fold)
            via pure CSS. Every row stays in the DOM; only its visibility changes. */
         .disclosure.compact .below-fold { display: none; }
@@ -86,7 +86,13 @@
         .thread-main { flex: 1 1 auto; min-width: 0; position: relative; }
         .row-link { display: block; min-width: 0; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .row-title { margin-left: 0; }
-        .row-emoji { flex: 0 0 auto; }
+        /* Stats column: fixed-width cells so the numbers line up down the board; muted so
+           the title stays the loudest thing on the row. Flags are words, left-aligned. */
+        .row-stats { flex: 0 0 auto; display: grid; grid-template-columns: 2.6em 4.4em 6.2em 6.2em 12em; gap: 0.6em; font-size: 0.85em; color: var(--pico-muted-color); font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
+        .row-stats .stat { cursor: help; }
+        .row-stats .dim { opacity: 0.4; }
+        .row-stats .flags { text-align: left; overflow: hidden; text-overflow: ellipsis; }
+        .row-stats .flag { color: var(--pico-color); cursor: help; margin-right: 0.45em; }
         .row-summary { display: none; position: absolute; top: 100%; left: 0; z-index: 30; min-width: 26em; max-width: 44em; max-height: 24em; overflow-y: auto; margin-top: 0.15em; }
         .thread-main:hover .row-summary { display: block; }
         .summary-hint { font-size: 0.8em; color: var(--pico-muted-color); font-style: italic; }

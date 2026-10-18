@@ -116,8 +116,12 @@ startup; there is no hot-reload yet).
 
 ## UI
 
-- **Compact rows** - `channel:title  Nr · Np  emoji`, grouped (default by
-  channel). Every trackable thread renders - there is no row cap.
+- **Compact rows** - `Nm|Np  #channel  title  score  Nh  lead  done  flags`, grouped
+  (default by channel). Every trackable thread renders - there is no row cap. The
+  stats column is the numbers that decide the rank (score, working hours since the
+  last post, jev's p(needs a leader) and p(resolved)) and the thread's state as words
+  (`me`, `unanswered`, `new`, `vip`, `spiking`, `heated`, `revived`), each with a
+  tooltip. No glyphs to memorize.
 - **Group by** - `channel | size | velocity | participants`.
 - **Hover** a row for the AI summary; **click** to open the Slack thread.
 - **Dismiss** - the small control on each row; one click, permanent.

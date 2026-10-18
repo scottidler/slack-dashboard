@@ -12,7 +12,7 @@
        class="group-choice{{ ' active' if loop.first }}"
        data-group-by="{{ choice }}">{{ choice }}</a>
     {% endfor %}
-    <span class="legend" title="&#x1F464; you have posted in this thread&#10;&#x2753; unanswered question proxy (opt-in; ops channels only)&#10;&#x2728; new (entered view within the last 60 min)&#10;&#x1F451; a high-priority person is in the thread&#10;&#x26A1; spiking (15+ replies in the velocity window)&#10;&#x1F336; heated exchange (contentious back-and-forth or hostile tone)&#10;&#x1F9DF; resurrected (old thread, went quiet, new activity)">&#x1F464;&#x2753;&#x2728;&#x1F451;&#x26A1;&#x1F336;&#x1F9DF;</span>
+    <span class="legend" title="Each row ends with the numbers that decide its rank, then its state in words.&#10;score: the heat score the rows are sorted by&#10;Nh: working hours since the last post (the atrophy input)&#10;lead: jev's chance this thread needs a leader&#10;done: jev's chance it is already answered&#10;flags: me, unanswered, new, vip, spiking, heated, revived (hover any for its meaning)">score · Nh · lead · done · flags</span>
 </div>
 {# The selected grouping lives in a JS global re-sent via hx-vals on EVERY request
    (load, the 30s poll, and the focus-driven poll), so the periodic refresh can no

@@ -41,7 +41,15 @@
             </a>
             <span class="row-summary"><span id="summary-{{ sid }}" class="row-summary-body"><span class="summary-hint">Hover to summarize&hellip;</span></span></span>
         </span>
-        {% if row.emojis %}<span class="row-emoji">{{ row.emojis }}</span>{% endif %}
+        {# The stats column: what decides the rank, as numbers, plus the state flags as words.
+           Each cell carries its meaning in a tooltip; nothing here needs a legend. #}
+        <span class="row-stats">
+            <span class="stat" title="heat score: the number the rows are sorted by">{{ '%.0f' % row.score }}</span>
+            <span class="stat" title="working hours since the last post: the atrophy input (nights and weekends count zero)">{{ '%.1f' % row.since_last }}h</span>
+            <span class="stat{{ ' dim' if row.p_leader is none }}" title="jev: how likely this thread needs a leader to decide, approve or escalate; feeds the leader vote, the gate and the half-life stretch">lead {{ pct(row.p_leader) }}</span>
+            <span class="stat{{ ' dim' if row.p_resolved is none }}" title="jev: how likely this thread is already answered or fixed; feeds the resolved gate">done {{ pct(row.p_resolved) }}</span>
+            <span class="flags">{% for flag in row.flags %}<span class="flag" title="{{ FLAG_HELP[flag] }}">{{ flag }}</span>{% endfor %}</span>
+        </span>
     </div>
     {% endfor %}
 </section>

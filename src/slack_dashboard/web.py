@@ -29,19 +29,23 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
 
-# Glyphs for the emoji state channel (see design doc "Emoji State Channel").
-# Render order in the row: involved (leads), unanswered, new, vip, spiking, pepper, zombie.
-_ZOMBIE = "\N{ZOMBIE}"
-_PEPPER = "\N{HOT PEPPER}"  # 🌶️ heated exchange (contentious back-and-forth or hostile tone)
+# Row flags: the thread states that used to be an emoji column, now plain words with a
+# tooltip each. Render order: me (leads), unanswered, new, vip, spiking, heated, revived.
+_FLAG_HELP: dict[str, str] = {
+    "me": "you have posted in this thread",
+    "unanswered": "a question with few replies that has aged past the floor (opt-in proxy)",
+    "new": "entered the dashboard's view within the last hour",
+    "vip": "a weighted person is in the thread",
+    "spiking": "15+ replies in the velocity window",
+    "heated": "a contentious back-and-forth or a hostile tone",
+    "revived": "an old thread that went quiet and has new activity",
+}
+# The strip still uses these three glyphs for velocity, damping and the base chip's crown.
 _VIP = "\N{CROWN}"
 _SPIKING = "\N{HIGH VOLTAGE SIGN}"
-_NEW = "\N{SPARKLES}"  # ✨ recently entered the dashboard's view
-_UNANSWERED = "\N{BLACK QUESTION MARK ORNAMENT}"  # ❓ arithmetic proxy: question, few replies, aged
-_INVOLVED = "\N{BUST IN SILHOUETTE}"  # 👤 the current user has personally posted in this thread
+_INVOLVED = "\N{BUST IN SILHOUETTE}"
 
-# Heat-strip glyphs (see design doc "The strip"). _SPIKING, _INVOLVED, and _VIP above are
-# reused here for velocity, damping, and the base chip's crown so the strip and the row
-# speak one glyph vocabulary.
+# Heat-strip glyphs (see design doc "The strip").
 _THERMO = "\N{THERMOMETER}"  # 🌡️ overall heat score
 _CHANNEL_WEIGHT = "\N{LABEL}"  # 🏷️ channel_weight multiplier
 _BASE = "\N{BAR CHART}"  # 📊 message_count/people_count (+👑 when a VIP is present)
@@ -91,7 +95,14 @@ class RowView:
     message_count: int
     participant_count: int
     heat_tier: str
-    emojis: str
+    # The stats column: the score, the atrophy input, the two jev probabilities (None until
+    # rated) and the state flags as words. This replaced the emoji column: the numbers that
+    # decide the rank are on the row, and nothing has to be memorized.
+    score: float
+    since_last: float
+    p_leader: float | None
+    p_resolved: float | None
+    flags: list[str]
     deep_link: str
     channel_link: str
     summary: str | None
@@ -211,6 +222,11 @@ def _markdown_filter(text: str) -> Markup:
     return Markup(md.markdown(text))
 
 
+def _pct(p: float | None) -> str:
+    """A probability as a whole percent for the stats column; "?" until jev has rated."""
+    return "?" if p is None else f"{p * 100:.0f}%"
+
+
 def deep_link(workspace: str, channel_id: str, thread_ts: str, team_id: str = "") -> str:
     """Slack deep link for a thread.
 
@@ -248,29 +264,28 @@ def _has_vip(thread: ThreadEntry, config: AppConfig) -> bool:
     return is_vip(thread, config.heat)
 
 
-def _emojis(
+def _flags(
     thread: ThreadEntry,
     config: AppConfig,
     now: float,
     app_start_at: float,
     self_user_id: str | None = None,
-) -> str:
-    """Build the glyph string for a thread row.
+) -> list[str]:
+    """The thread's state flags for a row, as words (keys of ``_FLAG_HELP``).
 
-    Render order: involved (leads), unanswered, new, vip, spiking, pepper, zombie.
-    Each glyph is a single Unicode character that signals thread state at a glance.
+    Render order: me (leads), unanswered, new, vip, spiking, heated, revived.
 
     ``now`` and ``app_start_at`` are passed in (not read from the wall clock here) so the
     caller can capture them once per request and all rows use a consistent timestamp.
     ``self_user_id`` is the authenticated user's Slack id; None when unresolved, in
-    which case the 👤 involved glyph never fires.
+    which case "me" never fires.
     """
     riw = replies_in_window(thread, config.heat)
     new_window = config.heat.new_window_minutes * 60
     min_age = config.heat.unanswered_min_age_hours * 3600
     thread_age = now - float(thread.thread_ts)
     logger.debug(
-        "_emojis: channel=%s thread_ts=%s replies_in_window=%d tier=%s"
+        "_flags: channel=%s thread_ts=%s replies_in_window=%d tier=%s"
         " first_observed_at=%.3f now=%.3f app_start_at=%.3f new_window=%ds"
         " unanswered_enabled=%s message_count=%d thread_age_s=%.0f min_age_s=%.0f",
         thread.channel_name,
@@ -286,14 +301,14 @@ def _emojis(
         thread_age,
         min_age,
     )
-    glyphs = []
-    # 👤 involved: the current user has personally posted in this thread (leads the row as
-    # the primary triage cue - "am I already in this one?"). participants is keyed by stable
+    flags: list[str] = []
+    # me: the current user has personally posted in this thread (leads the row as the
+    # primary triage cue, "am I already in this one?"). participants is keyed by stable
     # Slack user_id and includes every message author, so membership is a plain lookup. An
-    # unresolved self_user_id (None) never matches, so the glyph stays dark.
+    # unresolved self_user_id (None) never matches.
     if is_involved(thread, self_user_id):
-        glyphs.append(_INVOLVED)
-    # ❓ unanswered: arithmetic proxy for a dropped-ball question (opt-in; off by default).
+        flags.append("me")
+    # unanswered: arithmetic proxy for a dropped-ball question (opt-in; off by default).
     # Fires when enabled AND the first message contains "?" AND reply_count is at or below
     # the max-replies floor AND the thread is older than the age floor. The broader
     # contains-? reading is used (vs ends-with-?) to catch questions embedded in longer
@@ -305,25 +320,25 @@ def _emojis(
         and thread.message_count <= config.heat.unanswered_max_replies
         and thread_age >= min_age
     ):
-        glyphs.append(_UNANSWERED)
-    # ✨ new: recently entered the dashboard's view (not a zombie; not within the
-    # app-start suppressor window that masks the first-run / degraded-mode storm).
+        flags.append("unanswered")
+    # new: recently entered the dashboard's view (not revived; not within the app-start
+    # suppressor window that masks the first-run / degraded-mode storm).
     if (
         thread.first_observed_at > 0
         and now - thread.first_observed_at < new_window
         and not is_zombie(thread, config.heat)
         and now - app_start_at >= new_window
     ):
-        glyphs.append(_NEW)
+        flags.append("new")
     if _has_vip(thread, config):
-        glyphs.append(_VIP)
+        flags.append("vip")
     if riw >= config.heat.spiking_threshold:
-        glyphs.append(_SPIKING)
+        flags.append("spiking")
     if is_heated(thread, config.heat, now):
-        glyphs.append(_PEPPER)
+        flags.append("heated")
     if is_zombie(thread, config.heat):
-        glyphs.append(_ZOMBIE)
-    return "".join(glyphs)
+        flags.append("revived")
+    return flags
 
 
 def _build_row(
@@ -334,6 +349,9 @@ def _build_row(
     self_user_id: str | None = None,
     below_fold: bool = False,
 ) -> RowView:
+    # One breakdown per row: the same arithmetic path that ranked the thread, read here for
+    # the stats column (score, atrophy input, jev probabilities).
+    breakdown = heat_breakdown(thread, config.heat, self_user_id, now)
     return RowView(
         channel_id=thread.channel_id,
         channel_name=thread.channel_name,
@@ -342,7 +360,11 @@ def _build_row(
         message_count=thread.message_count,
         participant_count=len(thread.participants),
         heat_tier=thread.heat_tier,
-        emojis=_emojis(thread, config, now, app_start_at, self_user_id),
+        score=breakdown.overall,
+        since_last=breakdown.time_since_last,
+        p_leader=breakdown.p_leader,
+        p_resolved=breakdown.p_resolved,
+        flags=_flags(thread, config, now, app_start_at, self_user_id),
         deep_link=deep_link(
             config.workspace, thread.channel_id, thread.thread_ts, config.slack.team_id
         ),
@@ -471,6 +493,8 @@ def create_routes(
     if templates is None:
         templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
     templates.env.filters["markdown"] = _markdown_filter
+    templates.env.globals["pct"] = _pct
+    templates.env.globals["FLAG_HELP"] = _FLAG_HELP
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> HTMLResponse:

@@ -10,7 +10,7 @@ from slack_dashboard.config import AppConfig, HeatConfig, SlackConfig
 from slack_dashboard.llm.provider import LlmProvider, SummaryResult
 from slack_dashboard.slack.poller import SlackPoller
 from slack_dashboard.thread import ReplyRecord, ThreadEntry
-from slack_dashboard.web import _emojis, create_routes
+from slack_dashboard.web import _flags, create_routes
 
 # A far-past app_start_at so the storm suppressor window (new_window_minutes * 60)
 # is already expired for all Phase 1 and Phase 3 tests that want the storm suppressor
@@ -182,33 +182,33 @@ def test_threads_renders_pepper_emoji_for_heated() -> None:
     poller = _make_mock_poller([thread])
     create_routes(app, poller, MockLlm(), _CONFIG)
     response = TestClient(app).get("/threads")
-    assert "\N{HOT PEPPER}" in response.text
+    assert ">heated</span>" in response.text
 
 
-_INVOLVED_GLYPH = "\N{BUST IN SILHOUETTE}"  # 👤
+_ME = "me"
 
 
-def test_emojis_involved_fires_when_self_in_participants() -> None:
+def test_flags_involved_fires_when_self_in_participants() -> None:
     # _make_thread() participants include "U1"; passing it as self_user_id lights 👤.
     thread = _make_thread()
-    with_self = _emojis(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, "U1")
-    without_self = _emojis(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, None)
-    assert _INVOLVED_GLYPH in with_self
-    assert _INVOLVED_GLYPH not in without_self
+    with_self = _flags(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, "U1")
+    without_self = _flags(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, None)
+    assert _ME in with_self
+    assert _ME not in without_self
 
 
-def test_emojis_involved_absent_when_self_not_participant() -> None:
+def test_flags_involved_absent_when_self_not_participant() -> None:
     thread = _make_thread()  # participants: U1, U2, U3
-    glyphs = _emojis(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, "UZZZ")
-    assert _INVOLVED_GLYPH not in glyphs
+    glyphs = _flags(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, "UZZZ")
+    assert _ME not in glyphs
 
 
-def test_emojis_involved_leads_the_row() -> None:
+def test_flags_involved_leads_the_row() -> None:
     # 👤 is the primary triage cue and renders first (leftmost) when present.
     thread = _make_thread()
     thread.heated_tone = 3  # also fire the pepper so there is a glyph to lead
-    glyphs = _emojis(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, "U1")
-    assert glyphs.startswith(_INVOLVED_GLYPH)
+    glyphs = _flags(thread, _CONFIG, _NOW, _FAR_PAST_APP_START, "U1")
+    assert glyphs[0] == _ME
 
 
 def test_threads_renders_involved_glyph_end_to_end() -> None:
@@ -218,7 +218,7 @@ def test_threads_renders_involved_glyph_end_to_end() -> None:
     type(poller).self_user_id = PropertyMock(return_value="U1")
     create_routes(app, poller, MockLlm(), _CONFIG)
     response = TestClient(app).get("/threads")
-    assert _INVOLVED_GLYPH in response.text
+    assert ">me</span>" in response.text
 
 
 def _client_with_n_threads(n: int) -> TestClient:
@@ -602,29 +602,29 @@ def _make_spiking_thread(
 def test_spiking_glyph_fires_at_threshold() -> None:
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=15)
-    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{HIGH VOLTAGE SIGN}" in emojis
+    flags = _flags(thread, config, _NOW, _FAR_PAST_APP_START)
+    assert "spiking" in flags
 
 
 def test_spiking_glyph_fires_above_threshold() -> None:
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=20)
-    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{HIGH VOLTAGE SIGN}" in emojis
+    flags = _flags(thread, config, _NOW, _FAR_PAST_APP_START)
+    assert "spiking" in flags
 
 
 def test_spiking_glyph_absent_below_threshold() -> None:
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=14)
-    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{HIGH VOLTAGE SIGN}" not in emojis
+    flags = _flags(thread, config, _NOW, _FAR_PAST_APP_START)
+    assert "spiking" not in flags
 
 
 def test_spiking_glyph_absent_with_zero_replies() -> None:
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=0)
-    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{HIGH VOLTAGE SIGN}" not in emojis
+    flags = _flags(thread, config, _NOW, _FAR_PAST_APP_START)
+    assert "spiking" not in flags
 
 
 def test_spiking_glyph_distinct_from_fire() -> None:
@@ -632,9 +632,9 @@ def test_spiking_glyph_distinct_from_fire() -> None:
     # are independent now that 🌶️ means "heated exchange," not high heat.
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=20, heated_tone=0)
-    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{HIGH VOLTAGE SIGN}" in emojis
-    assert "\N{HOT PEPPER}" not in emojis
+    flags = _flags(thread, config, _NOW, _FAR_PAST_APP_START)
+    assert "spiking" in flags
+    assert "heated" not in flags
 
 
 def test_spiking_and_fire_can_coexist() -> None:
@@ -642,9 +642,9 @@ def test_spiking_and_fire_can_coexist() -> None:
     # both glyphs should appear.
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=20, heated_tone=3)
-    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{HIGH VOLTAGE SIGN}" in emojis
-    assert "\N{HOT PEPPER}" in emojis
+    flags = _flags(thread, config, _NOW, _FAR_PAST_APP_START)
+    assert "spiking" in flags
+    assert "heated" in flags
 
 
 def test_spiking_glyph_precedes_pepper_in_render_order() -> None:
@@ -652,9 +652,9 @@ def test_spiking_glyph_precedes_pepper_in_render_order() -> None:
     # Spiking must appear before the pepper.
     config = AppConfig(heat=HeatConfig(spiking_threshold=15, velocity_window_minutes=30))
     thread = _make_spiking_thread(replies_in_window=20, heated_tone=3)
-    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
-    spiking_pos = emojis.index("\N{HIGH VOLTAGE SIGN}")
-    pepper_pos = emojis.index("\N{HOT PEPPER}")
+    flags = _flags(thread, config, _NOW, _FAR_PAST_APP_START)
+    spiking_pos = flags.index("spiking")
+    pepper_pos = flags.index("heated")
     assert spiking_pos < pepper_pos
 
 
@@ -695,8 +695,8 @@ def test_heated_fires_on_strong_tone_alone() -> None:
     # tone_term = 3 * 3.0 = 9 >= heated-threshold 8.0 -> 🌶️.
     config = AppConfig(heat=HeatConfig(heated_threshold=8.0, heated_tone_weight=3.0))
     thread = _make_spiking_thread(replies_in_window=2, heated_tone=3)
-    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{HOT PEPPER}" in emojis
+    flags = _flags(thread, config, _NOW, _FAR_PAST_APP_START)
+    assert "heated" in flags
 
 
 def test_heated_fires_on_structure_alone() -> None:
@@ -709,16 +709,16 @@ def test_heated_fires_on_structure_alone() -> None:
         )
     )
     thread = _make_heated_exchange_thread(heated_tone=0)
-    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{HOT PEPPER}" in emojis
+    flags = _flags(thread, config, _NOW, _FAR_PAST_APP_START)
+    assert "heated" in flags
 
 
 def test_heated_does_not_fire_for_hot_but_cordial() -> None:
     # A hot-tier monologue with cordial tone (0): structural 0 + tone 0 -> no 🌶️.
     config = AppConfig(heat=HeatConfig(heated_threshold=8.0))
     thread = _make_spiking_thread(replies_in_window=20, heat_tier="hot", heated_tone=0)
-    emojis = _emojis(thread, config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{HOT PEPPER}" not in emojis
+    flags = _flags(thread, config, _NOW, _FAR_PAST_APP_START)
+    assert "heated" not in flags
 
 
 # ---------------------------------------------------------------------------
@@ -756,8 +756,8 @@ def test_new_glyph_fires_inside_window() -> None:
     first_observed_at = now - 1800  # 30 min ago - inside 60-min window
     config = AppConfig(heat=HeatConfig(new_window_minutes=60))
     thread = _make_new_thread(first_observed_at=first_observed_at)
-    emojis = _emojis(thread, config, now, app_start_at)
-    assert "\N{SPARKLES}" in emojis
+    flags = _flags(thread, config, now, app_start_at)
+    assert "new" in flags
 
 
 def test_new_glyph_absent_outside_window() -> None:
@@ -767,8 +767,8 @@ def test_new_glyph_absent_outside_window() -> None:
     first_observed_at = now - 5400  # 90 min ago - outside 60-min window
     config = AppConfig(heat=HeatConfig(new_window_minutes=60))
     thread = _make_new_thread(first_observed_at=first_observed_at)
-    emojis = _emojis(thread, config, now, app_start_at)
-    assert "\N{SPARKLES}" not in emojis
+    flags = _flags(thread, config, now, app_start_at)
+    assert "new" not in flags
 
 
 def test_new_glyph_absent_when_first_observed_zero() -> None:
@@ -777,8 +777,8 @@ def test_new_glyph_absent_when_first_observed_zero() -> None:
     app_start_at = now - 7200
     config = AppConfig(heat=HeatConfig(new_window_minutes=60))
     thread = _make_new_thread(first_observed_at=0.0)
-    emojis = _emojis(thread, config, now, app_start_at)
-    assert "\N{SPARKLES}" not in emojis
+    flags = _flags(thread, config, now, app_start_at)
+    assert "new" not in flags
 
 
 def test_new_glyph_absent_when_zombie() -> None:
@@ -795,9 +795,9 @@ def test_new_glyph_absent_when_zombie() -> None:
         resurrection_event_ts=resurrection_event_ts,
         first_seen_ts=first_seen_ts,
     )
-    emojis = _emojis(thread, config, now, app_start_at)
-    assert "\N{SPARKLES}" not in emojis
-    assert "\N{ZOMBIE}" in emojis
+    flags = _flags(thread, config, now, app_start_at)
+    assert "new" not in flags
+    assert "revived" in flags
 
 
 def test_new_glyph_absent_within_app_start_window() -> None:
@@ -807,8 +807,8 @@ def test_new_glyph_absent_within_app_start_window() -> None:
     first_observed_at = now - 60  # 1 min ago - definitely inside observation window
     config = AppConfig(heat=HeatConfig(new_window_minutes=60))
     thread = _make_new_thread(first_observed_at=first_observed_at)
-    emojis = _emojis(thread, config, now, app_start_at)
-    assert "\N{SPARKLES}" not in emojis
+    flags = _flags(thread, config, now, app_start_at)
+    assert "new" not in flags
 
 
 def test_new_glyph_storm_suppressor_lifts_after_window() -> None:
@@ -820,8 +820,8 @@ def test_new_glyph_storm_suppressor_lifts_after_window() -> None:
     first_observed_at = now - 1800  # 30 min ago - inside observation window
     config = AppConfig(heat=HeatConfig(new_window_minutes=new_window_minutes))
     thread = _make_new_thread(first_observed_at=first_observed_at)
-    emojis = _emojis(thread, config, now, app_start_at)
-    assert "\N{SPARKLES}" in emojis
+    flags = _flags(thread, config, now, app_start_at)
+    assert "new" in flags
 
 
 def test_new_glyph_precedes_vip_in_render_order() -> None:
@@ -838,11 +838,11 @@ def test_new_glyph_precedes_vip_in_render_order() -> None:
         )
     )
     thread = _make_new_thread(first_observed_at=first_observed_at)
-    emojis = _emojis(thread, config, now, app_start_at)
-    assert "\N{SPARKLES}" in emojis
-    assert "\N{CROWN}" in emojis
-    new_pos = emojis.index("\N{SPARKLES}")
-    vip_pos = emojis.index("\N{CROWN}")
+    flags = _flags(thread, config, now, app_start_at)
+    assert "new" in flags
+    assert "vip" in flags
+    new_pos = flags.index("new")
+    vip_pos = flags.index("vip")
     assert new_pos < vip_pos
 
 
@@ -861,8 +861,8 @@ def test_new_glyph_suppressed_for_all_threads_in_storm_window() -> None:
         _make_new_thread(first_observed_at=now - 1800),  # 30 min ago
     ]
     for t in threads:
-        emojis = _emojis(t, config, now, app_start_at)
-        assert "\N{SPARKLES}" not in emojis, (
+        flags = _flags(t, config, now, app_start_at)
+        assert "new" not in flags, (
             f"storm suppressor should block new glyph; first_observed_at={t.first_observed_at}"
         )
 
@@ -880,7 +880,7 @@ def _make_unanswered_thread(
 ) -> ThreadEntry:
     """Thread aged by age_seconds relative to base_time (or now if unset).
 
-    Pass base_time=now when the test also calls _emojis(thread, config, now, ...) so
+    Pass base_time=now when the test also calls _flags(thread, config, now, ...) so
     the age computation uses a consistent epoch: thread_age = now - thread_ts ~= age_seconds.
     Use age_seconds slightly above the threshold (e.g. 7300 instead of 7200) to avoid
     floating-point truncation from the 6-decimal thread_ts format causing an off-by-epsilon
@@ -924,8 +924,8 @@ def test_unanswered_glyph_fires_when_enabled_question_low_replies_aged() -> None
         first_message="Can you look at this?", reply_count=1, age_seconds=7300, base_time=now
     )
     config = _unanswered_config(enabled=True, max_replies=2, min_age_hours=2)
-    emojis = _emojis(thread, config, now, _FAR_PAST_APP_START)
-    assert "\N{BLACK QUESTION MARK ORNAMENT}" in emojis
+    flags = _flags(thread, config, now, _FAR_PAST_APP_START)
+    assert "unanswered" in flags
 
 
 def test_unanswered_glyph_absent_when_disabled_by_default() -> None:
@@ -935,8 +935,8 @@ def test_unanswered_glyph_absent_when_disabled_by_default() -> None:
         first_message="Can you look at this?", reply_count=1, age_seconds=7300, base_time=now
     )
     config = AppConfig()  # default config - unanswered_enabled=False
-    emojis = _emojis(thread, config, now, _FAR_PAST_APP_START)
-    assert "\N{BLACK QUESTION MARK ORNAMENT}" not in emojis
+    flags = _flags(thread, config, now, _FAR_PAST_APP_START)
+    assert "unanswered" not in flags
 
 
 def test_unanswered_glyph_absent_when_no_question_mark() -> None:
@@ -946,8 +946,8 @@ def test_unanswered_glyph_absent_when_no_question_mark() -> None:
         first_message="Something broke in prod", reply_count=1, age_seconds=7300, base_time=now
     )
     config = _unanswered_config(enabled=True, max_replies=2, min_age_hours=2)
-    emojis = _emojis(thread, config, now, _FAR_PAST_APP_START)
-    assert "\N{BLACK QUESTION MARK ORNAMENT}" not in emojis
+    flags = _flags(thread, config, now, _FAR_PAST_APP_START)
+    assert "unanswered" not in flags
 
 
 def test_unanswered_glyph_absent_when_reply_count_exceeds_max() -> None:
@@ -957,8 +957,8 @@ def test_unanswered_glyph_absent_when_reply_count_exceeds_max() -> None:
         first_message="Is this still broken?", reply_count=3, age_seconds=7300, base_time=now
     )
     config = _unanswered_config(enabled=True, max_replies=2, min_age_hours=2)
-    emojis = _emojis(thread, config, now, _FAR_PAST_APP_START)
-    assert "\N{BLACK QUESTION MARK ORNAMENT}" not in emojis
+    flags = _flags(thread, config, now, _FAR_PAST_APP_START)
+    assert "unanswered" not in flags
 
 
 def test_unanswered_glyph_fires_at_exact_max_replies() -> None:
@@ -968,8 +968,8 @@ def test_unanswered_glyph_fires_at_exact_max_replies() -> None:
         first_message="Is this still broken?", reply_count=2, age_seconds=7300, base_time=now
     )
     config = _unanswered_config(enabled=True, max_replies=2, min_age_hours=2)
-    emojis = _emojis(thread, config, now, _FAR_PAST_APP_START)
-    assert "\N{BLACK QUESTION MARK ORNAMENT}" in emojis
+    flags = _flags(thread, config, now, _FAR_PAST_APP_START)
+    assert "unanswered" in flags
 
 
 def test_unanswered_glyph_absent_when_too_young() -> None:
@@ -982,8 +982,8 @@ def test_unanswered_glyph_absent_when_too_young() -> None:
         base_time=now,
     )
     config = _unanswered_config(enabled=True, max_replies=2, min_age_hours=2)
-    emojis = _emojis(thread, config, now, _FAR_PAST_APP_START)
-    assert "\N{BLACK QUESTION MARK ORNAMENT}" not in emojis
+    flags = _flags(thread, config, now, _FAR_PAST_APP_START)
+    assert "unanswered" not in flags
 
 
 def test_unanswered_glyph_fires_with_question_mark_inside_message() -> None:
@@ -996,8 +996,8 @@ def test_unanswered_glyph_fires_with_question_mark_inside_message() -> None:
         base_time=now,
     )
     config = _unanswered_config(enabled=True, max_replies=2, min_age_hours=2)
-    emojis = _emojis(thread, config, now, _FAR_PAST_APP_START)
-    assert "\N{BLACK QUESTION MARK ORNAMENT}" in emojis
+    flags = _flags(thread, config, now, _FAR_PAST_APP_START)
+    assert "unanswered" in flags
 
 
 def test_unanswered_glyph_leads_before_new_glyph() -> None:
@@ -1017,11 +1017,11 @@ def test_unanswered_glyph_leads_before_new_glyph() -> None:
             new_window_minutes=60,
         )
     )
-    emojis = _emojis(thread, config, now, app_start_at)
-    assert "\N{BLACK QUESTION MARK ORNAMENT}" in emojis
-    assert "\N{SPARKLES}" in emojis
-    unanswered_pos = emojis.index("\N{BLACK QUESTION MARK ORNAMENT}")
-    new_pos = emojis.index("\N{SPARKLES}")
+    flags = _flags(thread, config, now, app_start_at)
+    assert "unanswered" in flags
+    assert "new" in flags
+    unanswered_pos = flags.index("unanswered")
+    new_pos = flags.index("new")
     assert unanswered_pos < new_pos
 
 
@@ -1072,3 +1072,37 @@ def test_summarize_topic_chips_show_the_probabilities() -> None:
     assert "\N{DIRECT HIT}0.80" in response.text
     assert "\N{WHITE HEAVY CHECK MARK}0.10" in response.text
     assert "votes +36.0" in response.text
+
+
+# --- The stats column (replaced the emoji column) ----------------------------------------
+
+
+def test_threads_row_renders_the_stats_column(client: TestClient) -> None:
+    response = client.get("/threads")
+    assert response.status_code == 200
+    assert 'class="row-stats"' in response.text
+    # Unrated: both jev cells read "?" and are dimmed. The score and the atrophy input are
+    # numbers, not glyphs.
+    assert ">lead ?</span>" in response.text
+    assert ">done ?</span>" in response.text
+    assert 'class="stat dim"' in response.text
+    assert "row-emoji" not in response.text
+
+
+def test_threads_row_stats_show_jev_percentages_and_flags_as_words() -> None:
+    app = FastAPI()
+    poller = _make_mock_poller()
+    type(poller).self_user_id = PropertyMock(return_value="U1")
+    thread = _make_thread()
+    thread.topics = {"leader": 0.8, "resolved": 0.1}
+    config = AppConfig(heat=HeatConfig(leader_weight=45.0, resolved_drop=1.0))
+    poller.ranked_threads.return_value = [thread]
+    poller.threads = {("C123", "1234567890.123456"): thread}
+    create_routes(app, poller, MockLlm(), config)
+    response = TestClient(app).get("/threads")
+    assert response.status_code == 200
+    assert ">lead 80%</span>" in response.text
+    assert ">done 10%</span>" in response.text
+    assert '<span class="flag" title="you have posted in this thread">me</span>' in response.text
+    row = response.text.split('class="thread-row')[1].split("</div>")[0]
+    assert "\N{BUST IN SILHOUETTE}" not in row

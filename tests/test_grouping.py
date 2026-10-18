@@ -172,7 +172,7 @@ def test_build_row_emits_pepper_for_heated_tone() -> None:
     thread = _thread(heat_tier="cold")
     thread.heated_tone = 3
     row = _build_row(thread, config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{HOT PEPPER}" in row.emojis
+    assert "heated" in row.flags
 
 
 def test_build_row_no_pepper_for_hot_but_cordial() -> None:
@@ -180,7 +180,7 @@ def test_build_row_no_pepper_for_hot_but_cordial() -> None:
     # fire 🌶️ - the glyph is decoupled from heat tier.
     config = AppConfig()
     row = _build_row(_thread(heat_tier="hot"), config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{HOT PEPPER}" not in row.emojis
+    assert "heated" not in row.flags
 
 
 def test_build_row_emits_zombie_for_resurrected() -> None:
@@ -190,13 +190,13 @@ def test_build_row_emits_zombie_for_resurrected() -> None:
     thread.first_seen_ts = now - 5 * 86400
     thread.resurrection_event_ts = now - 3600
     row = _build_row(thread, config, now, now - 7200)
-    assert "\N{ZOMBIE}" in row.emojis
+    assert "revived" in row.flags
 
 
 def test_build_row_no_emoji_when_cold_and_not_zombie() -> None:
     config = AppConfig()
     row = _build_row(_thread(heat_tier="cold"), config, _NOW, _FAR_PAST_APP_START)
-    assert row.emojis == ""
+    assert row.flags == []
 
 
 def test_build_row_emits_crown_for_vip_participant() -> None:
@@ -204,14 +204,14 @@ def test_build_row_emits_crown_for_vip_participant() -> None:
     config = AppConfig()
     config.heat.people_weights = {"U0": 50}
     row = _build_row(_thread(heat_tier="cold", participants=2), config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{CROWN}" in row.emojis
+    assert "vip" in row.flags
 
 
 def test_build_row_no_crown_without_vip() -> None:
     config = AppConfig()
     config.heat.people_weights = {"Uother": 50}
     row = _build_row(_thread(heat_tier="cold", participants=2), config, _NOW, _FAR_PAST_APP_START)
-    assert "\N{CROWN}" not in row.emojis
+    assert "vip" not in row.flags
 
 
 def test_below_fold_tags_by_global_heat_rank() -> None:

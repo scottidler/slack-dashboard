@@ -27,9 +27,12 @@ When changing the UI, hold this line:
     last-post; dimmed when `alive_weight` is 0, its display-only default); ⏲
     time-since-last (working hours, last-post -> now; the atrophy input); ⏱️ recency
     (atrophy decay multiplier, 0..1); 👤 involvement damping (`×N.NN`); 🎯 jev p(needs a
-    leader) and ✅ jev p(resolved) (`?` until rated, dimmed when no knob reads them). ⚡,
-    👤, and 👑 are the same glyphs the row already uses for its emoji column; the strip
-    just reuses them rather than inventing new ones.
+    leader) and ✅ jev p(resolved) (`?` until rated, dimmed when no knob reads them).
+- The row itself carries no glyphs. It ends in a stats column: `score`, `Nh` (working
+  hours since the last post), `lead NN%` and `done NN%` (jev, `?` until rated), then the
+  state flags as words (`me unanswered new vip spiking heated revived`), each cell with
+  its meaning in a tooltip. This replaced the emoji column (2026-10-18): the numbers
+  that decide the rank belong on the row, and nothing on it should need a legend.
 - Fixed-width left columns (dismiss `×`, counts `Nm|Np`) so titles align into a scannable
   column. Counts are intentionally terse (`3m|3p`, not "3 messages · 3 participants").
 - Channel handles render Slack-style: lowercase, `#`-prefixed, no ALL-CAPS, no pill.
