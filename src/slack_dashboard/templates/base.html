@@ -87,14 +87,20 @@
         .row-link { display: block; min-width: 0; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .row-title { margin-left: 0; }
         /* The explorer's row cells, between the channel and the title: the activity strip
-           (monospace blocks, tier-colored, dim floor for an empty hour), the working hours
-           since the last post, and the words (jev topics, then state flags). Fixed widths
-           so the titles still line up. */
-        .row-strip { flex: 0 0 auto; width: 12ch; letter-spacing: 1px; font-size: 0.95em; line-height: 1; font-family: "DejaVu Sans Mono", "JetBrains Mono", ui-monospace, monospace; white-space: nowrap; cursor: help; }
-        .row-strip i { font-style: normal; color: var(--pico-muted-border-color); }
+           (12 CSS boxes, tier-colored, a floor line for an empty hour), the working hours
+           since the last post, and the marks (one fixed slot per state, lit or dim). Fixed
+           widths so every column has the same edges on every viewer. */
+        .row-strip { flex: 0 0 auto; display: flex; align-items: flex-end; gap: 2px; width: 82px; height: 12px; cursor: help; }
+        .row-strip i { display: block; width: 5px; background: currentColor; border-radius: 1px; }
+        .row-strip i.l0 { height: 1px; background: var(--pico-muted-border-color); }
+        .row-strip i.l1 { height: 3px; }
+        .row-strip i.l2 { height: 6px; }
+        .row-strip i.l3 { height: 9px; }
+        .row-strip i.l4 { height: 12px; }
         .row-age { flex: 0 0 auto; width: 3.6em; text-align: right; font-size: 0.85em; color: var(--pico-muted-color); font-variant-numeric: tabular-nums; white-space: nowrap; cursor: help; }
-        .row-tags { flex: 0 0 auto; width: 11em; font-size: 0.85em; color: var(--pico-muted-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .row-tags .tag { cursor: help; margin-right: 0.45em; }
+        .row-marks { flex: 0 0 auto; display: grid; grid-template-columns: repeat(12, 1.35em); font-size: 0.85em; line-height: 1; white-space: nowrap; }
+        .row-marks .mark { text-align: center; cursor: help; }
+        .row-marks .mark.off { opacity: 0.12; filter: grayscale(1); }
         .row-summary { display: none; position: absolute; top: 100%; left: 0; z-index: 30; min-width: 26em; max-width: 44em; max-height: 24em; overflow-y: auto; margin-top: 0.15em; }
         .thread-main:hover .row-summary { display: block; }
         .summary-hint { font-size: 0.8em; color: var(--pico-muted-color); font-style: italic; }

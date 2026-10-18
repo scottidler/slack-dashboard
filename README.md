@@ -116,13 +116,14 @@ startup; there is no hot-reload yet).
 
 ## UI
 
-- **Compact rows** - `Nm|Np  #channel  strip  Nh  words  title`, grouped (default by
-  channel). Every trackable thread renders - there is no row cap. The strip is one
-  block per working hour over the last 12 (newest right; height = posts in that hour:
-  1, 2-3, 4-7, 8+; a dim floor for none), `Nh` is working hours since the last post,
-  and the words are jev's topics at 60%+ (`social`, `incident`, `leader`, `access`,
-  `resolved`, `non-work`) then the thread's state (`me`, `unanswered`, `new`, `vip`,
-  `spiking`, `heated`, `revived`), each with a tooltip. No glyphs to memorize.
+- **Compact rows** - `Nm|Np  #channel  strip  Nh  marks  title`, grouped (default by
+  channel). Every trackable thread renders - there is no row cap. The strip is one box
+  per working hour over the last 12 (newest right; height = posts in that hour: 1, 2-3,
+  4-7, 8+; a floor line for none), `Nh` is working hours since the last post, and the
+  marks are twelve fixed slots, lit when the state applies and dim when not: 👔 needs
+  a leader, 🔑 access, 🚨 incident, ✅ resolved, 🎉 social (jev, 60%+), then 🙋 you
+  posted, 👑 vip, ✨ new, 📈 spiking, 🌶️ heated, ⏪ revived, ❓ unanswered. Hover a slot
+  for its meaning. The glyphs are `display.marks` in the yml.
 - **Group by** - `channel | size | velocity | participants`.
 - **Hover** a row for the AI summary; **click** to open the Slack thread.
 - **Dismiss** - the small control on each row; one click, permanent.

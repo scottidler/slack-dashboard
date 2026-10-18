@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
 from slack_dashboard.config import (
+    MARK_STATES,
     AppConfig,
     HeatConfig,
     WorkWindowConfig,
@@ -46,32 +47,24 @@ _FLAG_HELP: dict[str, str] = {
     "heated": "a contentious back-and-forth or a hostile tone",
     "revived": "an old thread that went quiet and has new activity",
 }
-# Topic words: the jev topics the row shows when p >= _TAG_THRESHOLD (same cut as the
-# explorer's tag column), plus non-work when p(work) falls under _NON_WORK_THRESHOLD.
+# Row marks: one fixed slot per state, always rendered, dimmed when off, so the same glyph
+# sits at the same x down the whole board. Order: the jev topics (p >= _TAG_THRESHOLD, the
+# explorer's cut; non-work when p(work) < _NON_WORK_THRESHOLD), then the state flags.
 _TAG_THRESHOLD = 0.6
 _NON_WORK_THRESHOLD = 0.4
 _TOPIC_HELP: dict[str, str] = {
-    "social": "jev: social or personal, no work content",
-    "incident": "jev: an outage, breakage or degradation being handled",
     "leader": "jev: needs a manager or director to decide, approve, assign or escalate",
     "access": "jev: a request for access, permissions, roles or credentials",
+    "incident": "jev: an outage, breakage or degradation being handled",
     "resolved": "jev: already answered, fixed or closed",
-    "non-work": "jev: not about work",
+    "social": "jev: social or personal, or not about work",
 }
-_TAG_HELP: dict[str, str] = {**_TOPIC_HELP, **_FLAG_HELP}
+_MARK_HELP: dict[str, str] = {**_TOPIC_HELP, **_FLAG_HELP}
 
-# Activity strip: one block per working hour over the last _STRIP_HOURS, newest at the
-# right; height is the number of posts in that hour (1, 2-3, 4-7, 8+). An empty hour is
-# the dim floor block. Same cells and cuts as the explorer's strip.
+# Activity strip: one cell per working hour over the last _STRIP_HOURS, newest at the
+# right; the cell's height is the number of posts in that hour (1, 2-3, 4-7, 8+). Drawn as
+# CSS boxes, not font glyphs, so the column has the same edges on every viewer.
 _STRIP_HOURS = 12
-_STRIP_BLOCKS = (
-    "",
-    "\N{LOWER ONE QUARTER BLOCK}",
-    "\N{LOWER HALF BLOCK}",
-    "\N{LOWER THREE QUARTERS BLOCK}",
-    "\N{FULL BLOCK}",
-)
-_STRIP_FLOOR = "\N{LOWER ONE EIGHTH BLOCK}"
 
 # The strip still uses these three glyphs for velocity, damping and the base chip's crown.
 _VIP = "\N{CROWN}"
@@ -120,6 +113,16 @@ def _tier_label(value: int, tiers: tuple[tuple[str, int], ...]) -> str:
 
 
 @dataclass
+class RowMark:
+    """One slot in a row's mark column: the glyph, whether it is on, and its tooltip."""
+
+    key: str
+    glyph: str
+    on: bool
+    help: str
+
+
+@dataclass
 class RowView:
     channel_id: str
     channel_name: str
@@ -128,14 +131,12 @@ class RowView:
     message_count: int
     participant_count: int
     heat_tier: str
-    # The explorer's row, ported: an activity strip (one level per working hour, 12 hours,
-    # newest right; empty hours are None), working hours since the last post, the jev topic
-    # words at p >= 0.6, and the state flags as words. The score itself stays on the hover
-    # strip: the shape of the activity and the words say why a row is where it is.
+    # The explorer's row: an activity strip (one level per working hour, 12 hours, newest
+    # right; empty hours are None), working hours since the last post, then the marks: one
+    # fixed slot per state, lit or dim. The score itself stays on the hover strip.
     strip: list[int | None]
     since_last: float
-    tags: list[str]
-    flags: list[str]
+    marks: list[RowMark]
     deep_link: str
     channel_link: str
     summary: str | None
@@ -295,22 +296,26 @@ def _activity_strip(thread: ThreadEntry, work: WorkWindowConfig, now: float) -> 
 
 
 def _topic_tags(thread: ThreadEntry) -> list[str]:
-    """The jev topic words a row shows: every topic at p >= 0.6, non-work when p(work) < 0.4.
+    """The jev topics a row marks: every topic at p >= 0.6; social also when p(work) < 0.4.
 
-    An unrated thread has no words; the words appear once the rater has run. Order is the
-    explorer's: social, incident, leader, access, resolved, then non-work.
+    An unrated thread marks nothing; the marks appear once the rater has run.
     """
     topics = thread.topics
     if topics is None:
         return []
     tags = [
         q
-        for q in ("social", "incident", "leader", "access", "resolved")
+        for q in ("leader", "access", "incident", "resolved", "social")
         if topics.get(q, 0.0) >= _TAG_THRESHOLD
     ]
-    if "work" in topics and topics["work"] < _NON_WORK_THRESHOLD:
-        tags.append("non-work")
+    if "social" not in tags and "work" in topics and topics["work"] < _NON_WORK_THRESHOLD:
+        tags.append("social")
     return tags
+
+
+def _marks(on: set[str], glyphs: dict[str, str]) -> list[RowMark]:
+    """Every slot in MARK_STATES order with its configured glyph, lit when its key is in ``on``."""
+    return [RowMark(key, glyphs[key], key in on, _MARK_HELP[key]) for key in MARK_STATES]
 
 
 def deep_link(workspace: str, channel_id: str, thread_ts: str, team_id: str = "") -> str:
@@ -447,8 +452,10 @@ def _build_row(
         heat_tier=thread.heat_tier,
         strip=_activity_strip(thread, config.heat.work_window, now),
         since_last=breakdown.time_since_last,
-        tags=_topic_tags(thread),
-        flags=_flags(thread, config, now, app_start_at, self_user_id),
+        marks=_marks(
+            set(_topic_tags(thread)) | set(_flags(thread, config, now, app_start_at, self_user_id)),
+            config.display.mark_glyphs(),
+        ),
         deep_link=deep_link(
             config.workspace, thread.channel_id, thread.thread_ts, config.slack.team_id
         ),
@@ -577,9 +584,6 @@ def create_routes(
     if templates is None:
         templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
     templates.env.filters["markdown"] = _markdown_filter
-    templates.env.globals["STRIP_BLOCKS"] = _STRIP_BLOCKS
-    templates.env.globals["STRIP_FLOOR"] = _STRIP_FLOOR
-    templates.env.globals["TAG_HELP"] = _TAG_HELP
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> HTMLResponse:

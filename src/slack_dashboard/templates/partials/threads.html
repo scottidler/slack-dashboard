@@ -30,12 +30,12 @@
             <span class="channel-pop"><span id="chan-{{ sid }}" class="channel-pop-body">&hellip;</span></span>
         </span>
         {% endif %}
-        {# The explorer's row: activity strip (one block per working hour, 12 hours, newest
-           right, dim floor = none), working hours since the last post, then the jev topic
-           words and the state flags. Each word carries its meaning in a tooltip. #}
-        <span class="row-strip heat-{{ row.heat_tier }}" title="posts per working hour over the last 12, newest at the right (height: 1, 2-3, 4-7, 8+)">{% for level in row.strip %}{% if level is none %}<i>{{ STRIP_FLOOR }}</i>{% else %}{{ STRIP_BLOCKS[level] }}{% endif %}{% endfor %}</span>
+        {# The explorer's row: activity strip (one box per working hour, 12 hours, newest
+           right, a floor line = none), working hours since the last post, then the marks:
+           one fixed slot per state, lit when on, dim when off, meaning in the tooltip. #}
+        <span class="row-strip heat-{{ row.heat_tier }}" title="posts per working hour over the last 12, newest at the right (height: 1, 2-3, 4-7, 8+)">{% for level in row.strip %}<i class="l{{ level or 0 }}"></i>{% endfor %}</span>
         <span class="row-age" title="working hours since the last post: the atrophy input (nights and weekends count zero)">{{ '%.1f' % row.since_last }}h</span>
-        <span class="row-tags">{% for tag in row.tags + row.flags %}<span class="tag" title="{{ TAG_HELP[tag] }}">{{ tag }}</span>{% endfor %}</span>
+        <span class="row-marks">{% for mark in row.marks %}<span class="mark{{ ' on' if mark.on else ' off' }}" data-mark="{{ mark.key }}" title="{{ mark.help }}">{{ mark.glyph }}</span>{% endfor %}</span>
         {# Summary detail loads/shows only on hovering the title, not the whole row. #}
         <span class="thread-main"
               hx-get="/summarize/{{ row.channel_id }}/{{ row.thread_ts }}"

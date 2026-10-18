@@ -28,15 +28,18 @@ When changing the UI, hold this line:
     time-since-last (working hours, last-post -> now; the atrophy input); ⏱️ recency
     (atrophy decay multiplier, 0..1); 👤 involvement damping (`×N.NN`); 🎯 jev p(needs a
     leader) and ✅ jev p(resolved) (`?` until rated, dimmed when no knob reads them).
-- The row itself carries no glyphs. Between the channel and the title it carries the
-  explorer's cells (`bin/explore.html`, ported 2026-10-18): an activity strip (one block
-  per working hour over the last 12, newest at the right, height = posts in that hour:
-  1, 2-3, 4-7, 8+; a dim floor for none), `Nh` (working hours since the last post), then
-  words: the jev topics at p >= 0.6 (`social incident leader access resolved non-work`)
-  followed by the state flags (`me unanswered new vip spiking heated revived`). Every
-  cell has its meaning in a tooltip. This replaced the emoji column and then the
-  short-lived numbers column: the shape of the activity and the words say why a row is
-  where it is; the score itself stays on the hover strip.
+- Between the channel and the title the row carries the explorer's cells
+  (`bin/explore.html`, ported 2026-10-18): an activity strip (12 CSS boxes, one per
+  working hour, newest at the right, height = posts in that hour: 1, 2-3, 4-7, 8+; a
+  floor line for none), `Nh` (working hours since the last post), then twelve mark
+  slots. Every slot is always rendered at the same x, lit when its state applies and
+  dimmed when not, so the board reads by column. Slot -> state: 👔 jev needs a leader;
+  🔑 access request; 🚨 incident; ✅ resolved; 🎉 social or non-work; 🙋 you posted;
+  👑 vip; ✨ new; 📈 spiking; 🌶️ heated; ⏪ revived; ❓ unanswered. Each slot's meaning is
+  in its tooltip. The glyph per slot is `display.marks` in the yml (code defaults in
+  `config.DEFAULT_MARKS`). The glyphs were chosen to read without a legend (the old ⚡/👤/🧟 set
+  and the short-lived words column both failed that test); the score stays on the hover
+  strip.
 - Fixed-width left columns (dismiss `×`, counts `Nm|Np`) so titles align into a scannable
   column. Counts are intentionally terse (`3m|3p`, not "3 messages · 3 participants").
 - Channel handles render Slack-style: lowercase, `#`-prefixed, no ALL-CAPS, no pill.

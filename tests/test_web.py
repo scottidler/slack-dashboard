@@ -6,11 +6,18 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from slack_dashboard.config import AppConfig, HeatConfig, SlackConfig
+from slack_dashboard.config import AppConfig, DisplayConfig, HeatConfig, SlackConfig
 from slack_dashboard.llm.provider import LlmProvider, SummaryResult
 from slack_dashboard.slack.poller import SlackPoller
 from slack_dashboard.thread import ReplyRecord, ThreadEntry
-from slack_dashboard.web import _activity_strip, _flags, _strip_level, _topic_tags, create_routes
+from slack_dashboard.web import (
+    _activity_strip,
+    _flags,
+    _marks,
+    _strip_level,
+    _topic_tags,
+    create_routes,
+)
 
 # A far-past app_start_at so the storm suppressor window (new_window_minutes * 60)
 # is already expired for all Phase 1 and Phase 3 tests that want the storm suppressor
@@ -182,7 +189,7 @@ def test_threads_renders_pepper_emoji_for_heated() -> None:
     poller = _make_mock_poller([thread])
     create_routes(app, poller, MockLlm(), _CONFIG)
     response = TestClient(app).get("/threads")
-    assert ">heated</span>" in response.text
+    assert 'class="mark on" data-mark="heated"' in response.text
 
 
 _ME = "me"
@@ -218,7 +225,7 @@ def test_threads_renders_involved_glyph_end_to_end() -> None:
     type(poller).self_user_id = PropertyMock(return_value="U1")
     create_routes(app, poller, MockLlm(), _CONFIG)
     response = TestClient(app).get("/threads")
-    assert ">me</span>" in response.text
+    assert 'class="mark on" data-mark="me"' in response.text
 
 
 def _client_with_n_threads(n: int) -> TestClient:
@@ -1132,22 +1139,46 @@ def test_topic_tags_are_the_jev_topics_at_sixty_percent() -> None:
     assert _topic_tags(thread) == []
     thread.topics = {"work": 0.9, "social": 0.1, "leader": 0.8, "access": 0.6, "resolved": 0.59}
     assert _topic_tags(thread) == ["leader", "access"]
+    thread.topics = {"work": 0.3, "social": 0.2}
+    assert _topic_tags(thread) == ["social"]  # non-work folds into the social slot
     thread.topics = {"work": 0.3, "social": 0.7}
-    assert _topic_tags(thread) == ["social", "non-work"]
+    assert _topic_tags(thread) == ["social"]
 
 
-def test_threads_row_renders_strip_age_and_words(client: TestClient) -> None:
+def test_marks_render_every_slot_in_order_lit_or_dim() -> None:
+    marks = _marks({"leader", "new"}, _CONFIG.display.mark_glyphs())
+    assert [m.key for m in marks] == [
+        "leader",
+        "access",
+        "incident",
+        "resolved",
+        "social",
+        "me",
+        "vip",
+        "new",
+        "spiking",
+        "heated",
+        "revived",
+        "unanswered",
+    ]
+    assert [m.key for m in marks if m.on] == ["leader", "new"]
+    assert marks[7].glyph == "\N{SPARKLES}"
+    assert marks[0].glyph == "\N{NECKTIE}"
+
+
+def test_threads_row_renders_strip_age_and_twelve_mark_slots(client: TestClient) -> None:
     response = client.get("/threads")
     assert response.status_code == 200
     row = response.text.split('class="thread-row')[1].split("</div>")[0]
     assert 'class="row-strip heat-hot"' in row
-    assert row.count("<i>\N{LOWER ONE EIGHTH BLOCK}</i>") == 12  # no posts in the window
+    assert row.count('<i class="l0"></i>') == 12  # no posts in the window: all floor
     assert 'class="row-age"' in row
-    assert 'class="row-tags"' in row
-    assert "row-stats" not in row and "row-emoji" not in row and "lead " not in row
+    assert row.count('class="mark off"') == 12  # unrated, no flags: every slot dim
+    assert "row-stats" not in row and "row-emoji" not in row
 
 
-def test_threads_row_shows_topic_words_and_flags_with_tooltips() -> None:
+def test_threads_row_lights_the_topic_and_flag_slots() -> None:
+    # The yml picks the glyph; the slot order and its tooltip stay.
     app = FastAPI()
     poller = _make_mock_poller()
     type(poller).self_user_id = PropertyMock(return_value="U1")
@@ -1155,12 +1186,13 @@ def test_threads_row_shows_topic_words_and_flags_with_tooltips() -> None:
     thread.topics = {"work": 0.9, "leader": 0.8, "resolved": 0.1}
     poller.ranked_threads.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
-    create_routes(app, poller, MockLlm(), _CONFIG)
+    config = AppConfig(display=DisplayConfig(marks={"me": "\N{WAVING HAND SIGN}"}))
+    create_routes(app, poller, MockLlm(), config)
     response = TestClient(app).get("/threads")
     assert response.status_code == 200
     row = response.text.split('class="thread-row')[1].split("</div>")[0]
-    leader = row.index(">leader</span>")
-    me = row.index(">me</span>")
-    assert leader < me  # topics first, then the state flags
-    assert 'title="you have posted in this thread">me</span>' in row
-    assert "\N{BUST IN SILHOUETTE}" not in row
+    assert 'class="mark on" data-mark="leader"' in row
+    assert 'class="mark on" data-mark="me"' in row
+    assert 'class="mark off" data-mark="resolved"' in row
+    assert row.count('class="mark on"') == 2
+    assert 'title="you have posted in this thread">\N{WAVING HAND SIGN}</span>' in row

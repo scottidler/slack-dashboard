@@ -361,12 +361,65 @@ class ServerConfig(_KebabModel):
     log_level: str = "info"
 
 
+# The row's mark slots, in render order: the jev topics first, then the state flags. Each
+# slot is always drawn at the same x, lit when the state applies and dim when not. The
+# glyph per slot comes from display.marks; these are the defaults, chosen to read without
+# a legend.
+MARK_STATES: tuple[str, ...] = (
+    "leader",
+    "access",
+    "incident",
+    "resolved",
+    "social",
+    "me",
+    "vip",
+    "new",
+    "spiking",
+    "heated",
+    "revived",
+    "unanswered",
+)
+DEFAULT_MARKS: dict[str, str] = {
+    "leader": "\N{NECKTIE}",
+    "access": "\N{KEY}",
+    "incident": "\N{POLICE CARS REVOLVING LIGHT}",
+    "resolved": "\N{WHITE HEAVY CHECK MARK}",
+    "social": "\N{PARTY POPPER}",
+    "me": "\N{HAPPY PERSON RAISING ONE HAND}",
+    "vip": "\N{CROWN}",
+    "new": "\N{SPARKLES}",
+    "spiking": "\N{CHART WITH UPWARDS TREND}",
+    "heated": "\N{HOT PEPPER}",
+    "revived": "\N{BLACK LEFT-POINTING DOUBLE TRIANGLE}",
+    "unanswered": "\N{BLACK QUESTION MARK ORNAMENT}",
+}
+
+
 class DisplayConfig(_KebabModel):
     # Compact view fold: the default pane renders the top compact_rows threads by heat
     # ("one page worth"); the rest are still server-rendered into the DOM but hidden via
     # CSS until the global show-all toggle is flipped (zero-miss disclosure, see design
     # doc Triage v3). 0 disables the fold (show everything at rest).
     compact_rows: int = 20
+    # Glyph per mark slot (keys from MARK_STATES). A key left out keeps its default; an
+    # unknown key or an empty glyph fails at boot.
+    marks: dict[str, str] = {}
+
+    @model_validator(mode="after")
+    def _validate_marks(self) -> "DisplayConfig":
+        unknown = sorted(set(self.marks) - set(MARK_STATES))
+        if unknown:
+            raise ValueError(
+                f"display.marks has unknown keys {unknown}; known: {list(MARK_STATES)}"
+            )
+        empty = sorted(k for k, v in self.marks.items() if not v.strip())
+        if empty:
+            raise ValueError(f"display.marks has empty glyphs for {empty}")
+        return self
+
+    def mark_glyphs(self) -> dict[str, str]:
+        """Every slot's glyph in MARK_STATES order: the defaults with the yml's overrides."""
+        return {key: self.marks.get(key, DEFAULT_MARKS[key]) for key in MARK_STATES}
 
 
 class AppConfig(_KebabModel):

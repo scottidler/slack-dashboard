@@ -6,7 +6,10 @@ import pytest
 import yaml
 
 from slack_dashboard.config import (
+    DEFAULT_MARKS,
+    MARK_STATES,
     AppConfig,
+    DisplayConfig,
     FetchConfig,
     HeatConfig,
     LlmConfig,
@@ -414,3 +417,35 @@ def test_require_secrets_rejects_an_unresolved_jev_placeholder_even_with_knobs_o
     config.topics.api_key = "${TYPESAFE_TEST_MISSING}"
     with pytest.raises(ValueError, match="topics.api-key: env var TYPESAFE_TEST_MISSING"):
         require_secrets(config)
+
+
+# --- display.marks ------------------------------------------------------------------------
+
+
+def test_display_marks_default_to_every_slot_in_order() -> None:
+    glyphs = DisplayConfig().mark_glyphs()
+    assert list(glyphs) == list(MARK_STATES)
+    assert glyphs == DEFAULT_MARKS
+    assert glyphs["new"] == "\N{SPARKLES}"
+
+
+def test_display_marks_override_one_slot_and_keep_the_rest() -> None:
+    glyphs = DisplayConfig(marks={"leader": "\N{SCALES}"}).mark_glyphs()
+    assert glyphs["leader"] == "\N{SCALES}"
+    assert glyphs["access"] == DEFAULT_MARKS["access"]
+    assert list(glyphs) == list(MARK_STATES)
+
+
+def test_display_marks_reject_unknown_key_and_empty_glyph() -> None:
+    with pytest.raises(ValueError, match="unknown keys"):
+        DisplayConfig(marks={"bogus": "x"})
+    with pytest.raises(ValueError, match="empty glyphs"):
+        DisplayConfig(marks={"vip": " "})
+
+
+def test_display_marks_load_from_kebab_yml(tmp_path: Path) -> None:
+    path = tmp_path / "slack-dashboard.yml"
+    path.write_text("display:\n  compact-rows: 5\n  marks:\n    me: '\N{WAVING HAND SIGN}'\n")
+    config = load_config(path)
+    assert config.display.compact_rows == 5
+    assert config.display.mark_glyphs()["me"] == "\N{WAVING HAND SIGN}"

@@ -224,3 +224,19 @@ display:
   # worth"); the rest are still server-rendered into the DOM and revealed by the global
   # show-all toggle (nothing is dropped - zero-miss disclosure). 0 disables the fold.
   compact-rows: 20
+  # The row's twelve mark slots, in render order. Every slot is always drawn at the same
+  # x, lit when the state applies and dim when not. A key left out keeps its default; an
+  # unknown key or an empty glyph fails at boot. Defaults shown.
+  marks:
+    leader: "👔"      # jev: needs a manager or director to decide, approve or escalate
+    access: "🔑"      # jev: a request for access, permissions, roles or credentials
+    incident: "🚨"    # jev: an outage, breakage or degradation being handled
+    resolved: "✅"    # jev: already answered, fixed or closed
+    social: "🎉"      # jev: social or personal, or not about work
+    me: "🙋"          # you have posted in this thread
+    vip: "👑"         # a weighted person is in the thread
+    new: "✨"         # entered the dashboard's view within the last hour
+    spiking: "📈"     # 15+ replies in the velocity window
+    heated: "🌶️"      # a contentious back-and-forth or a hostile tone
+    revived: "⏪"     # an old thread that went quiet and has new activity
+    unanswered: "❓"  # a question with few replies that has aged past the floor
