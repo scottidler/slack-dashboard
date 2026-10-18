@@ -36,7 +36,7 @@
               hx-trigger="mouseenter once"
               hx-target="#summary-{{ sid }}"
               hx-swap="innerHTML">
-            <a class="row-link" href="{{ row.deep_link }}"{% if not row.deep_link.startswith('slack://') %} target="_blank" rel="noopener"{% endif %}>
+            <a class="row-link" href="{{ row.deep_link }}" data-open="/event/open/{{ row.channel_id }}/{{ row.thread_ts }}"{% if not row.deep_link.startswith('slack://') %} target="_blank" rel="noopener"{% endif %}>
                 <span class="row-title heat-{{ row.heat_tier }}">{{ row.display_title }}</span>
             </a>
             <span class="row-summary"><span id="summary-{{ sid }}" class="row-summary-body"><span class="summary-hint">Hover to summarize&hellip;</span></span></span>

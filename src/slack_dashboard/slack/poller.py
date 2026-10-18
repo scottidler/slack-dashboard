@@ -6,6 +6,7 @@ from typing import Any
 
 from slack_dashboard.config import AppConfig, resolve_min_replies
 from slack_dashboard.dismiss import DismissStore
+from slack_dashboard.events import EventStore
 from slack_dashboard.heat import (
     classify_tier,
     compute_heat,
@@ -34,15 +35,19 @@ class SlackPoller:
         config: AppConfig,
         on_title_needed: Any | None = None,
         on_summary_needed: Any | None = None,
+        on_topics_needed: Any | None = None,
         dismiss: DismissStore | None = None,
         observed: ObservedStore | None = None,
+        events: EventStore | None = None,
     ) -> None:
         self._slack = slack_client
         self._config = config
         self._on_title_needed = on_title_needed
         self._on_summary_needed = on_summary_needed
+        self._on_topics_needed = on_topics_needed
         self._dismiss = dismiss
         self._observed = observed
+        self._events = events
         self._threads: dict[tuple[str, str], ThreadEntry] = {}
         self._channel_map: dict[str, str] = {}
         self._queue = FetchQueue()
@@ -115,10 +120,40 @@ class SlackPoller:
 
     def dismiss_thread(self, channel_id: str, thread_ts: str) -> None:
         logger.debug("dismiss_thread: channel=%s thread=%s", channel_id, thread_ts)
+        self._record_event("dismiss", channel_id, thread_ts)
         if self._dismiss is not None:
             self._dismiss.dismiss(channel_id, thread_ts)
         # Evict the live entry: it already exists in memory from before the dismiss.
         self._threads.pop((channel_id, thread_ts), None)
+
+    def open_thread(self, channel_id: str, thread_ts: str) -> None:
+        """Record that the user clicked through to this thread (the board's "open" event)."""
+        logger.debug("open_thread: channel=%s thread=%s", channel_id, thread_ts)
+        self._record_event("open", channel_id, thread_ts)
+
+    def _record_event(self, kind: str, channel_id: str, thread_ts: str) -> None:
+        """Append a board event with where the thread sat on the board at that moment.
+
+        The ranking is recomputed here rather than carried from the last render: the row
+        the user saw may be up to one poll old, and the event's job is to say what the
+        board held when the user acted, which this is within seconds.
+        """
+        if self._events is None:
+            return
+        context: dict[str, Any] = {"on_board": False}
+        for rank, entry in enumerate(self.ranked_threads(), start=1):
+            if (entry.channel_id, entry.thread_ts) == (channel_id, thread_ts):
+                context = {
+                    "on_board": True,
+                    "channel": entry.channel_name,
+                    "rank": rank,
+                    "score": round(entry.heat_score, 3),
+                    "tier": entry.heat_tier,
+                    "message_count": entry.message_count,
+                    "topics": entry.topics,
+                }
+                break
+        self._events.record(kind, channel_id, thread_ts, **context)
 
     def _evict_threads(self) -> None:
         """Drop entries that should never render again: dismissed keys, and dead
@@ -391,6 +426,8 @@ class SlackPoller:
             first_seen_ts=float(thread_ts),
             first_observed_at=first_observed_at,
             heated_tone=existing.heated_tone if existing else 0,
+            topics=existing.topics if existing else None,
+            topics_watermark=existing.topics_watermark if existing else 0,
         )
         self._update_heat(entry)
         self._threads[key] = entry
@@ -467,3 +504,9 @@ class SlackPoller:
         needs_summary = entry.summary is None or entry.message_count > entry.summary_watermark
         if self._on_summary_needed and needs_summary:
             asyncio.create_task(self._on_summary_needed(entry, reply_texts))
+        # Topic rating follows the same watermark shape as the summary: once per thread, and
+        # again when the thread grows past the last rated size. The callback owns the
+        # watermark so a failed call (topics stays None) re-triggers on the next fetch.
+        needs_topics = entry.topics is None or entry.message_count > entry.topics_watermark
+        if self._on_topics_needed and needs_topics:
+            asyncio.create_task(self._on_topics_needed(entry))

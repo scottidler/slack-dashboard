@@ -872,3 +872,109 @@ def test_is_vip_false_when_all_default() -> None:
     config = HeatConfig()
     thread = _make_thread(message_count=10, participants=3, hours_ago=0.0)
     assert is_vip(thread, config) is False
+
+
+# --- Topic terms and atrophy shape (docs/design/2026-10-18-heat-autoresearch.md) ---------
+#
+# The autoresearch loop's keeps, each as its own predicate: an unrated thread is neutral,
+# every knob at its default is the pre-topic score, the resolved gate empties an answered
+# thread, the leader vote and gate lift a leader thread, hyperbolic decay shares the half
+# point with exponential decay and keeps a tail, and the half-life stretches with p(leader).
+
+_TUNED = HeatConfig(
+    atrophy_curve="hyperbolic",
+    atrophy_half_life_work_hours=0.5,
+    atrophy_leader_stretch=1.0,
+    leader_weight=45.0,
+    leader_gate_floor=0.3,
+    resolved_drop=1.0,
+)
+
+
+def _rated(thread: ThreadEntry, leader: float = 0.0, resolved: float = 0.0) -> ThreadEntry:
+    thread.topics = {"leader": leader, "resolved": resolved}
+    return thread
+
+
+def test_topic_knobs_at_default_ignore_the_probabilities() -> None:
+    config = HeatConfig()
+    now = _work_now()
+    unrated = _compute_heat_at(_work_thread(work_hours_ago=1.0), config, now)
+    rated = _compute_heat_at(_rated(_work_thread(work_hours_ago=1.0), 0.9, 0.9), config, now)
+    assert abs(rated - unrated) < 1e-9
+
+
+def test_unrated_thread_is_neutral_under_the_tuned_knobs() -> None:
+    now = _work_now()
+    plain = HeatConfig(atrophy_curve="hyperbolic", atrophy_half_life_work_hours=0.5)
+    thread = _work_thread(work_hours_ago=1.0)
+    assert abs(_compute_heat_at(thread, _TUNED, now) - _compute_heat_at(thread, plain, now)) < 1e-9
+    breakdown = heat_breakdown(thread, _TUNED, None, now)
+    assert breakdown.votes == 0.0
+    assert breakdown.gates == 1.0
+    assert breakdown.p_leader is None
+    assert breakdown.p_resolved is None
+
+
+def test_resolved_gate_empties_an_answered_thread() -> None:
+    config = HeatConfig(resolved_drop=1.0)
+    now = _work_now()
+    open_thread = _rated(_work_thread(), resolved=0.0)
+    half_done = _rated(_work_thread(), resolved=0.5)
+    done = _rated(_work_thread(), resolved=1.0)
+    full = _compute_heat_at(open_thread, config, now)
+    assert full > 0
+    assert abs(_compute_heat_at(half_done, config, now) - full / 2) < 1e-9
+    assert _compute_heat_at(done, config, now) == 0.0
+    assert heat_breakdown(done, config, None, now).gates == 0.0
+
+
+def test_leader_vote_and_gate_lift_a_leader_thread() -> None:
+    config = HeatConfig(leader_weight=45.0, leader_gate_floor=0.3)
+    now = _work_now()
+    leader = heat_breakdown(_rated(_work_thread(), leader=1.0), config, None, now)
+    nobody = heat_breakdown(_rated(_work_thread(), leader=0.0), config, None, now)
+    assert leader.votes == 45.0
+    assert leader.gates == 1.0
+    assert nobody.votes == 0.0
+    assert abs(nobody.gates - 0.3) < 1e-9
+    # A three-message thread that needs a leader outranks the same thread that does not.
+    assert leader.overall > nobody.overall
+    expected = (leader.base + leader.activity + 45.0) * leader.atrophy * leader.alive_boost
+    assert abs(leader.overall - expected * leader.channel_weight * leader.damping) < 1e-9
+
+
+def test_hyperbolic_atrophy_shares_the_half_point_and_keeps_a_tail() -> None:
+    exponential = HeatConfig(atrophy_half_life_work_hours=1.0)
+    hyperbolic = HeatConfig(atrophy_half_life_work_hours=1.0, atrophy_curve="hyperbolic")
+    now = _work_now()
+    at_half = _work_thread(work_hours_ago=1.0)
+    assert abs(heat_breakdown(at_half, exponential, None, now).atrophy - 0.5) < 1e-9
+    assert abs(heat_breakdown(at_half, hyperbolic, None, now).atrophy - 0.5) < 1e-9
+    later = _work_thread(work_hours_ago=3.0)
+    assert abs(heat_breakdown(later, exponential, None, now).atrophy - 0.125) < 1e-9
+    assert abs(heat_breakdown(later, hyperbolic, None, now).atrophy - 0.25) < 1e-9
+
+
+def test_leader_stretch_lengthens_the_half_life_for_leader_threads() -> None:
+    config = HeatConfig(atrophy_half_life_work_hours=1.0, atrophy_leader_stretch=1.0)
+    now = _work_now()
+    # p = 1 -> half-life 1.5 h: at 1.5 h the thread is at exactly half.
+    leader = _rated(_work_thread(work_hours_ago=1.5), leader=1.0)
+    assert abs(heat_breakdown(leader, config, None, now).atrophy - 0.5) < 1e-9
+    # p = 0 -> half-life 0.5 h: at 0.5 h the thread is at exactly half.
+    nobody = _rated(_work_thread(work_hours_ago=0.5), leader=0.0)
+    assert abs(heat_breakdown(nobody, config, None, now).atrophy - 0.5) < 1e-9
+    # An unrated thread keeps the configured half-life.
+    plain = _work_thread(work_hours_ago=1.0)
+    assert abs(heat_breakdown(plain, config, None, now).atrophy - 0.5) < 1e-9
+
+
+def test_single_path_invariant_holds_with_topic_terms() -> None:
+    thread = _rated(_work_thread(work_hours_ago=0.25), leader=0.6, resolved=0.2)
+    breakdown = heat_breakdown(thread, _TUNED, None, _work_now())
+    assert breakdown.overall == _compute_heat_at(thread, _TUNED, _work_now())
+    assert breakdown.p_leader == 0.6
+    assert breakdown.p_resolved == 0.2
+    assert 0.0 < breakdown.gates < 1.0
+    assert abs(breakdown.votes - 27.0) < 1e-9

@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import httpx
 import uvicorn
 from anthropic import AsyncAnthropic
 from fastapi import FastAPI
@@ -13,6 +14,7 @@ from fastapi import FastAPI
 from slack_dashboard.config import AppConfig, load_config, require_secrets
 from slack_dashboard.connection import ConnectionState, monitor_connection
 from slack_dashboard.dismiss import DismissStore
+from slack_dashboard.events import EventStore
 from slack_dashboard.llm.provider import AnthropicProvider
 from slack_dashboard.observed import ObservedStore
 from slack_dashboard.slack.client import SlackClient, create_slack_client
@@ -20,6 +22,7 @@ from slack_dashboard.slack.listener import SocketListener
 from slack_dashboard.slack.mrkdwn import strip_mrkdwn
 from slack_dashboard.slack.poller import SlackPoller
 from slack_dashboard.thread import ThreadEntry
+from slack_dashboard.topics import TopicRater
 from slack_dashboard.web import create_routes
 
 logger = logging.getLogger(__name__)
@@ -48,6 +51,11 @@ def _resolve_observed_path() -> Path:
     return _resolve_config_path().parent / "observed.db"
 
 
+def _resolve_events_path() -> Path:
+    # Board events (opens, dismisses) live alongside the config, like the dismiss log.
+    return _resolve_config_path().parent / "events.jsonl"
+
+
 def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
     slack_web_client = create_slack_client(config.slack.token)
     slack_client = SlackClient(slack_web_client)
@@ -74,6 +82,30 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
             entry.summary_watermark = entry.message_count
             entry.heated_tone = result.tone
 
+    # Topic rating is on exactly when a jev key is configured. Without one every thread
+    # keeps topics=None and the heat model's topic terms stay neutral (require_secrets has
+    # already refused a config whose heat knobs need the probabilities).
+    rater = (
+        TopicRater(
+            httpx.AsyncClient(),
+            config.topics.api_key,
+            model=config.topics.model,
+            endpoint=config.topics.endpoint,
+        )
+        if config.topics.api_key
+        else None
+    )
+
+    async def on_topics_needed(entry: ThreadEntry) -> None:
+        if rater is None:
+            return
+        # Stamp the watermark before the call so a burst of fetches on one thread rates it
+        # once; a failed call leaves topics None, which re-triggers on the next fetch.
+        entry.topics_watermark = entry.message_count
+        probs = await rater.rate(entry)
+        if probs is not None:
+            entry.topics = probs
+
     dismiss_store = DismissStore(_resolve_dismiss_path())
     dismiss_store.load()
     observed_store = ObservedStore(_resolve_observed_path())
@@ -83,8 +115,10 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
         config,
         on_title_needed=on_title_needed,
         on_summary_needed=on_summary_needed,
+        on_topics_needed=on_topics_needed if rater is not None else None,
         dismiss=dismiss_store,
         observed=observed_store,
+        events=EventStore(_resolve_events_path()),
     )
 
     channel_names = {v: k for k, v in config.channels.items()}

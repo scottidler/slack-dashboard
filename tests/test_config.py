@@ -323,3 +323,94 @@ def test_require_secrets_rejects_unresolved_slack_token() -> None:
 def test_require_secrets_accepts_resolved() -> None:
     config = AppConfig(slack=SlackConfig(token="xoxp-set"), llm=LlmConfig(api_key="sk-set"))
     require_secrets(config)
+
+
+# --- Topic knobs and the jev key (docs/design/2026-10-18-heat-autoresearch.md) ----------
+
+
+def test_topic_knobs_default_neutral() -> None:
+    config = HeatConfig()
+    assert config.atrophy_curve == "exponential"
+    assert config.atrophy_leader_stretch == 0.0
+    assert config.leader_weight == 0.0
+    assert config.leader_gate_floor == 1.0
+    assert config.resolved_drop == 0.0
+    assert not config.uses_topics()
+
+
+@pytest.mark.parametrize(
+    "knob",
+    [
+        {"leader_weight": 45.0},
+        {"leader_gate_floor": 0.3},
+        {"resolved_drop": 1.0},
+        {"atrophy_leader_stretch": 1.0},
+    ],
+)
+def test_uses_topics_when_any_knob_reads_the_probabilities(knob: dict[str, float]) -> None:
+    assert HeatConfig(**knob).uses_topics()
+
+
+def test_atrophy_curve_rejects_an_unknown_shape() -> None:
+    with pytest.raises(ValueError, match="atrophy-curve"):
+        HeatConfig(atrophy_curve="linear")
+
+
+@pytest.mark.parametrize(
+    "knob, message",
+    [
+        ({"leader_gate_floor": 1.5}, "leader-gate-floor"),
+        ({"resolved_drop": -0.1}, "resolved-drop"),
+        ({"leader_weight": -1.0}, "leader-weight"),
+        ({"atrophy_leader_stretch": 2.0}, "atrophy-leader-stretch"),
+    ],
+)
+def test_topic_knob_bounds(knob: dict[str, float], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        HeatConfig(**knob)
+
+
+def test_require_secrets_needs_the_jev_key_when_a_topic_knob_is_on() -> None:
+    config = AppConfig(
+        slack=SlackConfig(token="xoxp-set"),
+        llm=LlmConfig(api_key="sk-set"),
+        heat=HeatConfig(resolved_drop=1.0),
+    )
+    with pytest.raises(ValueError, match="topics.api-key must not be empty"):
+        require_secrets(config)
+    config.topics.api_key = "ts-set"
+    require_secrets(config)
+
+
+def test_require_secrets_ignores_the_jev_key_when_no_knob_reads_it() -> None:
+    config = AppConfig(slack=SlackConfig(token="xoxp-set"), llm=LlmConfig(api_key="sk-set"))
+    assert config.topics.api_key == ""
+    require_secrets(config)
+
+
+def test_topic_keys_load_in_kebab_case(tmp_path: Path) -> None:
+    data = {
+        "heat": {
+            "atrophy-curve": "hyperbolic",
+            "atrophy-leader-stretch": 1.0,
+            "leader-weight": 45,
+            "leader-gate-floor": 0.3,
+            "resolved-drop": 1.0,
+        },
+        "topics": {"api-key": "ts-set", "model": "jev-1.13.0"},
+    }
+    config = load_config(write_config(tmp_path, data))
+    assert config.heat.atrophy_curve == "hyperbolic"
+    assert config.heat.leader_weight == 45.0
+    assert config.heat.leader_gate_floor == 0.3
+    assert config.heat.resolved_drop == 1.0
+    assert config.topics.api_key == "ts-set"
+    assert config.topics.model == "jev-1.13.0"
+    assert config.topics.endpoint.startswith("https://api.typesafe.ai/")
+
+
+def test_require_secrets_rejects_an_unresolved_jev_placeholder_even_with_knobs_off() -> None:
+    config = AppConfig(slack=SlackConfig(token="xoxp-set"), llm=LlmConfig(api_key="sk-set"))
+    config.topics.api_key = "${TYPESAFE_TEST_MISSING}"
+    with pytest.raises(ValueError, match="topics.api-key: env var TYPESAFE_TEST_MISSING"):
+        require_secrets(config)

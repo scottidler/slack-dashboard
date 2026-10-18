@@ -33,6 +33,13 @@ class HeatBreakdown:
     damping: float  # drop-and-rebuild multiplier in [involved_drop, 1.0]
     time_alive: float  # working hours, first_post -> last_post
     time_since_last: float  # working hours, last_post -> now (the atrophy input)
+    # Topic terms (jev). votes is additive beside base and activity; gates multiplies the
+    # whole score. Both are their neutral value (0, 1) when the thread is unrated or every
+    # topic knob is off. p_leader / p_resolved are None until jev has rated the thread.
+    votes: float = 0.0
+    gates: float = 1.0
+    p_leader: float | None = None
+    p_resolved: float | None = None
 
 
 def is_vip(thread: ThreadEntry, config: HeatConfig) -> bool:
@@ -156,13 +163,22 @@ def heat_breakdown(
 
     The re-shaped score (one line):
 
-        score       = channel_weight * (base_norm + activity) * atrophy * alive_boost * damping
+        score       = channel_weight * (base_norm + activity + votes)
+                      * atrophy * alive_boost * damping * gates
         volume      = message_count*reply_weight + people_term(capped)
         base_norm   = base_cap * volume / (volume + base_k)          # HARD-ceilinged, monotone
         activity    = min(activity_cap, velocity * velocity_weight)  # burst, OUTSIDE the ceiling
-        atrophy     = 0.5 ** (time_since_last / atrophy_half_life_work_hours)  # working-hours
+        votes       = leader_weight * p(leader)                      # a leader thread is full-size
+        half        = half_life * (1 + atrophy_leader_stretch * (p(leader) - 0.5))
+        atrophy     = 0.5 ** (time_since_last / half)                # or 1 / (1 + t / half)
         alive_boost = 1 + alive_weight * f(time_alive) * atrophy     # freshness-gated lift
         damping     = drop_and_rebuild(...) in [involved_drop, 1]
+        gates       = (floor + (1 - floor) * p(leader)) * (1 - resolved_drop * p(resolved))
+
+    The topic terms read ``thread.topics`` (jev probabilities, see ``topics.py``). An unrated
+    thread (``topics is None``) scores with votes 0, gates 1 and the plain half-life: the
+    terms are neutral, never a penalty for not having been rated yet. With every topic knob
+    at its default the formula is exactly the pre-topic score.
 
     ``time_since_last`` (last-post -> now) and ``time_alive`` (first-post -> last-post) are
     both fractional WORKING hours via ``business_hours_between``: nights and weekends
@@ -203,7 +219,15 @@ def heat_breakdown(
     time_since_last = business_hours_between(
         thread.last_activity.timestamp(), now, config.work_window
     )
-    atrophy = 0.5 ** (time_since_last / config.atrophy_half_life_work_hours)
+    # Topic probabilities: None until jev rates the thread, and every term below treats
+    # None as its neutral value (half-life unchanged, votes 0, gates 1).
+    p_leader = thread.topics.get("leader") if thread.topics is not None else None
+    p_resolved = thread.topics.get("resolved") if thread.topics is not None else None
+    half = config.atrophy_half_life_work_hours
+    if p_leader is not None:
+        half *= 1.0 + config.atrophy_leader_stretch * (p_leader - 0.5)
+    ratio = time_since_last / half
+    atrophy = 1.0 / (1.0 + ratio) if config.atrophy_curve == "hyperbolic" else 0.5**ratio
 
     # time_alive: first-post -> last-post. first_seen_ts is the thread root epoch; fall back
     # to float(thread_ts) when unset. A monologue has time_alive == 0 (alive_boost no-op).
@@ -218,12 +242,21 @@ def heat_breakdown(
 
     damping = involvement_damping(thread, config, self_user_id, now)
     has_vip = is_vip(thread, config)
-    score = channel_weight * (base_norm + activity) * atrophy * alive_boost * damping
+    votes = config.leader_weight * p_leader if p_leader is not None else 0.0
+    gates = 1.0
+    if p_leader is not None:
+        gates *= config.leader_gate_floor + (1.0 - config.leader_gate_floor) * p_leader
+    if p_resolved is not None:
+        gates *= 1.0 - config.resolved_drop * p_resolved
+    score = (
+        channel_weight * (base_norm + activity + votes) * atrophy * alive_boost * damping * gates
+    )
     logger.debug(
         "heat_breakdown: channel=%s volume=%.1f base_norm=%.3f message_count=%d "
         "people_count=%d people_term=%.1f has_vip=%s velocity=%.3f activity=%.3f "
         "weight=%.2f atrophy=%.3f alive_boost=%.3f time_alive=%.2f time_since_last=%.2f "
-        "damping=%.3f tier_method=%s score=%.3f",
+        "damping=%.3f votes=%.2f gates=%.3f p_leader=%s p_resolved=%s tier_method=%s "
+        "score=%.3f",
         thread.channel_name,
         volume,
         base_norm,
@@ -239,6 +272,10 @@ def heat_breakdown(
         time_alive,
         time_since_last,
         damping,
+        votes,
+        gates,
+        p_leader,
+        p_resolved,
         config.tier_method,
         score,
     )
@@ -257,6 +294,10 @@ def heat_breakdown(
         damping=damping,
         time_alive=time_alive,
         time_since_last=time_since_last,
+        votes=votes,
+        gates=gates,
+        p_leader=p_leader,
+        p_resolved=p_resolved,
     )
 
 

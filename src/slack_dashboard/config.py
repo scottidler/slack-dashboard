@@ -190,6 +190,27 @@ class HeatConfig(_KebabModel):
     tier_warm_count: int = 10
     tier_floor: float = 5.0
 
+    # ---- Topic terms and atrophy shape (docs/design/2026-10-18-heat-autoresearch.md) ----
+    # These read the per-thread jev probabilities (thread.topics, rated by topics.TopicRater
+    # when topics.api-key is set). Every default here is NEUTRAL: the shipping formula is
+    # unchanged until the yml turns a term on, and an unrated thread always scores as if every
+    # term were off. The autoresearch loop's keeps, on Scott's corpus against the threads he
+    # stepped into, are the values in slack-dashboard.example.yml.
+    # atrophy-curve: "exponential" is 0.5 ** (t / h); "hyperbolic" is 1 / (1 + t / h), the
+    # same half point with a longer tail, so a thread idle all morning still outranks nothing.
+    atrophy_curve: str = "exponential"
+    # The half-life stretches with p(leader): h * (1 + stretch * (p - 0.5)). At stretch 1.0 a
+    # thread jev says needs a leader keeps its heat 3x longer than one it says does not.
+    atrophy_leader_stretch: float = 0.0
+    # votes += leader-weight * p(leader): a thread that needs a leader counts as a full-size
+    # thread even when it is three messages long.
+    leader_weight: float = 0.0
+    # gate *= floor + (1 - floor) * p(leader): below 1.0 a thread nobody needs a leader for is
+    # cut toward floor. 1.0 = off.
+    leader_gate_floor: float = 1.0
+    # gate *= 1 - resolved-drop * p(resolved): a thread jev reads as answered leaves the board.
+    resolved_drop: float = 0.0
+
     @model_validator(mode="before")
     @classmethod
     def _migrate_decay_half_life(cls, data: Any) -> Any:
@@ -259,6 +280,38 @@ class HeatConfig(_KebabModel):
         return self
 
     @model_validator(mode="after")
+    def _validate_topic_terms(self) -> "HeatConfig":
+        if self.atrophy_curve not in ("exponential", "hyperbolic"):
+            raise ValueError(
+                f"heat atrophy-curve {self.atrophy_curve!r} must be 'exponential' or 'hyperbolic'"
+            )
+        unit = (
+            ("leader-gate-floor", self.leader_gate_floor),
+            ("resolved-drop", self.resolved_drop),
+        )
+        for name, value in unit:
+            if not 0.0 <= value <= 1.0:
+                raise ValueError(f"heat {name} ({value}) must be between 0 and 1")
+        if self.leader_weight < 0:
+            raise ValueError(f"heat leader-weight ({self.leader_weight}) must be >= 0")
+        # The stretch is bounded so the half-life stays positive at p = 0 and p = 1.
+        if not -2.0 < self.atrophy_leader_stretch < 2.0:
+            raise ValueError(
+                f"heat atrophy-leader-stretch ({self.atrophy_leader_stretch}) must be "
+                "strictly between -2 and 2"
+            )
+        return self
+
+    def uses_topics(self) -> bool:
+        """True when any knob reads the jev probabilities, i.e. the app must rate threads."""
+        return (
+            self.leader_weight > 0
+            or self.leader_gate_floor < 1.0
+            or self.resolved_drop > 0
+            or self.atrophy_leader_stretch != 0.0
+        )
+
+    @model_validator(mode="after")
     def _validate_score_bounds(self) -> "HeatConfig":
         # Fail clearly at boot (not with a ZeroDivisionError deep in heat_breakdown) when a
         # re-model knob is out of range. base_k / atrophy_half_life_work_hours / alive_k are
@@ -288,6 +341,20 @@ class LlmConfig(_KebabModel):
     api_key: str = ""
 
 
+class TopicsConfig(_KebabModel):
+    """jev (TypeSafe systemone) access for the heat model's topic terms.
+
+    An empty api-key means no rating: every thread scores with neutral topic terms. When a
+    heat knob reads the probabilities (``HeatConfig.uses_topics``), ``require_secrets`` fails
+    at boot without a key rather than letting the tuned formula silently degrade to the
+    untuned one.
+    """
+
+    api_key: str = ""
+    model: str = "jev-1.13.0"
+    endpoint: str = "https://api.typesafe.ai/v1/systemone"
+
+
 class ServerConfig(_KebabModel):
     host: str = "0.0.0.0"
     port: int = 8080
@@ -308,6 +375,7 @@ class AppConfig(_KebabModel):
     fetch: FetchConfig = FetchConfig()
     heat: HeatConfig = HeatConfig()
     llm: LlmConfig = LlmConfig()
+    topics: TopicsConfig = TopicsConfig()
     server: ServerConfig = ServerConfig()
     display: DisplayConfig = DisplayConfig()
     workspace: str = ""
@@ -375,14 +443,22 @@ def require_secrets(config: AppConfig) -> None:
     this check the literal ``${ANTHROPIC_API_KEY}`` ships as the API key and every LLM call
     401s while the app reports healthy (2026-10-10 -> 2026-10-16).
     """
-    required = (
+    required = [
         ("slack.token", config.slack.token),
         ("llm.api-key", config.llm.api_key),
-    )
-    for name, value in required:
+    ]
+    # topics.api-key may be empty (no topic rating), but never an unresolved placeholder:
+    # the yml named a var, so a missing var is a mistake, not a choice. And when a heat
+    # knob reads the probabilities the key is required outright; without it every thread
+    # would score as unrated and the board would quietly be the untuned one.
+    optional = [("topics.api-key", config.topics.api_key)]
+    if config.heat.uses_topics():
+        required.append(optional.pop())
+    for name, value in required + optional:
         unresolved = _ENV_VAR_RE.search(value)
         if unresolved:
             raise ValueError(f"{name}: env var {unresolved.group(1)} is not set")
+    for name, value in required:
         if not value:
             raise ValueError(f"{name} must not be empty")
     logger.debug("require_secrets: all required secrets resolved")

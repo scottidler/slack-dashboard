@@ -5,7 +5,7 @@ from pathlib import Path
 
 import markdown as md
 from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
@@ -52,6 +52,10 @@ _RECENCY = "\N{STOPWATCH}"  # ⏱️ atrophy decay multiplier
 # the decay they drive.
 _TIME_ALIVE = "\N{HOURGLASS}"  # ⌛ time_alive: working hours, first-post -> last-post
 _TIME_SINCE_LAST = "\N{TIMER CLOCK}"  # ⏲ time_since_last: working hours, last-post -> now
+# Topic chips (jev probabilities, see topics.py): p(needs a leader) feeds the leader vote,
+# gate and half-life stretch; p(resolved) feeds the resolved gate. Both show "?" until rated.
+_LEADER = "\N{DIRECT HIT}"  # 🎯 p(needs a leader)
+_RESOLVED = "\N{WHITE HEAVY CHECK MARK}"  # ✅ p(resolved)
 
 _GROUP_BY_CHOICES = ("none", "channel", "size", "velocity")
 
@@ -121,14 +125,16 @@ def _heat_strip(breakdown: HeatBreakdown, config: HeatConfig, channel_name: str)
     """Build the fixed overall+7 chip strip for the hover popup from one breakdown.
 
     Order matches the design doc: overall, channel_weight, base, velocity, time_alive,
-    time_since_last, atrophy, damping. The two working-hours chips sit beside the atrophy
-    chip they feed (time_since_last IS the atrophy input; time_alive feeds alive_boost).
+    time_since_last, atrophy, damping, then the two topic chips (leader, resolved). The two
+    working-hours chips sit beside the atrophy chip they feed (time_since_last IS the
+    atrophy input; time_alive feeds alive_boost).
     Dimmed (no-op-for-the-score) cases: channel_weight == 1.00 (no multiplier effect),
     velocity_weight == 0.0 (the default - velocity contributes nothing to the score even
     though the chip still reports the raw rate), time_alive dimmed when alive_weight ==
     0.0 (the default - display-only until calibration says otherwise, per the design doc),
-    and damping == 1.00 (not involved, or the feature is off). Trivial assembly of
-    already-computed fields - no logging per the logging rule.
+    damping == 1.00 (not involved, or the feature is off), and a topic chip when the thread
+    is unrated or no knob reads that probability. Trivial assembly of already-computed
+    fields - no logging per the logging rule.
     """
     base_value = f"{breakdown.message_count}m·{breakdown.people_count}p"
     if breakdown.has_vip:
@@ -177,6 +183,26 @@ def _heat_strip(breakdown: HeatBreakdown, config: HeatConfig, channel_name: str)
             value=f"×{breakdown.damping:.2f}",
             tooltip="involvement damping",
             dimmed=breakdown.damping == 1.00,
+        ),
+        HeatChip(
+            glyph=_LEADER,
+            value="?" if breakdown.p_leader is None else f"{breakdown.p_leader:.2f}",
+            tooltip=(
+                "jev p(needs a leader): feeds the leader vote, the leader gate and the "
+                f"half-life stretch (votes +{breakdown.votes:.1f})"
+            ),
+            dimmed=breakdown.p_leader is None
+            or (
+                config.leader_weight == 0.0
+                and config.leader_gate_floor == 1.0
+                and config.atrophy_leader_stretch == 0.0
+            ),
+        ),
+        HeatChip(
+            glyph=_RESOLVED,
+            value="?" if breakdown.p_resolved is None else f"{breakdown.p_resolved:.2f}",
+            tooltip=f"jev p(resolved): feeds the resolved gate (gates ×{breakdown.gates:.2f})",
+            dimmed=breakdown.p_resolved is None or config.resolved_drop == 0.0,
         ),
     ]
 
@@ -553,6 +579,13 @@ def create_routes(
         poller.dismiss_thread(channel_id, thread_ts)
         # Empty body: HTMX swaps the row out (hx-swap="outerHTML").
         return HTMLResponse("")
+
+    @app.post("/event/open/{channel_id}/{thread_ts:path}")
+    async def open_event(channel_id: str, thread_ts: str) -> Response:
+        # Fired by a sendBeacon on the row link's click, so the slack:// navigation is never
+        # held up by it. The poller writes the event with the thread's board position.
+        poller.open_thread(channel_id, thread_ts)
+        return Response(status_code=204)
 
     @app.get("/status", response_class=HTMLResponse)
     async def status(request: Request) -> HTMLResponse:

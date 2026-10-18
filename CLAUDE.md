@@ -26,9 +26,10 @@ When changing the UI, hold this line:
     contributes nothing to the score); ⌛ time-alive (working hours, first-post ->
     last-post; dimmed when `alive_weight` is 0, its display-only default); ⏲
     time-since-last (working hours, last-post -> now; the atrophy input); ⏱️ recency
-    (atrophy decay multiplier, 0..1); 👤 involvement damping (`×N.NN`). ⚡, 👤, and 👑 are
-    the same glyphs the row already uses for its emoji column; the strip just reuses them
-    rather than inventing new ones.
+    (atrophy decay multiplier, 0..1); 👤 involvement damping (`×N.NN`); 🎯 jev p(needs a
+    leader) and ✅ jev p(resolved) (`?` until rated, dimmed when no knob reads them). ⚡,
+    👤, and 👑 are the same glyphs the row already uses for its emoji column; the strip
+    just reuses them rather than inventing new ones.
 - Fixed-width left columns (dismiss `×`, counts `Nm|Np`) so titles align into a scannable
   column. Counts are intentionally terse (`3m|3p`, not "3 messages · 3 participants").
 - Channel handles render Slack-style: lowercase, `#`-prefixed, no ALL-CAPS, no pill.
@@ -46,15 +47,16 @@ uv run pytest    # tests only
 
 ## Run locally
 
-Needs config at `~/.config/slack-dashboard/slack-dashboard.yml` and four env vars
+Needs config at `~/.config/slack-dashboard/slack-dashboard.yml` and five env vars
 (`SLACK_DASHBOARD_SLACK_USER_TOKEN`, `SLACK_DASHBOARD_SLACK_APP_TOKEN`, `SLACK_TEAM_ID`,
-`ANTHROPIC_API_KEY`) decrypted from `scottidler/keep` via `manifest age`. keep stores the
-Anthropic key as `ESCOTE_ANTHROPIC_API_KEY`, so map it at launch. The app exits at boot
-when a required secret is empty or an unresolved `${VAR}`:
+`ANTHROPIC_API_KEY`, `TYPESAFE_API_KEY`) decrypted from `scottidler/keep` via `manifest
+age`. keep stores the Anthropic key as `ESCOTE_ANTHROPIC_API_KEY` and the jev key as
+`ESCOTE_TYPESAFE_API_KEY`, so map both at launch. The app exits at boot when a required
+secret is empty or an unresolved `${VAR}`:
 
 ```bash
 eval "$(manifest age decrypt ~/repos/scottidler/keep/.secrets)"
-ANTHROPIC_API_KEY="$ESCOTE_ANTHROPIC_API_KEY" uv run slack-dashboard   # serves on server.host:server.port (currently 0.0.0.0:8889)
+ANTHROPIC_API_KEY="$ESCOTE_ANTHROPIC_API_KEY" TYPESAFE_API_KEY="$ESCOTE_TYPESAFE_API_KEY" uv run slack-dashboard   # serves on server.host:server.port (currently 0.0.0.0:8889)
 ```
 
 There is no global install step (run via `uv run` or the Dockerfile); `/shipit` should
@@ -65,10 +67,24 @@ skip install.
 - `slack/poller.py` - REST backfill + ranking (`ranked_threads`), owns `threads` map.
 - `slack/listener.py` - Socket Mode live events feeding the poller's queue.
 - `connection.py` - disconnect/reconnect trust banner + reconcile arming.
-- `heat.py` - heat score, `velocity`, `replies_in_window`, zombie/resurrection.
+- `heat.py` - heat score, `velocity`, `replies_in_window`, zombie/resurrection. The
+  topic terms read `ThreadEntry.topics`; every knob defaults neutral.
+- `topics.py` - jev (TypeSafe systemone) questions, state and parse, shared by the app's
+  `TopicRater` and the `bin/` tools so the loop tunes on the numbers the board sees.
+- `events.py` - append-only `events.jsonl` of opens and dismisses with board position:
+  the label the next tuning round needs. Nothing in the app reads it.
 - `web.py` - FastAPI routes + `group_threads` (none/channel/size/velocity) + row/deep-link
   builders. Renders Jinja partials in `templates/partials/` (HTMX-driven).
 - `llm/provider.py` - Anthropic title + bullet-summary generation.
+
+## Tuning
+
+The heat knobs come from measurement: `bin/replay.py` (fixed evaluator) + `bin/formula.py`
+(the one file the loop edits) + `bin/program.md` (the rules), Karpathy's autoresearch
+shape. Read `docs/design/2026-10-18-heat-autoresearch.md` before touching a knob or the
+formula: it records what each term bought, the harness holes that were closed, and why
+the remaining gap is a missing signal, not a knob. The `tests/calibration/` arena freezes
+the code defaults; the tuned values live in the yml, never in `HeatConfig`.
 
 ## Conventions
 

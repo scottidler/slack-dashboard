@@ -117,8 +117,38 @@ heat:
   tier-warm-count: 10
   tier-floor: 5.0
 
+  # Topic terms: jev (TypeSafe) rates every thread for p(needs a leader) and p(resolved)
+  # when topics.api-key below is set, and these knobs read the probabilities. Every
+  # default here is NEUTRAL (the score above, unchanged), and an unrated thread always
+  # scores as if they were off. The values in the comments are the autoresearch keeps
+  # (docs/design/2026-10-18-heat-autoresearch.md): measured on four weeks of a real board
+  # against the threads the reader stepped into, they lift the objective from 0.51 to
+  # 0.59 on the tuning weeks and from 0.49 to 0.60 on the held-out week.
+  #
+  # atrophy-curve: exponential is 0.5 ** (t / h); hyperbolic is 1 / (1 + t / h): the same
+  # half point with a longer tail, so the morning's threads still outrank nothing at all.
+  # Tuned: hyperbolic, with atrophy-half-life-work-hours: 0.5.
+  atrophy-curve: exponential
+  # The half-life stretches with p(leader): h * (1 + stretch * (p - 0.5)). At 1.0 a thread
+  # that needs a leader keeps its heat three times longer than one that does not.
+  # Tuned: 1.0.
+  atrophy-leader-stretch: 0.0
+  # votes += leader-weight * p(leader): a thread that needs a leader counts as a full-size
+  # thread even at three messages. Tuned: 45.
+  leader-weight: 0.0
+  # gate *= floor + (1 - floor) * p(leader): a thread nobody needs a leader for is cut
+  # toward floor. 1.0 = off. Tuned: 0.3.
+  leader-gate-floor: 1.0
+  # gate *= 1 - resolved-drop * p(resolved): a thread jev reads as answered leaves the
+  # board. Tuned: 1.0.
+  resolved-drop: 0.0
+
   # The single highest-leverage knob: weight the channels you care about up and
   # the noise down. Glob-aware; exact keys win over globs; default 1.0.
+  # What measured best was tiering by who is in the room: channels holding your direct
+  # reports highest (3.0), your teams' internal channels next (2.6), rooms shared with
+  # your manager and peers after that (2.2 to 2.4), partner and ops channels around 1.0
+  # to 1.5, and the rest below 1.0. Reorders only; nothing is ever dropped.
   channel-weights:
     sre: 2.0
     data-platform: 2.0
@@ -176,6 +206,13 @@ llm:
   provider: anthropic
   model: claude-haiku-4-5-20251001
   api-key: ${ANTHROPIC_API_KEY}
+
+# jev (TypeSafe systemone) rates each thread once, and again when it grows, for the topic
+# terms under heat. Leave api-key empty to run without topic terms. A heat knob that reads
+# the probabilities with no key here fails at boot; a ${VAR} that is unset fails at boot.
+topics:
+  api-key: ${TYPESAFE_API_KEY}
+  model: jev-1.13.0
 
 server:
   host: 0.0.0.0

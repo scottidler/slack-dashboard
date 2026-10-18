@@ -49,5 +49,13 @@
         window.slackDashCompact = !window.slackDashCompact;
         htmx.trigger(document.getElementById("thread-list"), "poll");
     });
+    // Board events: a click on a thread link (row or channel popover) is the one signal
+    // that the user chose that row. sendBeacon posts it without holding up the slack://
+    // navigation; the server logs it with the thread's board position (events.jsonl).
+    document.getElementById("thread-list").addEventListener("click", function(evt) {
+        var link = evt.target.closest("a[data-open]");
+        if (!link) return;
+        navigator.sendBeacon(link.dataset.open);
+    });
 </script>
 {% endblock %}

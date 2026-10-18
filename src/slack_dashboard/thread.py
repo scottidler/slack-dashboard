@@ -76,6 +76,11 @@ class ThreadEntry:
     # (observation time, not thread creation time); from ObservedStore
     # Stored tone score 0-3 from LLM summary; 0 until a summary is generated.
     heated_tone: int = 0
+    # jev topic probabilities (topics.QUESTIONS -> p), None until rated. The heat model's
+    # topic terms are neutral while this is None; the watermark re-triggers a rating when
+    # the thread grows past it (same shape as summary_watermark).
+    topics: dict[str, float] | None = None
+    topics_watermark: int = 0
 
     @property
     def reply_timestamps(self) -> list[float]:

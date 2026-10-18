@@ -1,7 +1,7 @@
 # Local deploy for slack-dashboard. Bring up with the secrets in the environment:
 #   eval "$(manifest age decrypt ~/repos/scottidler/keep/.secrets)" && docker compose up -d --build
 #
-# The four secrets are passed through from that shell (no values are stored here).
+# The five secrets are passed through from that shell (no values are stored here).
 # Config is bind-mounted read-only from ~/.config; mutable state (observed.db,
 # dismissed.jsonl) persists in the named volume so it survives restarts without
 # leaving root-owned files in ~/.config.
@@ -21,6 +21,8 @@ services:
       - SLACK_TEAM_ID
       # keep stores it as ESCOTE_ANTHROPIC_API_KEY (keep f5b2ccf); the config reads ANTHROPIC_API_KEY.
       - ANTHROPIC_API_KEY=${ESCOTE_ANTHROPIC_API_KEY}
+      # jev (TypeSafe) for the heat model's topic terms; keep stores it as ESCOTE_TYPESAFE_API_KEY.
+      - TYPESAFE_API_KEY=${ESCOTE_TYPESAFE_API_KEY}
       # Point the app at the mounted config dir instead of /root/.config.
       - XDG_CONFIG_HOME=/config
     volumes:

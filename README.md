@@ -16,9 +16,12 @@ arithmetic path:
 ```
 base-norm   = base-cap * volume / (volume + base-k)          # hard asymptotic ceiling
 activity    = min(activity-cap, velocity * velocity-weight)  # bounded burst, outside the ceiling
-atrophy     = 0.5 ** (work_hours_since_last / atrophy-half-life-work-hours)
+votes       = leader-weight * p(leader)                      # jev: a leader thread is full-size
+half        = atrophy-half-life-work-hours * (1 + atrophy-leader-stretch * (p(leader) - 0.5))
+atrophy     = 0.5 ** (work_hours_since_last / half)          # or 1 / (1 + t / half)
 alive-boost = 1 + alive-weight * f(time_alive) * atrophy     # freshness-gated longevity lift
-score       = channel-weight * (base-norm + activity) * atrophy * alive-boost * damping
+gates       = (floor + (1 - floor) * p(leader)) * (1 - resolved-drop * p(resolved))
+score       = channel-weight * (base-norm + activity + votes) * atrophy * alive-boost * damping * gates
 ```
 
 - **channel-weight** - the highest-leverage knob. Weight the channels you care
@@ -41,6 +44,13 @@ score       = channel-weight * (base-norm + activity) * atrophy * alive-boost * 
 - **involvement damping** - drop-and-rebuild: posting in a thread drops its score
   to `involved-drop`, then each unseen reply after your last post rebuilds it back
   toward 1.0 at rate `involved-rebuild-per-msg`.
+- **topic terms** - jev (TypeSafe's typed-decision model) rates each thread for
+  p(needs a leader) and p(resolved). A leader thread gets a vote (`leader-weight`),
+  escapes the leader gate (`leader-gate-floor`) and keeps its heat longer
+  (`atrophy-leader-stretch`); an answered thread leaves the board (`resolved-drop`).
+  All ship neutral; an unrated thread always scores as if they were off. The
+  autoresearch loop (`docs/design/2026-10-18-heat-autoresearch.md`) set the tuned
+  values in the example yml.
 - **tiering** - rank-aware relative tiering by default (`tier-method: relative`):
   the top `tier-hot-count` threads paint hot and the next `tier-warm-count` warm,
   with an absolute `tier-floor` that stops a fully-atrophied board from painting
@@ -81,6 +91,13 @@ commented starting point.
 | `heat.alive-k` | `6.0` | Half-point of the time-alive ramp (working hours of thread life). |
 | `heat.involved-drop` | `0.8` | Score multiplier the moment you post in a thread (`1.0` disables). |
 | `heat.involved-rebuild-per-msg` | `0.15` | How fast unseen replies after your post rebuild toward 1.0. |
+| `heat.atrophy-curve` | `exponential` | `exponential` (`0.5 ** (t/h)`) or `hyperbolic` (`1 / (1 + t/h)`, same half point, longer tail). |
+| `heat.atrophy-leader-stretch` | `0.0` | Half-life multiplier `1 + stretch * (p(leader) - 0.5)`. Tuned: `1.0`. |
+| `heat.leader-weight` | `0.0` | Additive vote `leader-weight * p(leader)`. Tuned: `45`. |
+| `heat.leader-gate-floor` | `1.0` | Gate `floor + (1 - floor) * p(leader)`; `1.0` is off. Tuned: `0.3`. |
+| `heat.resolved-drop` | `0.0` | Gate `1 - resolved-drop * p(resolved)`. Tuned: `1.0`. |
+| `topics.api-key` | `""` | jev (TypeSafe) key. Empty = no topic rating; required when any topic knob is on. |
+| `topics.model` | `jev-1.13.0` | Pinned jev model; an answer from any other model is rejected. |
 | `heat.tier-method` | `relative` | `relative` (rank-aware top-N) or `absolute` (raw score thresholds). |
 | `heat.tier-hot-count` | `3` | Relative mode: number of top threads painted hot. |
 | `heat.tier-warm-count` | `10` | Relative mode: number of next threads painted warm. |
@@ -104,6 +121,28 @@ startup; there is no hot-reload yet).
 - **Group by** - `channel | size | velocity | participants`.
 - **Hover** a row for the AI summary; **click** to open the Slack thread.
 - **Dismiss** - the small control on each row; one click, permanent.
+
+Opens and dismisses are appended to `events.jsonl` beside the config, each with
+the thread's rank, score and tier at that moment. They are the "what did I act
+on" label the Slack history cannot give; nothing in the app reads them back.
+
+## Tuning harness
+
+The heat knobs are set by measurement, not by hand. `bin/` holds the loop
+(dev tools, run with `uv run`, never wired into the app or CI):
+
+| Tool | Role |
+|------|------|
+| `bin/corpus.py` | Pull weeks of thread history for the configured channels into one jsonl corpus. |
+| `bin/topics.py` | Rate every corpus thread with jev (the app's own questions and state). |
+| `bin/judge.py` | Ask jev whether each thread needed the reader (an alternative label). |
+| `bin/replay.py` | The fixed evaluator: replay every look, score with `bin/formula.py`, print the objective. |
+| `bin/formula.py` | The one file the autoresearch loop edits. |
+| `bin/program.md` | The loop's rules. |
+| `bin/explore.py` | Build the knob explorer page (`bin/explore.html`) over the corpus. |
+| `bin/calibrate.py` | The earlier synthetic-board arena, frozen as a regression test. |
+
+Findings and the shipped values: `docs/design/2026-10-18-heat-autoresearch.md`.
 
 ## Development
 

@@ -618,3 +618,84 @@ async def test_hot_path_does_no_sqlite_io(tmp_path) -> None:
     observed._conn = _TripwireConn()  # type: ignore[assignment]
     ranked = poller.ranked_threads()
     assert ranked  # the threads still rank, with no sqlite touched
+
+
+# --- Topic rating and board events (docs/design/2026-10-18-heat-autoresearch.md) ---------
+
+
+@pytest.mark.asyncio
+async def test_topics_callback_fires_on_first_sight_and_on_growth() -> None:
+    import asyncio
+
+    rated: list[object] = []
+
+    async def on_topics_needed(entry: object) -> None:
+        rated.append(entry)
+
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config, on_topics_needed=on_topics_needed)
+    item = FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    await poller._process_item(item)
+    await asyncio.sleep(0)
+    entry = poller.threads[("C111", _NOW)]
+    assert rated == [entry]
+
+    # Rated at this size: no second call until the thread grows past the watermark.
+    entry.topics = {"leader": 0.5}
+    entry.topics_watermark = entry.message_count
+    poller._maybe_trigger_llm(entry, [])
+    await asyncio.sleep(0)
+    assert len(rated) == 1
+    entry.message_count += 1
+    poller._maybe_trigger_llm(entry, [])
+    await asyncio.sleep(0)
+    assert len(rated) == 2
+
+
+@pytest.mark.asyncio
+async def test_full_refresh_carries_topics_forward() -> None:
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    poller = SlackPoller(mock_slack, config)
+    item = FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    await poller._process_item(item)
+    entry = poller.threads[("C111", _NOW)]
+    entry.topics = {"leader": 0.9, "resolved": 0.0}
+    entry.topics_watermark = entry.message_count
+    # A second full (non-incremental) fetch rebuilds the entry; the rating must ride.
+    await poller._process_item(item)
+    rebuilt = poller.threads[("C111", _NOW)]
+    assert rebuilt is not entry
+    assert rebuilt.topics == {"leader": 0.9, "resolved": 0.0}
+    assert rebuilt.topics_watermark == entry.message_count
+
+
+@pytest.mark.asyncio
+async def test_open_and_dismiss_record_events_with_board_position(tmp_path) -> None:
+    import json
+
+    from slack_dashboard.events import EventStore
+
+    mock_slack = _make_mock_slack()
+    config = AppConfig(channels={"general": "C111"})
+    events = EventStore(tmp_path / "events.jsonl")
+    poller = SlackPoller(mock_slack, config, events=events)
+    item = FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    await poller._process_item(item)
+
+    poller.open_thread("C111", _NOW)
+    poller.open_thread("C999", "0.0")  # not on the board
+    poller.dismiss_thread("C111", _NOW)
+    rows = [json.loads(line) for line in events.path.read_text().splitlines()]
+    assert [r["kind"] for r in rows] == ["open", "open", "dismiss"]
+    assert rows[0]["on_board"] is True
+    assert rows[0]["rank"] == 1
+    assert rows[0]["channel"] == "general"
+    assert rows[0]["message_count"] == 4
+    assert rows[0]["tier"] in ("hot", "warm", "cold")
+    assert rows[1]["on_board"] is False
+    assert "rank" not in rows[1]
+    # The dismiss is recorded BEFORE eviction, so it still carries the board position.
+    assert rows[2]["on_board"] is True
+    assert ("C111", _NOW) not in poller.threads

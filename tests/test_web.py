@@ -1023,3 +1023,52 @@ def test_unanswered_glyph_leads_before_new_glyph() -> None:
     unanswered_pos = emojis.index("\N{BLACK QUESTION MARK ORNAMENT}")
     new_pos = emojis.index("\N{SPARKLES}")
     assert unanswered_pos < new_pos
+
+
+# --- Board events and topic chips (docs/design/2026-10-18-heat-autoresearch.md) ----------
+
+
+def test_threads_row_link_carries_the_open_event(client: TestClient) -> None:
+    response = client.get("/threads")
+    assert response.status_code == 200
+    assert 'data-open="/event/open/C123/1234567890.123456"' in response.text
+
+
+def test_channel_popover_links_carry_the_open_event(client: TestClient) -> None:
+    response = client.get("/channel/C123")
+    assert response.status_code == 200
+    assert 'data-open="/event/open/C123/1234567890.123456"' in response.text
+
+
+def test_open_event_route_records_through_the_poller() -> None:
+    app = FastAPI()
+    poller = _make_mock_poller()
+    poller.ranked_threads.return_value = []
+    poller.threads = {}
+    create_routes(app, poller, MockLlm(), _CONFIG)
+    response = TestClient(app).post("/event/open/C123/1234567890.123456")
+    assert response.status_code == 204
+    poller.open_thread.assert_called_once_with("C123", "1234567890.123456")
+
+
+def test_summarize_renders_unrated_topic_chips_as_unknown(client: TestClient) -> None:
+    response = client.get("/summarize/C123/1234567890.123456")
+    assert response.status_code == 200
+    assert "\N{DIRECT HIT}?" in response.text
+    assert "\N{WHITE HEAVY CHECK MARK}?" in response.text
+
+
+def test_summarize_topic_chips_show_the_probabilities() -> None:
+    app = FastAPI()
+    poller = _make_mock_poller()
+    thread = _make_thread()
+    thread.topics = {"leader": 0.8, "resolved": 0.1}
+    config = AppConfig(heat=HeatConfig(leader_weight=45.0, resolved_drop=1.0))
+    poller.ranked_threads.return_value = [thread]
+    poller.threads = {("C123", "1234567890.123456"): thread}
+    create_routes(app, poller, MockLlm(), config)
+    response = TestClient(app).get("/summarize/C123/1234567890.123456")
+    assert response.status_code == 200
+    assert "\N{DIRECT HIT}0.80" in response.text
+    assert "\N{WHITE HEAVY CHECK MARK}0.10" in response.text
+    assert "votes +36.0" in response.text

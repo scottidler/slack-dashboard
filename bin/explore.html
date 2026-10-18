@@ -1,0 +1,869 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Heat Knob Explorer</title>
+<meta name="description" content="Replay the slack-dashboard heat model over weeks of real threads: sweep the shaping knobs, choose how red and orange are decided, and score everything against the threads Scott actually replied to.">
+<style>
+:root {
+  color-scheme: dark;
+  --bg: #16181d; --surface: #1d2027; --surface-2: #262a33; --border: #343945;
+  --text: #e8e6df; --text-2: #b4b2a9; --muted: #7f7e78;
+  --hot: #ff5c5c; --warm: #ffb347; --cold: #6fa8ff; --me: #7bd88f;
+  --bar: #4d8fe0; --bar-soft: #27405e; --curve: #ffb347; --best: #7bd88f;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 13px/1.45 "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, monospace; }
+header { padding: 14px 16px 8px; border-bottom: 1px solid var(--border); }
+header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+header p { margin: 4px 0 0; color: var(--text-2); max-width: 1100px; }
+.wrap { display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 0; min-height: calc(100vh - 70px); }
+@media (max-width: 900px) { .wrap { grid-template-columns: 1fr; } }
+aside { border-right: 1px solid var(--border); padding: 10px 12px; background: var(--surface); }
+main { padding: 10px 16px 40px; min-width: 0; }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); margin: 16px 0 6px; }
+h2[data-tip], label[data-tip], .method label { cursor: help; }
+.howto { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--curve); border-radius: 8px; padding: 8px 12px; margin: 4px 0 10px; color: var(--text-2); }
+.howto ol { margin: 4px 0 0; padding-left: 20px; }
+.howto li { margin: 2px 0; }
+.howto b { color: var(--text); }
+.knob { display: grid; grid-template-columns: 156px 1fr 56px; gap: 6px; align-items: center; margin: 3px 0; }
+.knob label { color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-bottom: 1px dotted var(--border); }
+.knob input[type=range] { width: 100%; accent-color: var(--curve); }
+.knob input[type=number] { width: 56px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 4px; padding: 1px 4px; font: inherit; }
+.knob.changed label { color: var(--curve); }
+.knob.inert { opacity: .45; }
+.method { display: grid; gap: 3px; margin: 4px 0 8px; }
+.method label { display: grid; grid-template-columns: 18px 1fr; gap: 6px; align-items: baseline; color: var(--text-2); }
+.method label.on { color: var(--text); }
+.method small { color: var(--muted); display: block; }
+button, select { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px; font: inherit; cursor: pointer; }
+button:hover { border-color: var(--text-2); }
+button.primary { border-color: var(--curve); }
+textarea { width: 100%; height: 110px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); border-radius: 5px; font: 12px/1.4 inherit; padding: 4px 6px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+.scrub { display: grid; grid-template-columns: auto 1fr auto auto; gap: 8px; align-items: center; margin: 6px 0 10px; }
+.scrub input[type=range] { width: 100%; accent-color: var(--cold); }
+.when { font-weight: 600; min-width: 190px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 8px 0 10px; }
+.tile { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.tile b { display: block; font-size: 22px; font-weight: 600; letter-spacing: -.01em; }
+.tile span { color: var(--muted); font-size: 11.5px; }
+.tile .delta { color: var(--best); font-size: 12px; }
+.tile .delta.neg { color: var(--hot); }
+.tile.hot b { color: var(--hot); } .tile.warm b { color: var(--warm); }
+table.board { border-collapse: collapse; width: 100%; }
+table.board td { padding: 1px 6px 1px 0; white-space: nowrap; vertical-align: baseline; }
+table.board td.n { color: var(--muted); text-align: right; width: 28px; }
+table.board td.cnt { color: var(--text-2); width: 70px; }
+table.board td.ch { color: var(--muted); width: 180px; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
+table.board td.sp { letter-spacing: 1px; font-size: 13px; line-height: 1; width: 120px; font-family: "DejaVu Sans Mono", "JetBrains Mono", monospace; }
+table.board td.sp i { font-style: normal; color: var(--border); }
+table.board td.age { color: var(--muted); width: 50px; text-align: right; }
+table.board td.tg { color: var(--muted); width: 120px; font-size: 11.5px; }
+table.board td.ti { overflow: hidden; text-overflow: ellipsis; max-width: 520px; }
+table.board td.sc { color: var(--muted); text-align: right; width: 56px; }
+table.board td.pr { color: var(--muted); text-align: right; width: 44px; }
+table.board td.me { color: var(--me); width: 46px; }
+tr.hot td.ti, tr.hot td.sp { color: var(--hot); }
+tr.warm td.ti, tr.warm td.sp { color: var(--warm); }
+tr.cold td.ti, tr.cold td.sp { color: var(--cold); }
+tr.pos td.ti { text-decoration: underline dotted var(--me); text-underline-offset: 3px; }
+.missed { color: var(--text-2); margin: 6px 0 0; padding-left: 18px; }
+.missed li { margin: 2px 0; }
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; margin: 6px 0; }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+figure h3 { margin: 0 0 2px; font-size: 12.5px; font-weight: 600; }
+figure p { margin: 0 0 4px; color: var(--muted); font-size: 11.5px; }
+figure svg { width: 100%; height: 120px; display: block; }
+.ranks { display: grid; grid-template-columns: 90px 1fr 50px; gap: 6px; align-items: center; font-size: 12px; }
+.ranks .bar { height: 10px; background: var(--bar); border-radius: 0 3px 3px 0; }
+.ranks .lbl { color: var(--text-2); text-align: right; }
+.legend { color: var(--muted); font-size: 11.5px; margin: 4px 0 0; }
+.legend i { font-style: normal; }
+table.sweep { border-collapse: collapse; margin: 6px 0; font-size: 12.5px; }
+table.sweep th, table.sweep td { text-align: left; padding: 2px 12px 2px 0; white-space: nowrap; }
+table.sweep th { color: var(--muted); font-weight: 600; text-transform: uppercase; font-size: 11px; letter-spacing: .06em; }
+table.sweep td.gain { color: var(--best); }
+table.sweep td.flat { color: var(--muted); }
+table.sweep button { padding: 1px 6px; font-size: 11.5px; }
+details { margin: 8px 0; }
+summary { cursor: pointer; color: var(--text-2); }
+.tooltip { position: fixed; pointer-events: none; background: #0d0e12; border: 1px solid var(--border); color: var(--text); padding: 7px 9px; border-radius: 6px; font-size: 11.5px; white-space: pre-wrap; max-width: 460px; display: none; z-index: 5; line-height: 1.4; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Heat Knob Explorer</h1>
+  <p id="intro"></p>
+</header>
+<div class="wrap">
+<aside>
+  <h2 data-tip="sched">Checkpoint schedule</h2>
+  <div class="row" id="sched"></div>
+  <div class="legend">Hours (PT) you would look at the board. Every score on the page is measured at these instants only.</div>
+  <h2 data-tip="g-size">Size (votes)</h2>
+  <div id="k-size"></div>
+  <h2 data-tip="g-time">Time (gates)</h2>
+  <div id="k-time"></div>
+  <h2 data-tip="g-burst">Burst (vote)</h2>
+  <div id="k-burst"></div>
+  <h2 data-tip="g-inv">Involvement (gate)</h2>
+  <div id="k-inv"></div>
+  <h2 data-tip="g-topic">Topic (jev probabilities)</h2>
+  <div id="k-topic"></div>
+  <h2 data-tip="g-tier">How red and orange are decided</h2>
+  <div class="method" id="methods"></div>
+  <div id="k-tier"></div>
+  <h2 data-tip="g-board">Board and labels</h2>
+  <div id="k-board"></div>
+  <h2 data-tip="g-cw">Channel weights (prior)</h2>
+  <div id="cw"></div>
+  <div class="row"><button id="reset">live config</button><button id="tuned" class="primary">autoresearch tuned</button></div>
+</aside>
+<main>
+  <div class="howto">
+    <b>How to use this</b>
+    <ol>
+      <li><b>Start from the result</b>. Knobs open at what the autoresearch loop (bin/program.md) settled on; orange labels differ from the live config. Press "live config" to see today's board, "autoresearch tuned" to come back.</li>
+      <li><b>Read the first three tiles</b>. They are the loop's objective, scored on your own involvement over every work hour of 4 weeks: did the board show a thread you later stepped into before you got there (catch), and how much of the top 10 is the kind of thread you join at all (purity). Switch the label to "jev judge" for jev's opinion of what needed you.</li>
+      <li><b>Pick the schedule</b> you intend to keep. Default is every work hour so no formula can tune itself to three instants; click hours off to see what a sparser habit costs.</li>
+      <li><b>Sweep</b>: pick an objective and a knob to see the objective across its whole range, or sweep all to rank every knob by how much its best value helps. "Sweep all" on the involvement objective is the loop, in the browser.</li>
+      <li><b>Hover anything</b> in the sidebar for what the knob means, what the values do, and what the loop found when it moved it. Hover a title on the board for its full breakdown.</li>
+      <li><b>One label, every number</b>. The label selector above the tiles decides what "needed" means; the objective, the tier tiles, the probability fit, the rank bands, the misses and the row markers all derive from that one choice. Switch it and everything moves together.</li>
+      <li><b>Tiering was not in the loop</b>. The method radios decide how red and orange are derived from the scores; the tier tiles show what each costs and catches under the selected label.</li>
+    </ol>
+  </div>
+  <div class="row" id="labels"></div>
+  <div class="tiles" id="tiles"></div>
+  <div class="tiles" id="tier-tiles"></div>
+  <h2>Sweep: which knob moves the objective</h2>
+  <div class="row">
+    <label>objective <select id="objective">
+      <option value="cp">catch + purity, averaged (the autoresearch objective)</option>
+      <option value="catch">catch: needed threads shown in the top 10</option>
+      <option value="purity">purity: share of the top 10 that is the kind of thread the label marks</option>
+      <option value="hot">tiering: needed threads painted red, minus 2 pts per extra red row per look</option>
+      <option value="warm">tiering: needed threads painted red or orange, minus 1 pt per extra painted row per look</option>
+    </select></label>
+    <label>knob <select id="sweep-knob"></select></label>
+    <button id="sweep-one" class="primary">sweep this knob</button>
+    <button id="sweep-all">sweep all knobs</button>
+    <span id="sweep-status" class="legend"></span>
+  </div>
+  <div id="sweep-chart"></div>
+  <table class="sweep" id="sweep-table"></table>
+  <div class="scrub">
+    <button id="prev">&larr;</button>
+    <input type="range" id="scrub" min="0" value="0">
+    <button id="next">&rarr;</button>
+    <span class="when" id="when"></span>
+  </div>
+  <h2>Board at this checkpoint</h2>
+  <table class="board"><tbody id="board"></tbody></table>
+  <div class="legend">Activity strip: one cell per working hour over the last 12, newest at the right; height = messages in that hour (1, 2-3, 4-7, 8+), a dim floor = none. Then working hours since the last post. Tags are jev topics at p &ge; 0.6 (NEEDS = the judge). The last number is P(needed) from the probability fit on the selected label. <i style="color:var(--me)">&larr;needed</i> = this row is a positive under the selected label at this look. Hover a title for the breakdown.</div>
+  <ul class="missed" id="missed"></ul>
+  <h2>Where the needed threads ranked (best look per thread, all scheduled checkpoints)</h2>
+  <div class="ranks" id="ranks"></div>
+  <h2>Shaping: raw inputs on this board, with the curve the knobs draw (a knob whose curve is flat has no panel)</h2>
+  <div class="charts" id="charts"></div>
+  <details><summary>How this is computed</summary>
+    <p>Each thread is replayed from its reply timeline: at a checkpoint only the replies posted before it exist. The score is the dashboard's one-line formula, re-implemented here for exploration, plus the topic terms: channel weight ^ exponent &times; (base + activity + topic votes) &times; atrophy &times; alive-boost &times; damping &times; topic gates. Working hours are precomputed by the app's own <code>business_hours_between</code>.</p>
+    <p><b>One label, every number.</b> The label selector picks what "needed" means, and every number on the page is derived from that one predicate: the catch and purity tiles, the objective the sweep optimizes, the tier tiles, the probability fit behind the calibrated-probability method, the rank bands, the misses list and the row markers. Nothing is fitted on one label and reported on another. Involvement: a thread you stepped into (replied to, did not start) is needed at every look before your first reply, and "the kind of thread" for purity is any thread you ever joined. Judge: jev's p(needs Scott) &ge; 0.6, same at every look. Habit: needed at the look before you replied, plus late bloomers at their takeoff look.</p>
+    <p>catch = per needed thread, the best credit over its needed looks, 1 inside the top 10 else 10/rank, averaged over threads. purity = per look, the share of the top 10 that the label marks, averaged over looks. The probability tiering fits P(marked | score) as a class-balanced logistic on log(1 + score) over every row of every scheduled board, refit whenever a knob or the label moves.</p>
+  </details>
+</main>
+</div>
+<div class="tooltip" id="tip"></div>
+<script>
+const D = __DATA__;
+const LIVE = D.cfg;
+const TUNED = D.tuned;
+let K = structuredClone(TUNED);
+let CW = Object.assign({}, D.channel_weights_tuned);
+let LABEL = 'inv';
+// [key, name, what "needed" means]; the one predicate every number on the page derives from
+const LABELS = [
+  ['inv', 'involvement', 'needed = you stepped into it later (every look before your first reply); kind = any thread you ever joined'],
+  ['judge', 'jev judge', 'needed = jev says p(needs Scott) >= 0.6; a second opinion, the loop never tuned on it'],
+  ['habit', 'habit', 'needed = you replied before the next look, plus late bloomers at takeoff; measures your reply habit, not the job'],
+];
+let ci = D.checkpoints.length - 1;
+let schedule = new Set(Array.from({length: D.work.end - D.work.start}, (_, i) => D.work.start + i));
+
+// [host, key, label, lo, hi, step, methods it applies to (tiering knobs only)]
+const KNOBS = [
+  ['k-size', 'reply_weight', 'reply weight', 0, 5, 0.5],
+  ['k-size', 'participant_weight', 'person weight', 0, 12, 1],
+  ['k-size', 'people_weight_cap', 'people cap (0=off)', 0, 80, 5],
+  ['k-size', 'base_cap', 'base cap', 10, 200, 5],
+  ['k-size', 'base_k', 'base k (half point)', 1, 60, 1],
+  ['k-size', 'channel_exp', 'channel prior exponent (0=off)', 0, 2, 0.25],
+  ['k-time', 'atrophy_half_life_work_hours', 'half-life (work h)', 0.25, 12, 0.25],
+  ['k-time', 'atrophy_curve', 'decay curve (0 exp, 1 hyperbolic)', 0, 1, 1],
+  ['k-time', 'leader_stretch', 'half-life stretch by p(leader)', 0, 2, 0.25],
+  ['k-time', 'alive_weight', 'alive weight', 0, 3, 0.1],
+  ['k-time', 'alive_k', 'alive k (work h)', 1, 24, 1],
+  ['k-time', 'max_thread_age_days', 'max age (days)', 1, 14, 1],
+  ['k-burst', 'velocity_weight', 'velocity weight', 0, 60, 1],
+  ['k-burst', 'velocity_window_minutes', 'window (min)', 5, 240, 5],
+  ['k-burst', 'activity_cap', 'activity cap', 0, 100, 5],
+  ['k-inv', 'involved_drop', 'drop (1=off)', 0, 1, 0.05],
+  ['k-inv', 'involved_rebuild_per_msg', 'rebuild per msg', 0, 1, 0.05],
+  ['k-topic', 'social_drop', 'social: drop', 0, 1, 0.05],
+  ['k-topic', 'resolved_drop', 'resolved: drop', 0, 1, 0.05],
+  ['k-topic', 'leader_weight', 'needs leader: weight', 0, 100, 5],
+  ['k-topic', 'leader_gate_floor', 'needs leader: gate floor (1=off)', 0, 1, 0.05],
+  ['k-topic', 'incident_weight', 'incident: weight', 0, 100, 5],
+  ['k-topic', 'question_weight', 'question: weight', 0, 100, 5],
+  ['k-tier', 'tier_hot_count', 'fixed: hot count', 0, 10, 1, ['fixed']],
+  ['k-tier', 'tier_warm_count', 'fixed: warm count', 0, 30, 1, ['fixed']],
+  ['k-tier', 'tier_hot', 'absolute: hot line', 0, 200, 5, ['absolute']],
+  ['k-tier', 'tier_warm', 'absolute: warm line', 0, 200, 5, ['absolute']],
+  ['k-tier', 'hot_mult', 'median: hot multiple', 1, 10, 0.25, ['median']],
+  ['k-tier', 'warm_mult', 'median: warm multiple', 1, 6, 0.25, ['median']],
+  ['k-tier', 'gap_top_n', 'gaps: look within top N', 3, 40, 1, ['gaps']],
+  ['k-tier', 'gap_min_ratio', 'gaps: smallest gap that counts', 1, 4, 0.05, ['gaps']],
+  ['k-tier', 'p_hot', 'prob: red at P >=', 0.05, 0.95, 0.05, ['prob']],
+  ['k-tier', 'p_warm', 'prob: orange at P >=', 0.05, 0.95, 0.05, ['prob']],
+  ['k-tier', 'tier_floor', 'floor (any method)', 0, 50, 1, ['fixed', 'median', 'gaps']],
+  ['k-board', 'min_replies', 'min replies to show', 1, 10, 1],
+  ['k-board', 'board_rows', 'rows shown', 10, 60, 5],
+  ['k-board', 'bloom_final', 'bloomer: final size >=', 5, 60, 1],
+  ['k-board', 'bloom_takeoff', 'bloomer: takeoff size', 3, 30, 1],
+];
+const METHODS = [
+  ['fixed', 'fixed counts', 'top N rows are red, the next M orange, whatever the day'],
+  ['absolute', 'absolute lines', 'red above one score, orange above another'],
+  ['median', 'multiples of the board median', 'red when a score stands out from the rest of the board'],
+  ['gaps', 'natural breaks', 'red above the biggest gap in the sorted scores'],
+  ['prob', 'calibrated probability', 'red when P(needs me), fitted on the labels, clears a line'],
+];
+// knobs the sweep never touches: they define the labels or the view, not the model
+const NOT_SWEPT = new Set(['bloom_final', 'bloom_takeoff', 'board_rows', 'min_replies', 'max_thread_age_days']);  // board membership is config, never a sweep: shrinking it hides needed threads instead of catching them
+
+const HELP = {
+  'sched': 'The hours the page scores at. Default: every work hour, so a formula cannot tune itself to three instants; click hours off to model a sparser habit. Everything on the page is scored only at these instants, because a thread that needed you between two looks could only be caught at the earlier one. Fewer hours = a harder test. Try 2 and 4 to see what a quieter habit costs. The hours you intend to check the board.',
+  'g-size': 'Votes for how much happened in the thread. They add up inside the brackets, so a big thread can be lifted but never zeroed by them.',
+  'g-time': 'Gates on when it happened. They multiply the whole score, so an old thread goes to nothing no matter how big it was. This is where "right now" lives.',
+  'g-burst': 'A vote for what is happening this minute: replies in a short window. Kept outside the size ceiling so a small thread spiking now is not washed out by a big stale one.',
+  'g-inv': 'A gate for your own participation. Posting drops the thread (you are caught up), unseen replies since your post bring it back (it moved on without you).',
+  'g-topic': 'What the thread is about, from jev. Gates multiply the score by (1 - drop x p); votes add weight x p inside the brackets. All start at 0 so the baseline equals the live model. Hover a title on the board to see a thread’s probabilities.',
+  'g-tier': 'Red and orange are a yes/no: "this needs me now". The method decides how that yes/no is derived from the scores. Fixed counts paint the same number every day; the other methods let the count vary with the day. The tier tiles above the board show what each method costs and catches.',
+  'g-board': 'What counts as a thread on the board, and how the late-bloomer label is defined. These shape the test, not the model, so the sweep leaves them alone.',
+  'g-cw': 'The prior: a multiplier per channel. Tuned values come from the org chart (persona): channels made of your direct reports highest, the three internal Platform team channels next, then rooms shared with your peers and your SVP; the rest ranked down. Hover a channel for its org note. The exponent knob under size scales the whole prior (0 = off).',
+  'reply_weight': 'How many volume points each message adds. Volume feeds base through the saturation curve, so past the half point extra messages barely matter. 0 = size comes from people only. Sweeps flat on both labels: message count is not what made a thread need you.',
+  'participant_weight': 'Volume points per unique person (unless they have their own weight in people-weights). Raise it to make crowded threads outrank long two-person threads.',
+  'people_weight_cap': 'Ceiling on the total people contribution, so a pile of VIPs cannot run the score away. 0 = no cap. Live config: 30.',
+  'base_cap': 'The hard ceiling base approaches as volume grows. Sets the scale of the whole score, so moving it moves absolute tier lines too; with relative tiering it mostly changes the ratio between base and the burst or topic votes.',
+  'base_k': 'The half point of the saturation curve: at volume = k, base is half the cap. Small k = even a 3-message thread is near full size; large k = size keeps counting for longer. Look at the volume histogram below: the knee should sit inside where the threads are.',
+  'channel_exp': 'The channel prior raised to this power: 1 = the yml weights as written, 0.5 = flattened, 0 = off (every channel 1.0). The autoresearch loop turned it OFF on both the judge and your involvement: the yml priors were pushing the wrong channels up (engineering-leadership, tech-staff-team, opex-monthly were the misses).',
+  'atrophy_curve': '0 = exponential, 0.5 ^ (t / h): a thread quiet for 3 half-lives is at 12%. 1 = hyperbolic, 1 / (1 + t / h): same half point, but a long tail: 3 half-lives is still 25%, a day is 4%. The loop preferred the tail: an old leader thread should fade, not vanish.',
+  'leader_stretch': 'Half-life x (1 + stretch x (p(leader) - 0.5)): at 1, a thread jev is sure needs a leader keeps its heat 3x longer than one it is sure does not. 0 = every thread decays alike.',
+  'leader_gate_floor': 'Gate: score x (floor + (1 - floor) x p(leader)). 0.3 = a thread that needs no leader runs at 30%; 1 = off. The loop kept 0.3 on the involvement label: it is the single strongest separator of threads you join from threads you do not.',
+  'atrophy_half_life_work_hours': 'Working hours of silence that halve the score. 3 = a thread quiet since lunch is at half by end of day, and a Friday thread is still warm Monday morning. Short half-lives reward only what is moving right now; the replied-to sweep liked 0.25, which says you reply to live threads, but it is 14 threads, so treat it as a hint.',
+  'alive_weight': 'Lift for long-running threads that are still fresh: 1 + weight x f(hours alive) x atrophy. 0 = display only (live). Raise it to favor ongoing sagas over blips; the x atrophy gate means an idle saga still sinks.',
+  'alive_k': 'Half point of the alive ramp in working hours. 6 = a thread has to live most of a day before the lift is half strength.',
+  'max_thread_age_days': 'Wall-clock days of silence after which a thread leaves the board entirely (it returns as a zombie on new activity). 1 = yesterday is gone. Lower it to see how much of the board is dead weight.',
+  'velocity_weight': 'How much a reply-per-minute rate lifts the score before the cap. Live: 5. Pair with the window: 5 replies in 30 minutes x 5 = 0.83 points, tiny next to base, which is why this sweeps flat. For bursts to matter, think 30+.',
+  'velocity_window_minutes': 'How far back "right now" reaches for the burst term. Short windows are a cliff: a reply at minute 31 vanishes. At 3 looks a day, a window near the gap between looks (180-240) behaves more like "since I last looked".',
+  'activity_cap': 'Ceiling on the burst vote so a flood cannot outrank everything. Measured against base, which tops out at base cap.',
+  'involved_drop': 'Multiplier applied the moment you post (0.8 = a 20% cut, 1 = off, 0 = your threads vanish until replies rebuild them). Both labels exclude threads you were already in, so a hard drop costs nothing on this page; in the live board it is what makes "caught up sinks".',
+  'involved_rebuild_per_msg': 'How fast unseen replies after your post restore the score: 0.15 = ~7 unseen replies back to full. Low = your threads stay down; high = one reply and it is back.',
+  'social_drop': 'Gate: score x (1 - drop x p(social)). At 1, a thread jev is sure is social goes to zero; at 0.5 it halves. The "we made it" thread is p(social) 0.90. Watch the misses list: a social thread you did reply to would show up there.',
+  'resolved_drop': 'Gate: score x (1 - drop x p(resolved)). The biggest single gain in every sweep so far: nothing in the live formula knows a thread is over. Check the board after raising it; jev calls some live threads resolved at 0.6-0.7.',
+  'leader_weight': 'Vote: + weight x p(needs leader), inside the brackets next to base. 45 = a thread jev is sure needs a leader gets as much lift as a full-size thread. The Director-shaped signal; second biggest gain in the sweep.',
+  'incident_weight': 'Vote: + weight x p(incident). Incidents are already in heavy channels, so this double counts unless you lower the incident channel weights at the same time.',
+  'question_weight': 'Vote: + weight x p(question). A root that asks for something vs one that announces. 64% of threads rate as questions, so it separates little on its own; try it together with resolved: drop.',
+  'tier_hot_count': 'Fixed method: this many top rows paint red, every look. The live board uses 3. The count never changes with the day, which is the weakness.',
+  'tier_warm_count': 'Fixed method: rows up to this rank paint orange (counts from the top, so warm 10 with hot 3 means ranks 4 to 10). Live: 10.',
+  'tier_hot': 'Absolute method: red at or above this score. Meaningful only while the score scale holds still; every size or topic knob moves the scale under it. Live lines: 50 / 20.',
+  'tier_warm': 'Absolute method: orange at or above this score.',
+  'hot_mult': 'Median method: red when score >= this x the board median. 4 = four times a typical thread on today’s board. On a quiet day nothing qualifies; during an incident several do. Watch "red per look".',
+  'warm_mult': 'Median method: orange when score >= this x the board median.',
+  'gap_top_n': 'Gaps method: only the top N scores are searched for breaks, so a gap deep in the cold tail cannot paint 20 rows red.',
+  'gap_min_ratio': 'Gaps method: a break counts only if the score above it is at least this many times the one below. 1.3 = a 30% drop. Raise it and quiet days go all blue.',
+  'p_hot': 'Probability method: red when the fitted P(needs me) is at or above this. The fit uses the replied-to and bloomer labels over every scheduled board. 0.6 is strict; the board column shows each row’s P so you can see where the line falls.',
+  'p_warm': 'Probability method: orange at or above this P.',
+  'tier_floor': 'Absolute floor for the fixed, median and gaps methods: below this score a row is never red or orange even if it is top ranked. What keeps an all-dead board blue. Live: 5.',
+  'min_replies': 'Threads with fewer replies are not on the board at all (the live fetch filter). Also decides "unshowable" in the labels: you replied, but the thread was too small to have been shown.',
+  'board_rows': 'How many rows the board table shows here. Display only.',
+  'bloom_final': 'Label knob: a thread counts as a late bloomer if it ended with at least this many messages.',
+  'bloom_takeoff': 'Label knob: the takeoff look is the first scheduled checkpoint at which the bloomer had this many messages. Its rank at that look is what gets scored.',
+};
+for (const [m, , desc] of METHODS) HELP['m-' + m] = desc;
+
+function el(tag, attrs, html) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+  if (html !== undefined) e.innerHTML = html;
+  return e;
+}
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function fmt(x, d) { return Number(x).toFixed(d === undefined ? 2 : d); }
+
+const knobInputs = {};
+function buildKnobs() {
+  for (const [host, key, label, lo, hi, step] of KNOBS) {
+    const row = el('div', {class: 'knob', id: 'knob-' + key});
+    row.appendChild(el('label', {'data-tip': key}, esc(label)));
+    const r = el('input', {type: 'range', min: lo, max: hi, step: step, value: K[key]});
+    const n = el('input', {type: 'number', min: lo, max: hi, step: step, value: K[key]});
+    const on = v => { K[key] = Number(v); r.value = v; n.value = v; render(); };
+    r.addEventListener('input', () => on(r.value));
+    n.addEventListener('change', () => on(n.value));
+    row.appendChild(r); row.appendChild(n);
+    document.getElementById(host).appendChild(row);
+    knobInputs[key] = {r, n, row};
+  }
+  const methods = document.getElementById('methods');
+  for (const [m, label, desc] of METHODS) {
+    const lab = el('label', {'data-tip': 'm-' + m});
+    const radio = el('input', {type: 'radio', name: 'method', value: m});
+    radio.addEventListener('change', () => { K.tier_method = m; render(); });
+    lab.appendChild(radio);
+    lab.appendChild(el('span', {}, `${esc(label)}<small>${esc(desc)}</small>`));
+    methods.appendChild(lab);
+  }
+  buildChannels();
+  const sel = document.getElementById('sweep-knob');
+  for (const [, key, label] of KNOBS) if (!NOT_SWEPT.has(key)) sel.appendChild(el('option', {value: key}, esc(label)));
+  const sched = document.getElementById('sched');
+  for (let h = D.work.start; h < D.work.end; h++) {
+    const b = el('button', {}, String(h).padStart(2, '0'));
+    const paint = () => b.style.borderColor = schedule.has(h) ? 'var(--curve)' : 'var(--border)';
+    paint();
+    b.addEventListener('click', () => { schedule.has(h) ? schedule.delete(h) : schedule.add(h); paint(); render(); });
+    sched.appendChild(b);
+  }
+}
+const cwInputs = {};
+function buildChannels() {
+  const host = document.getElementById('cw');
+  host.innerHTML = '';
+  for (const name of Object.keys(D.channel_weights).sort()) {
+    const row = el('div', {class: 'knob', id: 'cw-' + name});
+    row.appendChild(el('label', {'data-tip-text': (D.channel_notes[name] || 'no org note') + ' (live ' + D.channel_weights[name] + ', tuned ' + D.channel_weights_tuned[name] + ')'}, esc('#' + name)));
+    const r = el('input', {type: 'range', min: 0, max: 3, step: 0.1, value: CW[name]});
+    const n = el('input', {type: 'number', min: 0, max: 3, step: 0.1, value: CW[name]});
+    const on = v => { CW[name] = Number(v); r.value = v; n.value = v; render(); };
+    r.addEventListener('input', () => on(r.value));
+    n.addEventListener('change', () => on(n.value));
+    row.appendChild(r); row.appendChild(n);
+    host.appendChild(row);
+    cwInputs[name] = {r, n, row};
+  }
+}
+function syncChannels() {
+  for (const [name, w] of Object.entries(cwInputs)) {
+    w.r.value = CW[name]; w.n.value = CW[name];
+    w.row.classList.toggle('changed', CW[name] !== D.channel_weights[name]);
+  }
+}
+function syncKnobs() {
+  syncChannels();
+  for (const [, key, , , , , methods] of KNOBS) {
+    const k = knobInputs[key];
+    k.r.value = K[key]; k.n.value = K[key];
+    k.row.classList.toggle('changed', K[key] !== LIVE[key]);
+    k.row.classList.toggle('inert', !!methods && !methods.includes(K.tier_method));
+  }
+  document.querySelectorAll('#methods input').forEach(r => {
+    r.checked = r.value === K.tier_method;
+    r.parentElement.classList.toggle('on', r.checked);
+  });
+}
+for (const [id, src, cw] of [['reset', LIVE, D.channel_weights], ['tuned', TUNED, D.channel_weights_tuned]]) document.getElementById(id).addEventListener('click', () => {
+  K = structuredClone(src); CW = Object.assign({}, cw);
+  render();
+});
+
+// ---- scoring: the one-line formula plus topic terms, replayed at a checkpoint ----
+function cwOf(name) { return CW[name] !== undefined ? CW[name] : 1.0; }
+function p(t, q) { return t.tp && t.tp[q] !== undefined ? t.tp[q] : 0; }
+
+function evalThread(t, c) {
+  const reps = [];
+  for (const r of t.r) { if (r[0] <= c.ts) reps.push(r); else break; }
+  const lastTs = reps.length ? reps[reps.length - 1][0] : t.ts;
+  const lastWh = reps.length ? reps[reps.length - 1][1] : t.wh;
+  if (reps.length < K.min_replies) return null;
+  if (c.ts - lastTs > K.max_thread_age_days * 86400) return null;
+  const mc = 1 + reps.length;
+  const people = new Map();
+  people.set(t.u, t.w);
+  for (const r of reps) people.set(r[2], r[3]);
+  let pt = 0;
+  for (const w of people.values()) pt += (w === 0 ? K.participant_weight : w);
+  if (K.people_weight_cap > 0) pt = Math.min(pt, K.people_weight_cap);
+  const vol = mc * K.reply_weight + pt;
+  const base = vol > 0 ? K.base_cap * vol / (vol + K.base_k) : 0;
+  const tsl = Math.max(0, c.wh - lastWh);
+  const half = K.atrophy_half_life_work_hours * (1 + K.leader_stretch * (p(t, 'leader') - 0.5));
+  const atrophy = K.atrophy_curve >= 0.5 ? 1 / (1 + tsl / half) : Math.pow(0.5, tsl / half);
+  const winS = K.velocity_window_minutes * 60;
+  let riw = 0;
+  for (let i = reps.length - 1; i >= 0 && reps[i][0] > c.ts - winS; i--) riw++;
+  const vel = K.velocity_window_minutes > 0 ? riw / K.velocity_window_minutes : 0;
+  const activity = Math.min(K.activity_cap, vel * K.velocity_weight);
+  const alive = Math.max(0, lastWh - t.wh);
+  const af = alive > 0 ? alive / (alive + K.alive_k) : 0;
+  const aliveBoost = 1 + K.alive_weight * af * atrophy;
+  let myLast = t.me ? t.ts : 0;
+  for (const r of reps) if (r[4]) myLast = r[0];
+  let after = 0;
+  if (myLast) for (const r of reps) if (r[0] > myLast) after++;
+  let damp = 1;
+  if (myLast && K.involved_drop < 1) {
+    const rebuild = Math.min(1, after * K.involved_rebuild_per_msg);
+    damp = Math.min(1, Math.max(K.involved_drop, K.involved_drop + (1 - K.involved_drop) * rebuild));
+  }
+  const votes = K.leader_weight * p(t, 'leader') + K.incident_weight * p(t, 'incident') + K.question_weight * p(t, 'question');
+  const gates = (1 - K.social_drop * p(t, 'social')) * (1 - K.resolved_drop * p(t, 'resolved')) *
+    (K.leader_gate_floor + (1 - K.leader_gate_floor) * p(t, 'leader'));
+  const cw = Math.pow(cwOf(t.ch), K.channel_exp);
+  const hasVip = [...people.values()].some(w => w > K.participant_weight);
+  const score = cw * (base + activity + votes) * atrophy * aliveBoost * damp * gates;
+  return {t, score, cw, base, vol, mc, pc: people.size, pt, tsl, atrophy, riw, vel, activity,
+    alive, aliveBoost, damp, after, myLast, hasVip, lastWh, reps, votes, gates};
+}
+
+function boardAt(c) {
+  const rows = [];
+  for (const t of D.threads) {
+    if (t.ts > c.ts) continue;
+    const e = evalThread(t, c);
+    if (e) rows.push(e);
+  }
+  rows.sort((a, b) => b.score - a.score);
+  rows.forEach((e, i) => { e.rank = i + 1; });
+  return rows;
+}
+
+// ---- tiering: five ways to turn sorted scores into red / orange / blue ----
+let FIT = {a: -3, b: 1};  // logistic P(needed) = sigmoid(a + b * log1p(score)); refit per render
+function sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
+function probOf(score) { return sigmoid(FIT.a + FIT.b * Math.log1p(Math.max(0, score))); }
+function tierRows(rows) {
+  const m = K.tier_method;
+  const floor = K.tier_floor;
+  if (m === 'fixed') {
+    rows.forEach((e, i) => {
+      e.tier = (i < K.tier_hot_count && e.score >= floor) ? 'hot' : (i < K.tier_warm_count && e.score >= floor) ? 'warm' : 'cold';
+    });
+  } else if (m === 'absolute') {
+    rows.forEach(e => { e.tier = e.score >= K.tier_hot ? 'hot' : e.score >= K.tier_warm ? 'warm' : 'cold'; });
+  } else if (m === 'median') {
+    const s = rows.map(e => e.score);
+    const med = s.length ? (s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2) : 0;
+    rows.forEach(e => {
+      e.tier = (e.score >= K.hot_mult * med && e.score >= floor) ? 'hot' : (e.score >= K.warm_mult * med && e.score >= floor) ? 'warm' : 'cold';
+    });
+  } else if (m === 'gaps') {
+    const n = Math.min(K.gap_top_n, rows.length);
+    const ratios = [];
+    for (let i = 0; i + 1 < n; i++) ratios.push({i, r: rows[i + 1].score > 0 ? rows[i].score / rows[i + 1].score : Infinity});
+    const sorted = ratios.filter(x => x.r >= K.gap_min_ratio).sort((a, b) => b.r - a.r);
+    let hotEnd = -1, warmEnd = -1;
+    if (sorted.length) hotEnd = sorted[0].i;
+    const below = sorted.filter(x => x.i > hotEnd).sort((a, b) => b.r - a.r);
+    if (below.length) warmEnd = below[0].i;
+    rows.forEach((e, i) => {
+      e.tier = (i <= hotEnd && e.score >= floor) ? 'hot' : (i <= warmEnd && e.score >= floor) ? 'warm' : 'cold';
+    });
+  } else {
+    rows.forEach(e => { e.prob = probOf(e.score); e.tier = e.prob >= K.p_hot ? 'hot' : e.prob >= K.p_warm ? 'warm' : 'cold'; });
+  }
+  if (m !== 'prob') rows.forEach(e => { e.prob = probOf(e.score); });
+  return rows;
+}
+
+// ---- activity strip: one block per working hour over the last 12 ----
+const BLOCKS = ['', '▂', '▄', '▆', '█'];
+function level(n) { return n <= 0 ? 0 : n === 1 ? 1 : n <= 3 ? 2 : n <= 7 ? 3 : 4; }
+function strip(e, c) {
+  const buckets = new Array(12).fill(0);
+  const bump = wh => { const back = c.wh - wh; if (back >= 0 && back < 12) buckets[11 - Math.floor(back)]++; };
+  bump(e.t.wh);
+  for (const r of e.reps) bump(r[1]);
+  return buckets.map(n => n ? BLOCKS[level(n)] : '<i>▁</i>').join('');
+}
+function tags(t) {
+  const out = [];
+  for (const q of ['social', 'incident', 'leader', 'access', 'resolved']) if (p(t, q) >= 0.6) out.push(q);
+  if (p(t, 'needs') >= 0.6) out.push('NEEDS');
+  if (p(t, 'work') < 0.4 && t.tp && t.tp.work !== undefined) out.push('non-work');
+  return out.join(' ');
+}
+
+// ---- labels: ONE predicate (LABEL) marks rows; every number below derives from it ----
+function scheduled() {
+  return D.checkpoints.map((c, i) => ({c, i})).filter(x => schedule.has(x.c.h));
+}
+function takeoffs(S) {
+  const out = new Map();  // thread id -> takeoff checkpoint ts (habit label's late bloomers)
+  for (const t of D.threads) {
+    if (1 + t.r.length < K.bloom_final) continue;
+    for (const x of S) {
+      let n = 1;
+      for (const r of t.r) { if (r[0] <= x.c.ts) n++; else break; }
+      if (n >= K.bloom_takeoff) {
+        if (!(t.me || t.r.some(r => r[4] && r[0] <= x.c.ts))) out.set(t.id, x.c.ts);
+        break;
+      }
+    }
+  }
+  return out;
+}
+// Mark one board's rows. needed = a positive at this look; kind = the sort of row that belongs
+// in the top 10 (purity). For involvement they differ: needed is "before you joined", kind is
+// "you ever joined". For the other labels they are the same set.
+function markRows(rows, c, nextTs, tk) {
+  for (const e of rows) {
+    const t = e.t;
+    e.replied = !t.me && !!t.mf && t.mf > c.ts && t.mf <= nextTs;
+    e.bloom = tk.get(t.id) === c.ts;
+    e.joined = !!t.mf && !t.me;
+    e.beforeMe = e.joined && t.mf > c.ts;
+    e.judged = p(t, 'needs') >= 0.6;
+    if (LABEL === 'inv') { e.needed = e.beforeMe; e.kind = e.joined; }
+    else if (LABEL === 'judge') { e.needed = e.judged; e.kind = e.judged; }
+    else { e.needed = e.replied || e.bloom; e.kind = e.needed; }
+  }
+  return rows;
+}
+function nextLookTs(c) {
+  for (const x of scheduled()) if (x.c.ts > c.ts) return x.c.ts;
+  return D.meta.pulled_at;
+}
+function labeledBoards() {
+  const S = scheduled();
+  const tk = takeoffs(S);
+  const out = [];
+  for (let i = 0; i < S.length; i++) {
+    const c = S[i].c;
+    const nextTs = i + 1 < S.length ? S[i + 1].c.ts : D.meta.pulled_at;
+    out.push({c, rows: markRows(boardAt(c), c, nextTs, tk)});
+  }
+  return out;
+}
+function fitProb(boards) {
+  // logistic regression on x = log1p(score), gradient descent, class-balanced, y = kind
+  const xs = [], ys = [];
+  for (const b of boards) for (const e of b.rows) { xs.push(Math.log1p(Math.max(0, e.score))); ys.push(e.kind ? 1 : 0); }
+  const pos = ys.reduce((a, b) => a + b, 0), neg = ys.length - pos;
+  if (!pos || !neg) { FIT = {a: -3, b: 1}; return; }
+  const wPos = ys.length / (2 * pos), wNeg = ys.length / (2 * neg);
+  let a = -2, b = 0.5;
+  const lr = 0.05;
+  for (let it = 0; it < 300; it++) {
+    let ga = 0, gb = 0;
+    for (let i = 0; i < xs.length; i++) {
+      const w = ys[i] ? wPos : wNeg;
+      const err = (sigmoid(a + b * xs[i]) - ys[i]) * w;
+      ga += err; gb += err * xs[i];
+    }
+    a -= lr * ga / xs.length; b -= lr * gb / xs.length;
+  }
+  FIT = {a, b};
+}
+function analyze() {
+  const boards = labeledBoards();
+  fitProb(boards);
+  for (const b of boards) tierRows(b.rows);
+  const best = new Map();  // needed thread -> best credit over its needed looks
+  const bestRank = new Map();
+  const purity = [];
+  const tier = {hot: 0, warm: 0, needed: 0, neededHot: 0, neededWarm: 0, looks: boards.length};
+  for (const b of boards) {
+    for (const e of b.rows) {
+      if (e.tier === 'hot') tier.hot++;
+      if (e.tier !== 'cold') tier.warm++;
+      if (!e.needed) continue;
+      tier.needed++;
+      if (e.tier === 'hot') tier.neededHot++;
+      if (e.tier !== 'cold') tier.neededWarm++;
+      const id = e.t.id;
+      best.set(id, Math.max(best.get(id) || 0, Math.min(1, 10 / e.rank)));
+      bestRank.set(id, Math.min(bestRank.get(id) || 1e9, e.rank));
+    }
+    const head = b.rows.slice(0, 10);
+    if (head.length) purity.push(head.filter(e => e.kind).length / head.length);
+  }
+  let unshowable = 0;  // marked threads no scheduled board ever held (too small, stale, or born after the last look)
+  if (LABEL === 'inv') for (const t of D.threads) { if (t.mf && !t.me && !best.has(t.id)) unshowable++; }
+  if (LABEL === 'judge') for (const t of D.threads) { if (p(t, 'needs') >= 0.6 && !best.has(t.id)) unshowable++; }
+  const mean = xs => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+  const A = {
+    threads: best.size, unshowable,
+    catch: mean([...best.values()]), purity: mean(purity),
+    ranks: [...bestRank.values()], tier, looks: boards.length, boards,
+  };
+  A.objective = (A.catch + A.purity) / 2;
+  return A;
+}
+// ---- objective and sweep ----
+function objectiveOf(A) {
+  const o = document.getElementById('objective').value;
+  if (o === 'catch') return A.catch;
+  if (o === 'purity') return A.purity;
+  const {tier} = A;
+  if (o === 'hot') {
+    const caught = tier.needed ? tier.neededHot / tier.needed : 0;
+    const extra = Math.max(0, tier.hot / Math.max(1, tier.looks) - 3);
+    return Math.max(0, caught - 0.02 * extra);
+  }
+  if (o === 'warm') {
+    const caught = tier.needed ? tier.neededWarm / tier.needed : 0;
+    const extra = Math.max(0, tier.warm / Math.max(1, tier.looks) - 10);
+    return Math.max(0, caught - 0.01 * extra);
+  }
+  return A.objective;
+}
+function scoreNow() { return objectiveOf(analyze()); }
+function sweepKnob(key, steps) {
+  const spec = KNOBS.find(k => k[1] === key);
+  const [, , , lo, hi, step] = spec;
+  const saved = K[key];
+  const n = Math.min(steps || 16, Math.round((hi - lo) / step) + 1);
+  const points = [];
+  for (let i = 0; i < n; i++) {
+    let v = lo + (hi - lo) * i / (n - 1);
+    const decimals = (String(step).split('.')[1] || '').length;
+    v = Number((Math.round(v / step) * step).toFixed(decimals));
+    K[key] = v;
+    points.push({v, s: scoreNow()});
+  }
+  K[key] = saved;
+  let best = points[0];
+  for (const pt of points) if (pt.s > best.s + 1e-9) best = pt;
+  return {key, label: spec[2], points, best, current: saved};
+}
+let baseline = null;
+function renderSweepChart(res, cur) {
+  const W = 600, H = 140, pad = 28;
+  const xs = res.points.map(pt => pt.v);
+  const lo = Math.min(...xs), hi = Math.max(...xs);
+  const x = v => pad + (hi > lo ? (v - lo) / (hi - lo) : 0.5) * (W - 2 * pad);
+  const y = s => H - pad + 4 - s * (H - 2 * pad);
+  let d = '';
+  res.points.forEach((pt, i) => { d += (i ? 'L' : 'M') + fmt(x(pt.v), 1) + ',' + fmt(y(pt.s), 1); });
+  let svg = `<svg viewBox="0 0 ${W} ${H}" style="width:100%;max-width:${W}px;height:${H}px;display:block">`;
+  for (const g of [0, 0.25, 0.5, 0.75, 1]) svg += `<line x1="${pad}" x2="${W - pad}" y1="${fmt(y(g), 1)}" y2="${fmt(y(g), 1)}" stroke="var(--border)"/><text x="${pad - 4}" y="${fmt(y(g) + 3, 1)}" fill="var(--muted)" font-size="9" text-anchor="end">${g * 100}%</text>`;
+  svg += `<path d="${d}" stroke="var(--curve)" stroke-width="2" fill="none"/>`;
+  for (const pt of res.points) svg += `<circle cx="${fmt(x(pt.v), 1)}" cy="${fmt(y(pt.s), 1)}" r="3.5" fill="var(--curve)"><title>${esc(res.label)} = ${pt.v}: ${fmt(pt.s * 100, 0)}%</title></circle>`;
+  svg += `<line x1="${fmt(x(cur), 1)}" x2="${fmt(x(cur), 1)}" y1="${pad - 6}" y2="${H - pad + 4}" stroke="var(--cold)" stroke-dasharray="3 3"/>`;
+  svg += `<circle cx="${fmt(x(res.best.v), 1)}" cy="${fmt(y(res.best.s), 1)}" r="6" fill="none" stroke="var(--best)" stroke-width="2"/>`;
+  svg += `<text x="${pad}" y="${H - 2}" fill="var(--muted)" font-size="9">${esc(res.label)}: ${lo}</text><text x="${W - pad}" y="${H - 2}" fill="var(--muted)" font-size="9" text-anchor="end">${hi}</text>`;
+  svg += '</svg>';
+  document.getElementById('sweep-chart').innerHTML = svg +
+    `<div class="legend">dashed = current value (${cur}); ring = best (${res.best.v} at ${fmt(res.best.s * 100, 0)}%). Objective across the whole range, other knobs held where they are.</div>`;
+}
+function renderSweepTable(results, cur) {
+  const tb = document.getElementById('sweep-table');
+  const rows = results.map(r => ({...r, gain: r.best.s - cur})).sort((a, b) => b.gain - a.gain);
+  let h = '<tr><th>knob</th><th>current</th><th>best</th><th>objective at best</th><th>gain</th><th></th></tr>';
+  for (const r of rows) {
+    const g = r.gain > 1e-9 ? `+${fmt(r.gain * 100, 0)} pts` : 'none';
+    h += `<tr><td>${esc(r.label)}</td><td>${r.current}</td><td>${r.best.v}</td><td>${fmt(r.best.s * 100, 0)}%</td>` +
+      `<td class="${r.gain > 1e-9 ? 'gain' : 'flat'}">${g}</td><td><button data-apply="${esc(r.key)}" data-v="${r.best.v}">apply</button></td></tr>`;
+  }
+  tb.innerHTML = h;
+  tb.querySelectorAll('button[data-apply]').forEach(b => b.addEventListener('click', () => { K[b.dataset.apply] = Number(b.dataset.v); render(); }));
+}
+function sweepable() {
+  return KNOBS.filter(([, key, , , , , methods]) => !NOT_SWEPT.has(key) && (!methods || methods.includes(K.tier_method))).map(k => k[1]);
+}
+document.getElementById('sweep-one').addEventListener('click', () => {
+  const key = document.getElementById('sweep-knob').value;
+  const cur = scoreNow();
+  const res = sweepKnob(key, 24);
+  renderSweepChart(res, K[key]);
+  renderSweepTable([res], cur);
+});
+document.getElementById('sweep-all').addEventListener('click', () => {
+  const status = document.getElementById('sweep-status');
+  status.textContent = 'sweeping...';
+  setTimeout(() => {
+    const cur = scoreNow();
+    const results = sweepable().map(key => sweepKnob(key, 12));
+    renderSweepTable(results, cur);
+    const top = results.slice().sort((a, b) => b.best.s - a.best.s)[0];
+    renderSweepChart(top, K[top.key]);
+    status.textContent = `done: ${results.length} knobs, 12 values each, one at a time from the current setting`;
+  }, 20);
+});
+document.getElementById('objective').addEventListener('change', render);
+
+// ---- charts ----
+function hist(values, nb, lo, hi) {
+  const b = new Array(nb).fill(0);
+  for (const v of values) {
+    let i = Math.floor((v - lo) / (hi - lo) * nb);
+    if (i >= nb) i = nb - 1; if (i < 0) i = 0;
+    b[i]++;
+  }
+  return b;
+}
+const FLAT = 0.05;  // a curve that moves less than this share of its max is not a shaping panel
+function chart(title, note, values, lo, hi, fn, fnMax) {
+  const W = 300, H = 120, pad = 6, top = 14, nb = 30;
+  const ys = [];
+  for (let i = 0; i <= 60; i++) ys.push(fn(lo + (hi - lo) * i / 60) / fnMax);
+  if (Math.max(...ys) - Math.min(...ys) < FLAT) return '';
+  const bins = hist(values, nb, lo, hi);
+  const bmax = Math.max(1, ...bins);
+  const plotH = H - pad - top;
+  let svg = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">`;
+  const bw = (W - 2 * pad) / nb;
+  bins.forEach((n, i) => {
+    const h = n / bmax * plotH;
+    svg += `<rect x="${pad + i * bw + 1}" y="${H - pad - h}" width="${Math.max(1, bw - 2)}" height="${h}" fill="var(--bar-soft)"><title>${esc(fmt(lo + i * (hi - lo) / nb, 1))}: ${n} threads</title></rect>`;
+  });
+  let d = '';
+  ys.forEach((yv, i) => {
+    d += (i ? 'L' : 'M') + fmt(pad + (W - 2 * pad) * i / 60, 1) + ',' + fmt(H - pad - yv * plotH, 1);
+  });
+  svg += `<path d="${d}" stroke="var(--curve)" stroke-width="2" fill="none"/>`;
+  svg += `<text x="${pad}" y="10" fill="var(--bar)" font-size="9">bars: tallest = ${bmax} threads</text>`;
+  svg += `<text x="${W - pad}" y="10" fill="var(--curve)" font-size="9" text-anchor="end">curve: top = ${esc(fmt(fnMax, 0))}</text>`;
+  svg += `<text x="${pad}" y="${H - 1}" fill="var(--muted)" font-size="9">${esc(fmt(lo, 0))}</text>`;
+  svg += `<text x="${W - pad}" y="${H - 1}" fill="var(--muted)" font-size="9" text-anchor="end">${esc(fmt(hi, 0))}</text>`;
+  svg += '</svg>';
+  return `<figure><h3>${esc(title)}</h3><p>${esc(note)}</p>${svg}</figure>`;
+}
+
+// ---- render ----
+function tip(e) {
+  const t = e.t;
+  const tp = t.tp && Object.keys(t.tp).length ? Object.entries(t.tp).map(([k, v]) => `${k} ${fmt(v, 2)}`).join('  ') : 'not rated';
+  return [
+    `score ${fmt(e.score)} = cw ${fmt(e.cw)} x (base ${fmt(e.base, 1)} + activity ${fmt(e.activity, 1)} + topic votes ${fmt(e.votes, 1)})`,
+    `        x atrophy ${fmt(e.atrophy, 3)} x alive ${fmt(e.aliveBoost, 3)} x damping ${fmt(e.damp)} x topic gates ${fmt(e.gates, 3)}`,
+    `volume ${fmt(e.vol, 1)} = ${e.mc} msgs x ${K.reply_weight} + people ${fmt(e.pt, 1)} (${e.pc} people${e.hasVip ? ', VIP' : ''})`,
+    `since last ${fmt(e.tsl, 2)} work h   alive ${fmt(e.alive, 2)} work h   replies in window ${e.riw}`,
+    e.myLast ? `you posted; ${e.after} unseen since` : 'you have not posted',
+    `jev: ${tp}`,
+    `tier ${e.tier} by ${K.tier_method}; fitted P(needs me) ${fmt(e.prob, 2)}`,
+  ].join('\n');
+}
+function tile(b, s, n, delta, cls) {
+  const d = delta === undefined ? '' : `<span class="delta${delta < 0 ? ' neg' : ''}">${delta > 0 ? '+' : ''}${fmt(delta * 100, 0)} pts vs live</span>`;
+  return `<div class="tile ${cls || ''}"><b>${esc(b)}</b>${d}<br><span>${esc(s)}</span><br><span>${esc(n)}</span></div>`;
+}
+
+function render() {
+  syncKnobs();
+  const A = analyze();
+  const c = D.checkpoints[ci];
+  document.getElementById('scrub').max = D.checkpoints.length - 1;
+  document.getElementById('scrub').value = ci;
+  document.getElementById('when').textContent = c.label;
+  const rows = tierRows(markRows(boardAt(c), c, nextLookTs(c), takeoffs(scheduled())));
+  const tb = document.getElementById('board');
+  tb.innerHTML = '';
+  rows.slice(0, K.board_rows).forEach(e => {
+    const tr = el('tr', {class: e.tier + (e.needed ? ' pos' : '')});
+    tr.innerHTML = `<td class="n">${e.rank}</td><td class="cnt">${e.mc}m|${e.pc}p</td>` +
+      `<td class="ch">#${esc(e.t.ch)}</td><td class="sp">${strip(e, c)}</td><td class="age">${fmt(e.tsl, 1)}h</td>` +
+      `<td class="tg">${esc(tags(e.t))}</td>` +
+      `<td class="ti" data-tip-text="${esc(tip(e))}">${esc(e.t.title)}</td>` +
+      `<td class="sc">${fmt(e.score, 1)}</td><td class="pr">${fmt(e.prob, 2)}</td><td class="me">${e.needed ? '&larr;needed' : ''}</td>`;
+    tb.appendChild(tr);
+  });
+  const missed = document.getElementById('missed');
+  missed.innerHTML = '';
+  for (const e of rows.slice(K.board_rows)) {
+    if (!e.needed) continue;
+    missed.appendChild(el('li', {}, `needed at this look but at rank ${e.rank}, score ${fmt(e.score, 1)}: #${esc(e.t.ch)} ${esc(e.t.title)}`));
+  }
+  const {tier} = A;
+  const hotPer = tier.hot / Math.max(1, tier.looks), paintedPer = tier.warm / Math.max(1, tier.looks);
+  const caughtHot = tier.needed ? tier.neededHot / tier.needed : 0, caughtWarm = tier.needed ? tier.neededWarm / tier.needed : 0;
+  if (baseline === null || baseline.label !== LABEL) baseline = {label: LABEL, catch: A.catch, purity: A.purity, objective: A.objective, caughtHot, caughtWarm};
+  const labelName = LABELS.find(l => l[0] === LABEL)[1];
+  document.getElementById('tiles').innerHTML =
+    tile(fmt(100 * A.objective, 0) + '%', `objective (${labelName})`, 'catch and purity averaged; the number the sweep and the autoresearch loop optimize', A.objective - baseline.objective) +
+    tile(fmt(100 * A.catch, 0) + '%', 'catch: needed threads shown in the top 10', `${A.threads} needed threads that were on a scheduled board; credit 1 in the top 10, else 10/rank, best look counts`, A.catch - baseline.catch) +
+    tile(fmt(100 * A.purity, 0) + '%', 'purity: top 10 of the right kind', 'per look, the share of the top 10 the label marks; the rest is the board asking you to read things that were not it', A.purity - baseline.purity) +
+    tile(String(A.unshowable), 'needed, never on a board', 'threads the label marks that no scheduled look could have shown: too few replies, stale, or born after the last look') +
+    tile(String(rows.length), 'on board now', `${rows.filter(e => e.tier === 'hot').length} red, ${rows.filter(e => e.tier === 'warm').length} orange, ${rows.filter(e => e.needed).length} needed`);
+  document.getElementById('tier-tiles').innerHTML =
+    tile(fmt(hotPer, 1), 'red rows per look', `tiering by ${K.tier_method}; fixed counts give exactly ${K.tier_hot_count}`, undefined, 'hot') +
+    tile(fmt(paintedPer, 1), 'red or orange rows per look', 'the number of rows the color asks you to read', undefined, 'warm') +
+    tile(fmt(100 * caughtHot, 0) + '%', 'needed rows painted red', `${tier.needed} needed rows across all looks under the ${labelName} label`, caughtHot - baseline.caughtHot, 'hot') +
+    tile(fmt(100 * caughtWarm, 0) + '%', 'needed rows painted red or orange', 'what the color would have caught', caughtWarm - baseline.caughtWarm, 'warm') +
+    tile(`${fmt(FIT.b, 2)}`, 'probability fit slope', `P(${labelName}) = sigmoid(${fmt(FIT.a, 2)} + ${fmt(FIT.b, 2)} x ln(1 + score)); steeper = score separates the label from the rest`);
+  const bands = [[1, 3, '1-3'], [4, 5, '4-5'], [6, 10, '6-10'], [11, 20, '11-20'], [21, 1e9, '21+']];
+  const rk = document.getElementById('ranks');
+  rk.innerHTML = '';
+  const total = Math.max(1, A.ranks.length);
+  for (const [lo, hi, lbl] of bands) {
+    const n = A.ranks.filter(r => r >= lo && r <= hi).length;
+    rk.innerHTML += `<div class="lbl">rank ${esc(lbl)}</div><div><div class="bar" style="width:${(n / total * 100).toFixed(1)}%"></div></div><div>${n}</div>`;
+  }
+  const ch = document.getElementById('charts');
+  const vols = rows.map(e => e.vol), tsls = rows.map(e => e.tsl), riws = rows.map(e => e.riw), alives = rows.map(e => e.alive);
+  const vmax = Math.max(10, ...vols), tmax = Math.max(4, ...tsls), rmax = Math.max(4, ...riws), amax = Math.max(4, ...alives);
+  ch.innerHTML =
+    chart('volume -> base', `base = ${K.base_cap} * v / (v + ${K.base_k}); curve height = base / cap`, vols, 0, vmax, v => K.base_cap * v / (v + K.base_k), K.base_cap) +
+    chart('work hours since last -> atrophy', `${K.atrophy_curve >= 0.5 ? '1 / (1 + t / h)' : '0.5 ^ (t / h)'}, h = ${K.atrophy_half_life_work_hours} at p(leader) 0.5`, tsls, 0, tmax, t => K.atrophy_curve >= 0.5 ? 1 / (1 + t / K.atrophy_half_life_work_hours) : Math.pow(0.5, t / K.atrophy_half_life_work_hours), 1) +
+    chart('replies in window -> activity', `min(${K.activity_cap}, n / ${K.velocity_window_minutes} * ${K.velocity_weight}); curve = activity / cap`, riws, 0, rmax, n => Math.min(K.activity_cap, n / K.velocity_window_minutes * K.velocity_weight), Math.max(1, K.activity_cap)) +
+    chart('work hours alive -> alive boost', `1 + ${K.alive_weight} * t / (t + ${K.alive_k}) (at atrophy 1); curve = (boost - 1) / weight`, alives, 0, amax, t => K.alive_weight > 0 ? (t / (t + K.alive_k)) : 0, 1);
+  const socials = rows.map(e => p(e.t, 'social')), leaders = rows.map(e => p(e.t, 'leader'));
+  ch.innerHTML +=
+    chart('jev p(social) on this board -> gate', `gate = 1 - ${K.social_drop} * p`, socials, 0, 1, x => 1 - K.social_drop * x, 1) +
+    chart('jev p(needs leader) on this board -> vote', `vote = ${K.leader_weight} * p; curve = p`, leaders, 0, 1, x => x, 1);
+  const scores = rows.map(e => e.score);
+  const smax = Math.max(10, ...scores);
+  ch.innerHTML += chart('score on this board -> P(needed)', `logistic fit on the selected label; red at ${K.p_hot}, orange at ${K.p_warm} in the prob method`, scores, 0, smax, s => probOf(s), 1);
+}
+
+// ---- wiring ----
+document.getElementById('intro').textContent =
+  `${D.threads.length} threads from ${D.meta.channels.length} channels, ${D.meta.weeks} weeks ending ${D.meta.pulled_label}; ` +
+  `${D.meta.rated} rated by jev, ${D.meta.judged} judged. Replies by you: ${D.meta.my_replies}. Knobs start at the autoresearch result (bin/program.md); ` +
+  `orange = differs from the live config. Click "live config" to see where you are today; hover any knob for what it means.`;
+buildKnobs();
+{
+  const host = document.getElementById('labels');
+  host.appendChild(el('span', {class: 'legend'}, 'label: '));
+  for (const [key, name, desc] of LABELS) {
+    const lab = el('label', {'data-tip-text': desc});
+    const radio = el('input', {type: 'radio', name: 'label', value: key});
+    radio.checked = key === LABEL;
+    radio.addEventListener('change', () => { LABEL = key; render(); });
+    lab.appendChild(radio); lab.appendChild(el('span', {}, ' ' + esc(name) + '  '));
+    host.appendChild(lab);
+  }
+}
+document.getElementById('scrub').addEventListener('input', e => { ci = Number(e.target.value); render(); });
+document.getElementById('prev').addEventListener('click', () => { if (ci > 0) { ci--; render(); } });
+document.getElementById('next').addEventListener('click', () => { if (ci < D.checkpoints.length - 1) { ci++; render(); } });
+const tipEl = document.getElementById('tip');
+document.addEventListener('mouseover', e => {
+  const helpEl = e.target.closest('[data-tip]');
+  const textEl = e.target.closest('[data-tip-text]');
+  if (helpEl && HELP[helpEl.dataset.tip]) { tipEl.textContent = HELP[helpEl.dataset.tip]; tipEl.style.display = 'block'; return; }
+  if (textEl) { tipEl.textContent = textEl.dataset.tipText; tipEl.style.display = 'block'; return; }
+  tipEl.style.display = 'none';
+});
+document.addEventListener('mousemove', e => {
+  if (tipEl.style.display !== 'block') return;
+  const x = Math.min(e.clientX + 14, window.innerWidth - 480);
+  tipEl.style.left = Math.max(4, x) + 'px'; tipEl.style.top = (e.clientY + 14) + 'px';
+});
+render();
+// ?objective=..&method=..&sweep=all picks the objective and tiering method and runs the full
+// sweep on load (headless checks, and a shareable result)
+const params = new URLSearchParams(location.search);
+if (params.get('method')) { K.tier_method = params.get('method'); render(); }
+if (params.get('label')) { LABEL = params.get('label'); document.querySelectorAll('#labels input').forEach(r => { r.checked = r.value === LABEL; }); render(); }
+for (const [key, v] of params) if (key.startsWith('k.') && key.slice(2) in K) { K[key.slice(2)] = Number(v); render(); }
+if (params.get('objective')) { document.getElementById('objective').value = params.get('objective'); render(); }
+if (params.get('sweep') === 'all') document.getElementById('sweep-all').click();
+</script>
+</body>
+</html>
