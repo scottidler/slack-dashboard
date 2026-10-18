@@ -494,25 +494,72 @@ def classify_tier(score: float, rank: int, total: int, config: HeatConfig) -> st
     return "cold"
 
 
+@dataclass(frozen=True)
+class Ranked:
+    """One thread's place on a board scored under a given config: the entry, its score, its tier.
+
+    The score and tier belong to the config that produced them, not to the entry, so a board
+    scored under a viewer's overrides never touches the shared ``ThreadEntry``.
+    """
+
+    entry: ThreadEntry
+    score: float
+    tier: str
+
+
+def score_threads(threads: list[ThreadEntry], config: HeatConfig, now: float) -> list[Ranked]:
+    """Score, sort descending and tier ``threads`` under ``config`` at ``now``. Pure.
+
+    The one scoring path: the poller's yml ranking and a request's overridden ranking both
+    come through here. Nothing is written into the entries; ``rank_threads`` and
+    ``SlackPoller.ranked_threads`` write the result back for the poller's own uses.
+    """
+    scored = sorted(
+        ((t, heat_breakdown(t, config, now).overall) for t in threads),
+        key=lambda pair: pair[1],
+        reverse=True,
+    )
+    total = len(scored)
+    # Tiers are classified over the sorted list with the post-sort rank (relative mode).
+    ranked = [
+        Ranked(entry, score, classify_tier(score, rank, total, config))
+        for rank, (entry, score) in enumerate(scored)
+    ]
+    logger.debug(
+        "score_threads: count=%d now=%.3f tier_method=%s top=%s",
+        total,
+        now,
+        config.tier_method,
+        [(r.entry.thread_ts, round(r.score, 3), r.tier) for r in ranked[:3]],
+    )
+    return ranked
+
+
+def write_back(ranked: list[Ranked]) -> list[ThreadEntry]:
+    """Store each ranking's score and tier on its entry; return the entries in rank order."""
+    for r in ranked:
+        r.entry.heat_score = r.score
+        r.entry.heat_tier = r.tier
+    return [r.entry for r in ranked]
+
+
 def rank_threads(
     threads: list[ThreadEntry],
     config: HeatConfig,
+    now: float | None = None,
 ) -> list[ThreadEntry]:
-    # Pass 1: compute the score for every thread, then sort descending.
-    for thread in threads:
-        thread.heat_score = compute_heat(thread, config)
-    ranked = sorted(threads, key=lambda t: t.heat_score, reverse=True)
-    # Pass 2: classify over the sorted list with the post-sort rank (relative mode needs it).
-    total = len(ranked)
-    for rank, thread in enumerate(ranked):
-        thread.heat_tier = classify_tier(thread.heat_score, rank, total, config)
-    return ranked
+    """Rank and write the score and tier back into the entries (the mutating wrapper)."""
+    if now is None:
+        now = datetime.now(UTC).timestamp()
+    return write_back(score_threads(threads, config, now))
 
 
 def filter_stale_threads(
     threads: list[ThreadEntry],
     config: HeatConfig,
+    now: float | None = None,
 ) -> list[ThreadEntry]:
-    now = datetime.now(UTC)
-    cutoff = now - timedelta(days=config.max_thread_age_days)
+    if now is None:
+        now = datetime.now(UTC).timestamp()
+    cutoff = datetime.fromtimestamp(now, UTC) - timedelta(days=config.max_thread_age_days)
     return [t for t in threads if t.last_activity > cutoff]

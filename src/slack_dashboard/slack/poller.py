@@ -4,7 +4,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from slack_dashboard.config import AppConfig, resolve_min_replies
+from slack_dashboard.config import AppConfig, HeatConfig, resolve_min_replies
 from slack_dashboard.dismiss import DismissStore
 from slack_dashboard.events import EventStore
 from slack_dashboard.heat import (
@@ -14,6 +14,8 @@ from slack_dashboard.heat import (
     filter_stale_threads,
     is_zombie,
     reconstruct_resurrection,
+    score_threads,
+    write_back,
 )
 from slack_dashboard.observed import ObservedStore
 from slack_dashboard.slack.client import SlackClient
@@ -101,42 +103,73 @@ class SlackPoller:
     def thread_watermarks(self) -> dict[tuple[str, str], str]:
         return self._thread_watermarks
 
-    def ranked_threads(self) -> list[ThreadEntry]:
+    def eligible(self, config: HeatConfig, now: float) -> list[ThreadEntry]:
+        """The threads a board may show: not dismissed, and active within ``config``'s age.
+
+        Pure (reads the map, writes nothing), so a request scoring under its own config gets
+        the same membership as ``ranked_threads`` without calling the mutating wrapper.
+        """
         live = [
             t
             for t in self._threads.values()
             if self._dismiss is None or not self._dismiss.is_dismissed(t.channel_id, t.thread_ts)
         ]
-        threads = filter_stale_threads(live, self._config.heat)
-        # Pass 1: score every thread, then sort descending.
-        for t in threads:
-            t.heat_score = compute_heat(t, self._config.heat)
-        ranked = sorted(threads, key=lambda t: t.heat_score, reverse=True)
-        # Pass 2: classify over the sorted list with the post-sort rank (relative mode needs it).
-        total = len(ranked)
-        for rank, t in enumerate(ranked):
-            t.heat_tier = classify_tier(t.heat_score, rank, total, self._config.heat)
-        return ranked
+        eligible = filter_stale_threads(live, config, now)
+        logger.debug(
+            "eligible: threads=%d live=%d eligible=%d max_thread_age_days=%d",
+            len(self._threads),
+            len(live),
+            len(eligible),
+            config.max_thread_age_days,
+        )
+        return eligible
 
-    def dismiss_thread(self, channel_id: str, thread_ts: str) -> None:
-        logger.debug("dismiss_thread: channel=%s thread=%s", channel_id, thread_ts)
-        self._record_event("dismiss", channel_id, thread_ts)
+    def ranked_threads(self, now: float | None = None) -> list[ThreadEntry]:
+        """The yml ranking, written back into the entries (events and the poller's own uses)."""
+        if now is None:
+            now = datetime.now(UTC).timestamp()
+        heat = self._config.heat
+        return write_back(score_threads(self.eligible(heat, now), heat, now))
+
+    def dismiss_thread(
+        self, channel_id: str, thread_ts: str, overrides: dict[str, str] | None = None
+    ) -> None:
+        logger.debug(
+            "dismiss_thread: channel=%s thread=%s overrides=%s", channel_id, thread_ts, overrides
+        )
+        self._record_event("dismiss", channel_id, thread_ts, overrides)
         if self._dismiss is not None:
             self._dismiss.dismiss(channel_id, thread_ts)
         # Evict the live entry: it already exists in memory from before the dismiss.
         self._threads.pop((channel_id, thread_ts), None)
 
-    def open_thread(self, channel_id: str, thread_ts: str) -> None:
-        """Record that the user clicked through to this thread (the board's "open" event)."""
-        logger.debug("open_thread: channel=%s thread=%s", channel_id, thread_ts)
-        self._record_event("open", channel_id, thread_ts)
+    def open_thread(
+        self, channel_id: str, thread_ts: str, overrides: dict[str, str] | None = None
+    ) -> None:
+        """Record that the user clicked through to this thread (the board's "open" event).
 
-    def _record_event(self, kind: str, channel_id: str, thread_ts: str) -> None:
+        ``overrides`` is the knob map the clicked surface was rendered with; it rides the
+        event so the next tuning label can exclude opens made from a board the yml never drew.
+        """
+        logger.debug(
+            "open_thread: channel=%s thread=%s overrides=%s", channel_id, thread_ts, overrides
+        )
+        self._record_event("open", channel_id, thread_ts, overrides)
+
+    def _record_event(
+        self,
+        kind: str,
+        channel_id: str,
+        thread_ts: str,
+        overrides: dict[str, str] | None = None,
+    ) -> None:
         """Append a board event with where the thread sat on the board at that moment.
 
         The ranking is recomputed here rather than carried from the last render: the row
         the user saw may be up to one poll old, and the event's job is to say what the
-        board held when the user acted, which this is within seconds.
+        board held when the user acted, which this is within seconds. The rank is always the
+        yml's; a non-empty ``overrides`` is written as ``overrides`` so the label can exclude
+        the row, and an empty one writes no such key.
         """
         if self._events is None:
             return
@@ -153,6 +186,8 @@ class SlackPoller:
                     "topics": entry.topics,
                 }
                 break
+        if overrides:
+            context["overrides"] = overrides
         self._events.record(kind, channel_id, thread_ts, **context)
 
     def _evict_threads(self) -> None:

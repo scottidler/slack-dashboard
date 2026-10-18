@@ -69,7 +69,7 @@ def _make_mock_poller(threads: list[ThreadEntry] | None = None) -> AsyncMock:
     # self_user_id is a property on SlackPoller (the listener reads it); the routes do not.
     type(poller).self_user_id = PropertyMock(return_value=None)
     if threads is not None:
-        poller.ranked_threads.return_value = threads
+        poller.eligible.return_value = threads
     return poller
 
 
@@ -78,7 +78,7 @@ def app_with_threads() -> FastAPI:
     app = FastAPI()
     poller = _make_mock_poller()
     thread = _make_thread()
-    poller.ranked_threads.return_value = [thread]
+    poller.eligible.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
     create_routes(app, poller, MockLlm(), _CONFIG)
     return app
@@ -312,7 +312,7 @@ def test_summarize_llm_failure() -> None:
     app = FastAPI()
     poller = _make_mock_poller()
     thread = _make_thread()
-    poller.ranked_threads.return_value = [thread]
+    poller.eligible.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
     create_routes(app, poller, FailingLlm(), _CONFIG)
     client = TestClient(app)
@@ -347,7 +347,7 @@ def test_summarize_base_chip_appends_crown_for_vip() -> None:
     poller = _make_mock_poller()
     thread = _make_thread()
     config = AppConfig(heat=HeatConfig(people_weights={"U1": 10.0}))
-    poller.ranked_threads.return_value = [thread]
+    poller.eligible.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
     create_routes(app, poller, MockLlm(), config)
     client = TestClient(app)
@@ -369,7 +369,7 @@ def test_summarize_llm_failure_renders_strip_and_retry() -> None:
     app = FastAPI()
     poller = _make_mock_poller()
     thread = _make_thread()
-    poller.ranked_threads.return_value = [thread]
+    poller.eligible.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
     create_routes(app, poller, FailingLlm(), _CONFIG)
     client = TestClient(app)
@@ -402,7 +402,7 @@ def test_summarize_velocity_chip_not_dimmed_when_weight_nonzero() -> None:
     poller = _make_mock_poller()
     thread = _make_thread()
     config = AppConfig(heat=HeatConfig(velocity_weight=1.0))
-    poller.ranked_threads.return_value = [thread]
+    poller.eligible.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
     create_routes(app, poller, MockLlm(), config)
     client = TestClient(app)
@@ -425,7 +425,7 @@ def test_summarize_time_alive_chip_not_dimmed_when_alive_weight_nonzero() -> Non
     poller = _make_mock_poller()
     thread = _make_thread()
     config = AppConfig(heat=HeatConfig(alive_weight=1.0))
-    poller.ranked_threads.return_value = [thread]
+    poller.eligible.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
     create_routes(app, poller, MockLlm(), config)
     client = TestClient(app)
@@ -474,7 +474,7 @@ def test_summarize_feeds_full_retained_exchange_to_llm() -> None:
         ReplyRecord(ts=200.0, author_id="U2", text="you shipped without review", is_root=False),
         ReplyRecord(ts=300.0, author_id="U1", text="back off, it passed CI", is_root=False),
     ]
-    poller.ranked_threads.return_value = [thread]
+    poller.eligible.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
     llm = CapturingLlm(SummaryResult(bullets="- a fight", tone=3))
     create_routes(app, poller, llm, _CONFIG)
@@ -496,7 +496,7 @@ def test_summarize_preserves_tone_when_bullets_empty() -> None:
     thread.summary = None
     thread.summary_watermark = 0
     thread.heated_tone = 0
-    poller.ranked_threads.return_value = [thread]
+    poller.eligible.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
     llm = CapturingLlm(SummaryResult(bullets="", tone=3))
     create_routes(app, poller, llm, _CONFIG)
@@ -511,13 +511,13 @@ def test_dismiss_route_invokes_dismiss_thread() -> None:
     app = FastAPI()
     poller = _make_mock_poller()
     thread = _make_thread()
-    poller.ranked_threads.return_value = [thread]
+    poller.eligible.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
     create_routes(app, poller, MockLlm(), _CONFIG)
     client = TestClient(app)
     response = client.post("/dismiss/C123/1234567890.123456")
     assert response.status_code == 200
-    poller.dismiss_thread.assert_called_once_with("C123", "1234567890.123456")
+    poller.dismiss_thread.assert_called_once_with("C123", "1234567890.123456", None)
 
 
 def test_status_banner_disconnected() -> None:
@@ -1044,12 +1044,12 @@ def test_channel_popover_links_carry_the_open_event(client: TestClient) -> None:
 def test_open_event_route_records_through_the_poller() -> None:
     app = FastAPI()
     poller = _make_mock_poller()
-    poller.ranked_threads.return_value = []
+    poller.eligible.return_value = []
     poller.threads = {}
     create_routes(app, poller, MockLlm(), _CONFIG)
     response = TestClient(app).post("/event/open/C123/1234567890.123456")
     assert response.status_code == 204
-    poller.open_thread.assert_called_once_with("C123", "1234567890.123456")
+    poller.open_thread.assert_called_once_with("C123", "1234567890.123456", None)
 
 
 def test_summarize_renders_unrated_topic_chips_as_unknown(client: TestClient) -> None:
@@ -1065,7 +1065,7 @@ def test_summarize_topic_chips_show_the_probabilities() -> None:
     thread = _make_thread()
     thread.topics = {"leader": 0.8, "resolved": 0.1}
     config = AppConfig(heat=HeatConfig(leader_weight=45.0, resolved_drop=1.0))
-    poller.ranked_threads.return_value = [thread]
+    poller.eligible.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
     create_routes(app, poller, MockLlm(), config)
     response = TestClient(app).get("/summarize/C123/1234567890.123456")
@@ -1164,7 +1164,9 @@ def test_threads_row_renders_strip_age_and_twelve_mark_slots(client: TestClient)
     response = client.get("/threads")
     assert response.status_code == 200
     row = response.text.split('class="thread-row')[1].split("</div>")[0]
-    assert 'class="row-strip heat-hot"' in row
+    # The tier is the request's ranking, not the entry's stored heat_tier ("hot"): this
+    # fixture's last post is months old, so it scores cold.
+    assert 'class="row-strip heat-cold"' in row
     assert row.count('<i class="l0"></i>') == 12  # no posts in the window: all floor
     assert 'class="row-age"' in row
     assert row.count('class="mark off"') == 12  # unrated, no flags: every slot dim
@@ -1178,7 +1180,7 @@ def test_threads_row_lights_the_topic_and_flag_slots() -> None:
     thread = _make_thread()
     thread.subscribed = True
     thread.topics = {"work": 0.9, "leader": 0.8, "resolved": 0.1}
-    poller.ranked_threads.return_value = [thread]
+    poller.eligible.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
     config = AppConfig(display=DisplayConfig(marks={"following": "\N{WAVING HAND SIGN}"}))
     create_routes(app, poller, MockLlm(), config)

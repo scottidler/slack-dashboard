@@ -17,6 +17,7 @@ from slack_dashboard.heat import (
     prune_timestamps,
     rank_threads,
     reconstruct_resurrection,
+    score_threads,
     structural_heat,
     velocity,
 )
@@ -176,6 +177,39 @@ def test_rank_threads() -> None:
     assert ranked[1].thread_ts == "1"
     assert ranked[2].thread_ts == "3"
     assert ranked[0].heat_score > ranked[1].heat_score > ranked[2].heat_score
+
+
+def test_score_threads_is_pure_and_matches_rank_threads() -> None:
+    config = HeatConfig(tier_hot_count=1, tier_warm_count=2)
+    now = _time.time()
+    threads = [
+        _make_thread(message_count=5, participants=2, hours_ago=1, thread_ts="1"),
+        _make_thread(message_count=20, participants=5, hours_ago=0, thread_ts="2"),
+        _make_thread(message_count=1, participants=1, hours_ago=10, thread_ts="3"),
+    ]
+    ranked = score_threads(threads, config, now)
+    assert [r.entry.thread_ts for r in ranked] == ["2", "1", "3"]
+    assert [r.tier for r in ranked] == ["hot", "warm", "cold"]
+    assert ranked[0].score > ranked[1].score > ranked[2].score
+    # Pure: the entries keep their defaults.
+    assert all(t.heat_score == 0.0 and t.heat_tier == "cold" for t in threads)
+    # The mutating wrapper writes exactly what the pure path computed.
+    written = rank_threads(threads, config, now)
+    assert [(t.thread_ts, t.heat_score, t.heat_tier) for t in written] == [
+        (r.entry.thread_ts, r.score, r.tier) for r in ranked
+    ]
+
+
+def test_score_threads_empty_board() -> None:
+    assert score_threads([], HeatConfig(), _time.time()) == []
+
+
+def test_filter_stale_threads_at_a_pinned_now() -> None:
+    config = HeatConfig(max_thread_age_days=1)
+    thread = _make_thread(hours_ago=30, thread_ts="t")
+    now = _time.time()
+    assert filter_stale_threads([thread], config, now) == []
+    assert filter_stale_threads([thread], config, now - 12 * 3600) == [thread]
 
 
 def test_filter_stale_threads() -> None:

@@ -2,10 +2,11 @@ import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Annotated
 
 import markdown as md
-from fastapi import FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi import Depends, FastAPI, Query, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, Response
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
@@ -19,13 +20,16 @@ from slack_dashboard.config import (
 from slack_dashboard.connection import ConnectionState
 from slack_dashboard.heat import (
     HeatBreakdown,
+    Ranked,
     heat_breakdown,
     is_following,
     is_heated,
     is_vip,
     is_zombie,
     replies_in_window,
+    score_threads,
 )
+from slack_dashboard.knobs import OverrideError, RequestConfig, request_config
 from slack_dashboard.llm.provider import LlmProvider
 from slack_dashboard.slack.mrkdwn import strip_mrkdwn
 from slack_dashboard.slack.poller import SlackPoller
@@ -373,13 +377,12 @@ def _flags(
     min_age = config.heat.unanswered_min_age_hours * 3600
     thread_age = now - float(thread.thread_ts)
     logger.debug(
-        "_flags: channel=%s thread_ts=%s replies_in_window=%d tier=%s"
+        "_flags: channel=%s thread_ts=%s replies_in_window=%d"
         " first_observed_at=%.3f now=%.3f app_start_at=%.3f new_window=%ds"
         " unanswered_enabled=%s message_count=%d thread_age_s=%.0f min_age_s=%.0f",
         thread.channel_name,
         thread.thread_ts,
         riw,
-        thread.heat_tier,
         thread.first_observed_at,
         now,
         app_start_at,
@@ -428,13 +431,16 @@ def _flags(
 
 
 def _build_row(
-    thread: ThreadEntry,
+    ranked: Ranked,
     config: AppConfig,
     now: float,
     app_start_at: float,
     below_fold: bool = False,
 ) -> RowView:
-    # The same arithmetic path that ranked the thread, read here for the atrophy input.
+    # ``ranked`` and ``config`` are the request's: the tier (row colour, strip colour) and the
+    # breakdown (the Nh atrophy input) come from the ranking the viewer is looking at, never
+    # from the score the poller last wrote into the shared entry.
+    thread = ranked.entry
     breakdown = heat_breakdown(thread, config.heat, now)
     return RowView(
         channel_id=thread.channel_id,
@@ -443,7 +449,7 @@ def _build_row(
         display_title=thread.display_title,
         message_count=thread.message_count,
         participant_count=len(thread.participants),
-        heat_tier=thread.heat_tier,
+        heat_tier=ranked.tier,
         strip=_activity_strip(thread, config.heat.work_window, now),
         since_last=breakdown.time_since_last,
         marks=_marks(
@@ -460,7 +466,7 @@ def _build_row(
 
 
 def group_threads(
-    threads: list[ThreadEntry],
+    threads: list[Ranked],
     group_by: str,
     config: AppConfig,
     now: float,
@@ -468,6 +474,7 @@ def group_threads(
 ) -> list[GroupView]:
     """Partition globally-ranked threads into display groups.
 
+    ``threads`` is a ranking from ``heat.score_threads`` under the request's ``config``.
     group-by=none is a single label-less group in pure heat order (no headers).
     group-by=channel produces one group per channel, clustered by family (the first
     hyphen-token, so all sre-* / data-platform-* sit together), families ordered by
@@ -506,10 +513,11 @@ def group_threads(
     if group_by == "channel":
         groups: dict[str, GroupView] = {}
         for index, thread in enumerate(threads):
-            group = groups.get(thread.channel_name)
+            name = thread.entry.channel_name
+            group = groups.get(name)
             if group is None:
-                group = GroupView(label=thread.channel_name)
-                groups[thread.channel_name] = group
+                group = GroupView(label=name)
+                groups[name] = group
             group.rows.append(
                 _build_row(thread, config, now, app_start_at, below_fold=_below(index))
             )
@@ -546,14 +554,14 @@ def group_threads(
     if group_by == "size":
         buckets = {label: GroupView(label=label) for label, _ in _SIZE_TIERS}
         for index, thread in enumerate(threads):
-            label = _tier_label(thread.message_count, _SIZE_TIERS)
+            label = _tier_label(thread.entry.message_count, _SIZE_TIERS)
             buckets[label].rows.append(
                 _build_row(thread, config, now, app_start_at, below_fold=_below(index))
             )
     else:  # velocity
         buckets = {label: GroupView(label=label) for label, _ in _VELOCITY_TIERS}
         for index, thread in enumerate(threads):
-            label = _tier_label(replies_in_window(thread, config.heat), _VELOCITY_TIERS)
+            label = _tier_label(replies_in_window(thread.entry, config.heat), _VELOCITY_TIERS)
             buckets[label].rows.append(
                 _build_row(thread, config, now, app_start_at, below_fold=_below(index))
             )
@@ -571,6 +579,19 @@ def create_routes(
     if templates is None:
         templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
     templates.env.filters["markdown"] = _markdown_filter
+    # Every read route (and the two event routes) builds its config from the yml plus the
+    # request's heat.* overrides; a rejected override is a 422 whose body is the reason.
+    view_config = request_config(config)
+
+    async def _override_rejected(request: Request, exc: Exception) -> Response:
+        return PlainTextResponse(str(exc), status_code=422)
+
+    app.add_exception_handler(OverrideError, _override_rejected)
+
+    def _rank(heat: HeatConfig, now: float) -> list[Ranked]:
+        # Pure: the request's ranking never writes into the shared entries, so a viewer's
+        # overrides cannot leak into the event log, the poller, or another viewer.
+        return score_threads(poller.eligible(heat, now), heat, now)
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> HTMLResponse:
@@ -579,6 +600,7 @@ def create_routes(
     @app.get("/threads", response_class=HTMLResponse)
     async def threads(
         request: Request,
+        view: Annotated[RequestConfig, Depends(view_config)],
         group_by: str = Query("none", alias="group-by"),
         compact: bool = Query(True),
     ) -> HTMLResponse:
@@ -586,12 +608,12 @@ def create_routes(
         # consistent timestamp (avoids per-row clock drift across many threads).
         now = datetime.now(UTC).timestamp()
         app_start_at = poller.app_start_at
-        ranked = poller.ranked_threads()
-        groups = group_threads(ranked, group_by, config, now, app_start_at)
+        ranked = _rank(view.config.heat, now)
+        groups = group_threads(ranked, group_by, view.config, now, app_start_at)
         # Disclosure contract: every ranked thread is always server-rendered (groups carry
         # the full set); compact mode only hides the below-fold tail via CSS. The visible
         # hidden count tells the user how much sits past the fold.
-        limit = config.display.compact_rows
+        limit = view.config.display.compact_rows
         total = len(ranked)
         hidden = max(0, total - limit) if limit > 0 else 0
         return templates.TemplateResponse(
@@ -604,32 +626,44 @@ def create_routes(
                 "total": total,
                 "hidden": hidden,
                 "limit": limit,
+                "overrides_json": view.overrides_json,
             },
         )
 
     @app.get("/summarize/{channel_id}/{thread_ts:path}", response_class=HTMLResponse)
-    async def summarize(request: Request, channel_id: str, thread_ts: str) -> HTMLResponse:
+    async def summarize(
+        request: Request,
+        channel_id: str,
+        thread_ts: str,
+        view: Annotated[RequestConfig, Depends(view_config)],
+    ) -> HTMLResponse:
         key = (channel_id, thread_ts)
         entry = poller.threads.get(key)
         if entry is None:
             return templates.TemplateResponse(
                 request,
                 "partials/summary.html",
-                {"error": True, "channel_id": channel_id, "thread_ts": thread_ts},
+                {
+                    "error": True,
+                    "channel_id": channel_id,
+                    "thread_ts": thread_ts,
+                    "overrides_json": view.overrides_json,
+                },
             )
-        # The heat-strip data depends only on entry, not on the summary, so it is built
-        # once here and carried by every thread-bearing response below (cached, fresh
-        # success, and fresh LLM-failure alike) - only the missing-thread branch above
-        # omits it.
+        # The heat-strip data depends only on entry and the request's config, not on the
+        # summary, so it is built once here and carried by every thread-bearing response
+        # below (cached, fresh success, and fresh LLM-failure alike) - only the
+        # missing-thread branch above omits it. The strip prints the viewer's ranking.
         now = datetime.now(UTC).timestamp()
-        breakdown = heat_breakdown(entry, config.heat, now)
-        heat_chips = _heat_strip(breakdown, config.heat, entry.channel_name)
+        breakdown = heat_breakdown(entry, view.config.heat, now)
+        heat_chips = _heat_strip(breakdown, view.config.heat, entry.channel_name)
         # The detail header quotes the thread's first message (its real "title") and
         # attributes it to the author; bullets summarizing the thread render below.
         detail = {
             "quote": strip_mrkdwn(entry.first_message),
             "author": entry.started_by,
             "heat": heat_chips,
+            "overrides_json": view.overrides_json,
         }
         if entry.summary and entry.summary_watermark >= entry.message_count:
             return templates.TemplateResponse(
@@ -654,35 +688,54 @@ def create_routes(
         )
 
     @app.get("/channel/{channel_id}", response_class=HTMLResponse)
-    async def channel(request: Request, channel_id: str) -> HTMLResponse:
+    async def channel(
+        request: Request,
+        channel_id: str,
+        view: Annotated[RequestConfig, Depends(view_config)],
+    ) -> HTMLResponse:
         # Hover popover: every thread in this channel, in the same heat ranking as the
-        # main list (ranked_threads is already sorted; we just filter to this channel).
+        # main list (the request's ranking, filtered to this channel).
         # Capture now/app_start_at once so all rows use a consistent timestamp.
         now = datetime.now(UTC).timestamp()
         app_start_at = poller.app_start_at
-        ranked = poller.ranked_threads()
-        rows = [
-            _build_row(t, config, now, app_start_at) for t in ranked if t.channel_id == channel_id
-        ]
-        name = next((t.channel_name for t in ranked if t.channel_id == channel_id), channel_id)
+        ranked = [r for r in _rank(view.config.heat, now) if r.entry.channel_id == channel_id]
+        rows = [_build_row(r, view.config, now, app_start_at) for r in ranked]
+        name = ranked[0].entry.channel_name if ranked else channel_id
         link = channel_link(config.workspace, channel_id, config.slack.team_id)
         return templates.TemplateResponse(
             request,
             "partials/channel.html",
-            {"rows": rows, "channel_name": name, "channel_link": link},
+            {
+                "rows": rows,
+                "channel_name": name,
+                "channel_link": link,
+                "overrides_json": view.overrides_json,
+            },
         )
 
     @app.post("/dismiss/{channel_id}/{thread_ts:path}", response_class=HTMLResponse)
-    async def dismiss(request: Request, channel_id: str, thread_ts: str) -> HTMLResponse:
-        poller.dismiss_thread(channel_id, thread_ts)
+    async def dismiss(
+        request: Request,
+        channel_id: str,
+        thread_ts: str,
+        view: Annotated[RequestConfig, Depends(view_config)],
+    ) -> HTMLResponse:
+        # The query carries the overrides of the surface the dismiss was clicked on
+        # (index.html copies its data-overrides), so the event names that board.
+        poller.dismiss_thread(channel_id, thread_ts, view.overrides or None)
         # Empty body: HTMX swaps the row out (hx-swap="outerHTML").
         return HTMLResponse("")
 
     @app.post("/event/open/{channel_id}/{thread_ts:path}")
-    async def open_event(channel_id: str, thread_ts: str) -> Response:
+    async def open_event(
+        channel_id: str,
+        thread_ts: str,
+        view: Annotated[RequestConfig, Depends(view_config)],
+    ) -> Response:
         # Fired by a sendBeacon on the row link's click, so the slack:// navigation is never
-        # held up by it. The poller writes the event with the thread's board position.
-        poller.open_thread(channel_id, thread_ts)
+        # held up by it. The poller writes the event with the thread's board position, and
+        # the clicked surface's overrides (from the beacon's query) when it had any.
+        poller.open_thread(channel_id, thread_ts, view.overrides or None)
         return Response(status_code=204)
 
     @app.get("/status", response_class=HTMLResponse)

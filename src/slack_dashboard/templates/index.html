@@ -52,10 +52,23 @@
     // Board events: a click on a thread link (row or channel popover) is the one signal
     // that the user chose that row. sendBeacon posts it without holding up the slack://
     // navigation; the server logs it with the thread's board position (events.jsonl).
+    // An event names the board that was clicked: the knob overrides a partial was rendered
+    // with sit in data-overrides on its root (absent = the yml board), and the open beacon
+    // and the dismiss request carry them as heat.* query parameters. Read from the clicked
+    // surface, never the current map, so a later request or a 422 cannot relabel it.
+    function withSurfaceOverrides(url, elt) {
+        var root = elt.closest(".channel-pop-inner, .summary-content, .disclosure");
+        if (!root || !root.dataset.overrides) return url;
+        return url + "?" + new URLSearchParams(JSON.parse(root.dataset.overrides)).toString();
+    }
     document.getElementById("thread-list").addEventListener("click", function(evt) {
         var link = evt.target.closest("a[data-open]");
         if (!link) return;
-        navigator.sendBeacon(link.dataset.open);
+        navigator.sendBeacon(withSurfaceOverrides(link.dataset.open, link));
+    });
+    document.body.addEventListener("htmx:configRequest", function(evt) {
+        if (!evt.detail.path.startsWith("/dismiss/")) return;
+        evt.detail.path = withSurfaceOverrides(evt.detail.path, evt.detail.elt);
     });
 </script>
 {% endblock %}

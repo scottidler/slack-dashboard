@@ -1,6 +1,6 @@
 {# Hover popover: every thread in this channel, heat-ranked. Each row is a link that
    opens that thread in the Slack desktop app (slack://); the header opens the channel. #}
-<div class="channel-pop-inner">
+<div class="channel-pop-inner"{% if overrides_json %} data-overrides="{{ overrides_json }}"{% endif %}>
     <a class="chan-head"
        href="{{ channel_link }}"{% if not channel_link.startswith('slack://') %} target="_blank" rel="noopener"{% endif %}>#{{ channel_name|lower }}</a>
     {% for row in rows %}

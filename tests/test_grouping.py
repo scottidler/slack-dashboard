@@ -2,6 +2,7 @@ import time
 from datetime import UTC, datetime
 
 from slack_dashboard.config import AppConfig
+from slack_dashboard.heat import Ranked
 from slack_dashboard.thread import ReplyRecord, ThreadEntry
 from slack_dashboard.web import RowView, _build_row, deep_link, group_threads
 
@@ -36,6 +37,15 @@ def _thread(
     )
 
 
+def _ranked(thread: ThreadEntry) -> Ranked:
+    """A ranking entry carrying the thread's own fixture tier (rows read the ranking's tier)."""
+    return Ranked(thread, thread.heat_score, thread.heat_tier)
+
+
+def _rank(threads: list[ThreadEntry]) -> list[Ranked]:
+    return [_ranked(t) for t in threads]
+
+
 def test_deep_link_strips_dot() -> None:
     assert deep_link("tatari", "C123", "1718900000.000100") == (
         "https://tatari.slack.com/archives/C123/p1718900000000100"
@@ -57,7 +67,7 @@ def test_group_by_channel_partitions() -> None:
         _thread(channel_name="sre", thread_ts="2"),
         _thread(channel_name="data", thread_ts="3"),
     ]
-    groups = group_threads(threads, "channel", config, _NOW, _FAR_PAST_APP_START)
+    groups = group_threads(_rank(threads), "channel", config, _NOW, _FAR_PAST_APP_START)
     labels = [g.label for g in groups]
     assert labels == ["sre", "data"]
     assert len(groups[0].rows) == 2
@@ -73,7 +83,7 @@ def test_group_by_channel_orders_by_weight() -> None:
         _thread(channel_name="backstage", thread_ts="1", reply_count=99),  # loudest
         _thread(channel_name="data-platform-internal", thread_ts="2", reply_count=3),
     ]
-    groups = group_threads(threads, "channel", config, _NOW, _FAR_PAST_APP_START)
+    groups = group_threads(_rank(threads), "channel", config, _NOW, _FAR_PAST_APP_START)
     assert [g.label for g in groups] == ["data-platform-internal", "backstage"]
 
 
@@ -88,7 +98,9 @@ def test_group_by_channel_clusters_families() -> None:
         _thread(channel_name="sre-internal", thread_ts="3"),
         _thread(channel_name="data-platform-internal", thread_ts="4"),
     ]
-    labels = [g.label for g in group_threads(threads, "channel", config, _NOW, _FAR_PAST_APP_START)]
+    labels = [
+        g.label for g in group_threads(_rank(threads), "channel", config, _NOW, _FAR_PAST_APP_START)
+    ]
     assert labels == ["sre-sec", "sre-internal", "data-platform", "data-platform-internal"]
 
 
@@ -99,7 +111,7 @@ def test_group_by_channel_equal_weight_keeps_heat_order() -> None:
         _thread(channel_name="alpha", thread_ts="1"),
         _thread(channel_name="beta", thread_ts="2"),
     ]
-    groups = group_threads(threads, "channel", config, _NOW, _FAR_PAST_APP_START)
+    groups = group_threads(_rank(threads), "channel", config, _NOW, _FAR_PAST_APP_START)
     assert [g.label for g in groups] == ["alpha", "beta"]
 
 
@@ -110,7 +122,7 @@ def test_group_by_none_single_unlabeled_group() -> None:
         _thread(channel_name="sre", thread_ts="1"),
         _thread(channel_name="data", thread_ts="2"),
     ]
-    groups = group_threads(threads, "none", config, _NOW, _FAR_PAST_APP_START)
+    groups = group_threads(_rank(threads), "none", config, _NOW, _FAR_PAST_APP_START)
     assert len(groups) == 1
     assert groups[0].label == ""
     assert len(groups[0].rows) == 2
@@ -125,7 +137,7 @@ def test_group_by_size_buckets() -> None:
         _thread(thread_ts="4", reply_count=10),  # small
         _thread(thread_ts="5", reply_count=3),  # small
     ]
-    groups = group_threads(threads, "size", config, _NOW, _FAR_PAST_APP_START)
+    groups = group_threads(_rank(threads), "size", config, _NOW, _FAR_PAST_APP_START)
     assert [g.label for g in groups] == [
         "huge (100+)",
         "large (50-99)",
@@ -139,7 +151,7 @@ def test_group_by_size_buckets() -> None:
 def test_group_by_size_drops_empty_buckets() -> None:
     config = AppConfig()
     threads = [_thread(thread_ts="1", reply_count=5), _thread(thread_ts="2", reply_count=8)]
-    groups = group_threads(threads, "size", config, _NOW, _FAR_PAST_APP_START)
+    groups = group_threads(_rank(threads), "size", config, _NOW, _FAR_PAST_APP_START)
     assert [g.label for g in groups] == ["small (3-24)"]
 
 
@@ -158,14 +170,16 @@ def test_group_by_velocity_buckets() -> None:
     ]  # 3 in-window
     idle = _thread(thread_ts="3")
     # no replies - idle.replies stays empty (default)
-    groups = group_threads([spiking, active, idle], "velocity", config, _NOW, _FAR_PAST_APP_START)
+    groups = group_threads(
+        _rank([spiking, active, idle]), "velocity", config, _NOW, _FAR_PAST_APP_START
+    )
     assert [g.label for g in groups] == ["spiking (15+)", "active (1-14)", "idle (0)"]
 
 
 def test_group_by_invalid_falls_back_to_none() -> None:
     config = AppConfig()
     threads = [_thread(channel_name="sre")]
-    groups = group_threads(threads, "bogus", config, _NOW, _FAR_PAST_APP_START)
+    groups = group_threads(_rank(threads), "bogus", config, _NOW, _FAR_PAST_APP_START)
     assert groups[0].label == ""
     assert len(groups[0].rows) == 1
 
@@ -176,7 +190,7 @@ def test_build_row_emits_pepper_for_heated_tone() -> None:
     config = AppConfig()
     thread = _thread(heat_tier="cold")
     thread.heated_tone = 3
-    row = _build_row(thread, config, _NOW, _FAR_PAST_APP_START)
+    row = _build_row(_ranked(thread), config, _NOW, _FAR_PAST_APP_START)
     assert "heated" in _lit(row)
 
 
@@ -184,7 +198,7 @@ def test_build_row_no_pepper_for_hot_but_cordial() -> None:
     # A hot-tier thread with no heated signal (monologue, cordial tone) must NOT
     # fire 🌶️ - the glyph is decoupled from heat tier.
     config = AppConfig()
-    row = _build_row(_thread(heat_tier="hot"), config, _NOW, _FAR_PAST_APP_START)
+    row = _build_row(_ranked(_thread(heat_tier="hot")), config, _NOW, _FAR_PAST_APP_START)
     assert "heated" not in _lit(row)
 
 
@@ -194,13 +208,13 @@ def test_build_row_emits_zombie_for_resurrected() -> None:
     now = time.time()
     thread.first_seen_ts = now - 5 * 86400
     thread.resurrection_event_ts = now - 3600
-    row = _build_row(thread, config, now, now - 7200)
+    row = _build_row(_ranked(thread), config, now, now - 7200)
     assert "revived" in _lit(row)
 
 
 def test_build_row_no_emoji_when_cold_and_not_zombie() -> None:
     config = AppConfig()
-    row = _build_row(_thread(heat_tier="cold"), config, _NOW, _FAR_PAST_APP_START)
+    row = _build_row(_ranked(_thread(heat_tier="cold")), config, _NOW, _FAR_PAST_APP_START)
     assert _lit(row) == []
 
 
@@ -208,14 +222,18 @@ def test_build_row_emits_crown_for_vip_participant() -> None:
     # A participant with an above-default people-weight flags the row with the VIP crown.
     config = AppConfig()
     config.heat.people_weights = {"U0": 50}
-    row = _build_row(_thread(heat_tier="cold", participants=2), config, _NOW, _FAR_PAST_APP_START)
+    row = _build_row(
+        _ranked(_thread(heat_tier="cold", participants=2)), config, _NOW, _FAR_PAST_APP_START
+    )
     assert "vip" in _lit(row)
 
 
 def test_build_row_no_crown_without_vip() -> None:
     config = AppConfig()
     config.heat.people_weights = {"Uother": 50}
-    row = _build_row(_thread(heat_tier="cold", participants=2), config, _NOW, _FAR_PAST_APP_START)
+    row = _build_row(
+        _ranked(_thread(heat_tier="cold", participants=2)), config, _NOW, _FAR_PAST_APP_START
+    )
     assert "vip" not in _lit(row)
 
 
@@ -225,7 +243,7 @@ def test_below_fold_tags_by_global_heat_rank() -> None:
     config = AppConfig()
     config.display.compact_rows = 3
     threads = [_thread(thread_ts=str(i)) for i in range(5)]
-    rows = group_threads(threads, "none", config, _NOW, _FAR_PAST_APP_START)[0].rows
+    rows = group_threads(_rank(threads), "none", config, _NOW, _FAR_PAST_APP_START)[0].rows
     assert [r.below_fold for r in rows] == [False, False, False, True, True]
 
 
@@ -234,7 +252,7 @@ def test_below_fold_disabled_when_compact_rows_zero() -> None:
     config = AppConfig()
     config.display.compact_rows = 0
     threads = [_thread(thread_ts=str(i)) for i in range(5)]
-    rows = group_threads(threads, "none", config, _NOW, _FAR_PAST_APP_START)[0].rows
+    rows = group_threads(_rank(threads), "none", config, _NOW, _FAR_PAST_APP_START)[0].rows
     assert all(not r.below_fold for r in rows)
 
 
@@ -249,7 +267,7 @@ def test_below_fold_pins_to_global_rank_under_grouping() -> None:
         _thread(channel_name="sre", thread_ts="3"),  # rank 2 - below
         _thread(channel_name="data", thread_ts="4"),  # rank 3 - below
     ]
-    groups = group_threads(threads, "channel", config, _NOW, _FAR_PAST_APP_START)
+    groups = group_threads(_rank(threads), "channel", config, _NOW, _FAR_PAST_APP_START)
     below = {(r.channel_name, r.thread_ts): r.below_fold for g in groups for r in g.rows}
     assert below == {
         ("sre", "1"): False,
@@ -263,3 +281,12 @@ def test_deep_link_fallback_when_workspace_empty() -> None:
     assert deep_link("", "C123", "1718900000.000100") == (
         "https://slack.com/app_redirect?channel=C123&message_ts=1718900000.000100"
     )
+
+
+def test_build_row_tier_comes_from_the_ranking_not_the_entry() -> None:
+    # A request scored under overrides hands _build_row its own tier; the row (title and
+    # strip colour) shows that tier even though the shared entry still holds the yml's.
+    thread = _thread(heat_tier="cold")
+    row = _build_row(Ranked(thread, 99.0, "hot"), AppConfig(), _NOW, _FAR_PAST_APP_START)
+    assert row.heat_tier == "hot"
+    assert thread.heat_tier == "cold"

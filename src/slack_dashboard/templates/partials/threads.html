@@ -1,7 +1,7 @@
 {% if groups and groups[0].rows %}
 {# Disclosure wrapper: in compact mode CSS hides .below-fold rows (and any group whose
    rows are all below the fold). Every row is still in the DOM regardless - zero-miss. #}
-<div class="disclosure{{ ' compact' if compact }}">
+<div class="disclosure{{ ' compact' if compact }}"{% if overrides_json %} data-overrides="{{ overrides_json }}"{% endif %}>
 {% for group in groups %}
 {% set group_hidden = group.rows | rejectattr('below_fold') | list | length == 0 %}
 <section class="thread-group{{ ' all-below-fold' if group_hidden }}">
@@ -60,5 +60,5 @@
 {% endif %}
 </div>
 {% else %}
-<p>No active threads found.</p>
+<p{% if overrides_json %} data-overrides="{{ overrides_json }}"{% endif %}>No active threads found.</p>
 {% endif %}

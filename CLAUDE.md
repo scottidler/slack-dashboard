@@ -81,6 +81,9 @@ skip install.
   topic terms read `ThreadEntry.topics`; every knob defaults neutral.
 - `topics.py` - jev (TypeSafe systemone) questions, state and parse, shared by the app's
   `TopicRater` and the `bin/` tools so the loop tunes on the numbers the board sees.
+- `knobs.py` - `KNOBS` (the heat knobs a viewer may override) and the request-scoped
+  config: `heat.*` query params merged over the yml's `heat`, re-validated, 422 on a bad
+  value. Routes score with the pure `heat.score_threads`; nothing is written back.
 - `events.py` - append-only `events.jsonl` of opens and dismisses with board position:
   the label the next tuning round needs. Nothing in the app reads it.
 - `web.py` - FastAPI routes + `group_threads` (none/channel/size/velocity) + row/deep-link
