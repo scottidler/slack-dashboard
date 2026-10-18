@@ -118,16 +118,24 @@
         .heat-chip.dim { opacity: 0.4; }
         /* Knob panel: dense, no cards. Groups flow as columns of one-line rows; the yml value
            is a tick under the slider, a changed knob is accent-coloured, reset only shows then. */
-        /* Layout: an icon rail on the left (the gear), the knob panel as a sidebar beside it
-           when open (the explorer's left column), the board in the remaining width. */
+        /* Layout: an icon rail on the left (the gear), the board centred in the rest; the knob
+           panel opens into the gutter between them (the explorer's left column). */
         .shell { display: flex; align-items: flex-start; min-height: 100vh; }
         .shell > main.container { flex: 1 1 auto; min-width: 0; }
         .rail { position: sticky; top: 0; flex: 0 0 2.4em; height: 100vh; display: flex; flex-direction: column; align-items: center; padding-top: 0.8em; border-right: 1px solid var(--pico-muted-border-color); }
         .rail-btn { width: auto; margin: 0; padding: 0.15em; background: none; border: none; font-size: 1.3em; line-height: 1; color: var(--pico-muted-color); cursor: pointer; }
         .rail-btn:hover, .rail-btn.active { color: var(--pico-color); }
-        #knob-panel { position: sticky; top: 0; flex: 0 0 23em; height: 100vh; overflow-y: auto; padding: 0.6em 0.6em 1em; font-size: 0.8em; background: var(--pico-background-color); border-right: 1px solid var(--pico-muted-border-color); }
+        /* The panel is out of the flow: it fills the empty gutter between the rail and the
+           board (width set by fitPanel in index.html), so opening it never moves the board.
+           When the gutter is too narrow it keeps a usable minimum and overlays the board. */
+        #knob-panel { box-sizing: border-box; position: fixed; top: 0; bottom: 0; left: 2.4rem; z-index: 20; width: var(--side-w, 280px); min-width: min(200px, calc(100vw - 2.4rem)); overflow-y: auto; overflow-x: hidden; padding: 0.5em 0.4em 1em; font-size: 12px; background: var(--pico-background-color); }
+        #knob-panel .knob { gap: 0.3em; }
+        #knob-panel .knob label { flex: 0 0 8.5em; }
+        #knob-panel .knob input[type=number] { flex: 0 0 3.6em; }
+        #knob-panel .knob-range { min-width: 3em; }
+        #knob-panel input[type=range]::-webkit-slider-thumb { width: 10px; height: 10px; margin-top: -3px; }
+        #knob-panel input[type=range]::-moz-range-thumb { width: 10px; height: 10px; }
         #knob-panel[hidden] { display: none; }
-        @media (max-width: 760px) { #knob-panel { position: fixed; left: 2.4em; z-index: 20; width: min(23em, calc(100vw - 2.4em)); } }
         #knob-error { color: #e74c3c; font-size: 0.85em; white-space: pre-wrap; }
         #knob-error:empty { display: none; }
         .knob-bar { display: flex; flex-wrap: wrap; gap: 0.2em 0.75em; align-items: baseline; margin-bottom: 0.2em; }

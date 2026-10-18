@@ -226,8 +226,17 @@
                 if (yml && navigator.clipboard) navigator.clipboard.writeText(yml).catch(function() {});
             }
         });
+        // The panel's width is the gutter between the rail and the board, measured, so the
+        // board never moves when it opens.
+        function fitPanel() {
+            var rail = document.querySelector(".rail").getBoundingClientRect().right;
+            var board = document.querySelector("main").getBoundingClientRect().left;
+            panel.style.setProperty("--side-w", Math.max(0, Math.floor(board - rail) - 8) + "px");
+        }
+        window.addEventListener("resize", fitPanel);
         toggle.addEventListener("click", function(evt) {
             evt.preventDefault();
+            fitPanel();
             panel.hidden = !panel.hidden;
             toggle.setAttribute("aria-expanded", String(!panel.hidden));
             toggle.classList.toggle("active", !panel.hidden);
