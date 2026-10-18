@@ -45,6 +45,11 @@ When changing the UI, hold this line:
 - Channel handles render Slack-style: lowercase, `#`-prefixed, no ALL-CAPS, no pill.
 - Thread/channel links use the `slack://` scheme (desktop app) when `slack.team-id` is
   set; see `deep_link` / `channel_link` in `web.py`.
+- The knob panel (`knobs` toggle beside group-by, `partials/knobs.html`) is the same
+  rule applied to controls: closed by default, no cards, no padding, one line per knob
+  (label, slider with the yml value as a tick, number, reset), groups flowing in columns.
+  It is generated from `knobs.KNOBS`, so a new knob appears there by being added to that
+  table; overrides ride the query string and are never written to the yml.
 
 Before adding anything to a row, ask: does this earn its pixels, or can it be a hover?
 

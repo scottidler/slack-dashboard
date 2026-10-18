@@ -1,0 +1,28 @@
+{# The knob panel: every heat knob the viewer may override, with the yml's value as the
+   tick. Behaviour (overrides map, debounce, reset, copy) lives in index.html and acts on
+   the .knob rows by their data-knob query key. #}
+<div class="knob-bar">
+    <button type="button" class="knob-action" data-action="reset-all">reset all</button>
+    <button type="button" class="knob-action" data-action="copy-yml">copy as yml</button>
+    <span class="knob-hint">overrides live in the URL, never in the yml</span>
+</div>
+<pre id="knob-yml" hidden></pre>
+{% for group in groups %}
+<section class="knob-group{{ ' dim' if group.dimmed }}"{% if group.dimmed %} data-dimmed="{{ group.dimmed }}"{% endif %}>
+    <h4 class="knob-group-name">{{ group.name }}{% if group.dimmed %} <span class="knob-note">{{ group.dimmed }}</span>{% endif %}</h4>
+    <div class="knob-grid">
+    {% for k in group.knobs %}
+        <div class="knob" data-knob="{{ k.key }}" data-yml="{{ k.yml }}">
+            <label title="{{ k.help }}">{{ k.label }}</label>
+            {% if k.choices %}
+            <select class="knob-input">{% for c in k.choices %}<option value="{{ c }}"{{ ' selected' if c == k.yml }}>{{ c }}</option>{% endfor %}</select>
+            {% else %}
+            <span class="knob-range"><input type="range" class="knob-input" min="{{ k.lo }}" max="{{ k.hi }}" step="{{ k.step }}" value="{{ k.yml }}"><i class="knob-tick" data-tick="{{ k.yml }}" style="left:{{ k.tick }}%"></i></span>
+            <input type="number" class="knob-num" min="{{ k.lo }}" max="{{ k.hi }}" step="{{ k.step }}" value="{{ k.yml }}">
+            {% endif %}
+            <button type="button" class="knob-reset" title="reset to the yml value">&#8634;</button>
+        </div>
+    {% endfor %}
+    </div>
+</section>
+{% endfor %}

@@ -12,15 +12,24 @@
        class="group-choice{{ ' active' if loop.first }}"
        data-group-by="{{ choice }}">{{ choice }}</a>
     {% endfor %}
+    <span class="group-sep">|</span>
+    <a href="#" id="knob-toggle" class="knob-toggle" aria-expanded="false" title="re-rank the board with your own knob values; nothing is saved">knobs</a>
     <span class="legend" title="strip: posts per working hour over the last 12, newest at the right (height: 1, 2-3, 4-7, 8+; a floor line = none)&#10;Nh: working hours since the last post (the atrophy input)&#10;marks: one slot per state, lit when it applies, dim when not; hover any for its meaning">strip · Nh · marks</span>
 </div>
+<div id="knob-panel" hidden
+     hx-get="/knobs"
+     hx-trigger="load"
+     hx-swap="innerHTML"></div>
+<form id="knob-form" hidden></form>
+<div id="knob-error" role="alert"></div>
 {# The selected grouping lives in a JS global re-sent via hx-vals on EVERY request
    (load, the 30s poll, and the focus-driven poll), so the periodic refresh can no
    longer revert the view to the default. The group-by links only update that global
    and re-trigger the container; they no longer issue their own request. #}
 <div id="thread-list"
      hx-get="/threads"
-     hx-vals='js:{"group-by": window.slackDashGroupBy || "none", "compact": (window.slackDashCompact === false ? "false" : "true")}'
+     hx-vals='js:{"group-by": window.slackDashGroupBy || "none", "compact": (window.slackDashCompact === false ? "false" : "true"), ...(window.slackDashKnobs || {})}'
+     hx-include="#knob-form"
      hx-trigger="load, every 30s [document.visibilityState === 'visible'], poll"
      hx-swap="innerHTML">
     <p>Loading threads...</p>
@@ -70,5 +79,124 @@
         if (!evt.detail.path.startsWith("/dismiss/")) return;
         evt.detail.path = withSurfaceOverrides(evt.detail.path, evt.detail.elt);
     });
+    // The knob panel. window.slackDashKnobs is the overrides map {"heat.velocity-weight":
+    // "30", ...}: only knobs that differ from the yml are in it. It rides every board request
+    // (hx-vals above), reaches the hover requests through the hidden #knob-form (hx-include),
+    // and is mirrored into location.search so a reload or a pasted link reproduces the board.
+    // Nothing here writes the yml; "copy as yml" only renders the changed knobs as text.
+    (function() {
+        var list = document.getElementById("thread-list");
+        var panel = document.getElementById("knob-panel");
+        var form = document.getElementById("knob-form");
+        var errorBox = document.getElementById("knob-error");
+        var toggle = document.getElementById("knob-toggle");
+        var map = {};
+        new URLSearchParams(location.search).forEach(function(value, key) {
+            if (key.indexOf("heat.") === 0) map[key] = value;
+        });
+        window.slackDashKnobs = map;
+
+        function mirror() {
+            form.replaceChildren();
+            var params = new URLSearchParams();
+            Object.keys(map).forEach(function(key) {
+                var input = document.createElement("input");
+                input.type = "hidden";
+                input.name = key;
+                input.value = map[key];
+                form.appendChild(input);
+                params.set(key, map[key]);
+            });
+            var query = params.toString();
+            history.replaceState(null, "", location.pathname + (query ? "?" + query : ""));
+        }
+        var timer = null;
+        function changed() {
+            mirror();
+            clearTimeout(timer);
+            timer = setTimeout(function() { htmx.trigger(list, "poll"); }, 150);
+        }
+        function same(row, value) {
+            var yml = row.dataset.yml;
+            return row.querySelector("select") ? value === yml : Number(value) === Number(yml);
+        }
+        function show(row) {
+            var key = row.dataset.knob;
+            var value = key in map ? map[key] : row.dataset.yml;
+            row.querySelectorAll(".knob-input, .knob-num").forEach(function(input) { input.value = value; });
+            row.classList.toggle("changed", key in map);
+        }
+        function set(row, value) {
+            if (value === "") return;
+            if (same(row, value)) delete map[row.dataset.knob]; else map[row.dataset.knob] = String(value);
+            show(row);
+            changed();
+        }
+        function hydrate() {
+            panel.querySelectorAll(".knob").forEach(show);
+        }
+        panel.addEventListener("htmx:afterSwap", hydrate);
+        panel.addEventListener("input", function(evt) {
+            var row = evt.target.closest(".knob");
+            if (row) set(row, evt.target.value);
+        });
+        panel.addEventListener("change", function(evt) {
+            var row = evt.target.closest(".knob");
+            if (row && evt.target.tagName === "SELECT") set(row, evt.target.value);
+        });
+        function renderYml() {
+            var scalars = [], maps = {};
+            Object.keys(map).forEach(function(key) {
+                var name = key.slice("heat.".length), dot = name.indexOf(".");
+                var yamlKey = function(text) { return /^[A-Za-z0-9][\w.-]*$/.test(text) ? text : JSON.stringify(text); };
+                if (dot < 0) { scalars.push("  " + name + ": " + map[key]); return; }
+                var field = name.slice(0, dot);
+                (maps[field] = maps[field] || []).push("    " + yamlKey(name.slice(dot + 1)) + ": " + map[key]);
+            });
+            var lines = scalars.slice();
+            Object.keys(maps).forEach(function(field) { lines.push("  " + field + ":"); lines = lines.concat(maps[field]); });
+            return lines.length ? "heat:\n" + lines.join("\n") + "\n" : "";
+        }
+        panel.addEventListener("click", function(evt) {
+            var reset = evt.target.closest(".knob-reset");
+            if (reset) {
+                var row = reset.closest(".knob");
+                delete map[row.dataset.knob];
+                show(row);
+                changed();
+                return;
+            }
+            var action = evt.target.closest(".knob-action");
+            if (!action) return;
+            if (action.dataset.action === "reset-all") {
+                Object.keys(map).forEach(function(key) { delete map[key]; });
+                hydrate();
+                changed();
+            } else if (action.dataset.action === "copy-yml") {
+                var yml = renderYml();
+                var pre = document.getElementById("knob-yml");
+                pre.textContent = yml || "no changed knobs";
+                pre.hidden = false;
+                if (yml && navigator.clipboard) navigator.clipboard.writeText(yml).catch(function() {});
+            }
+        });
+        toggle.addEventListener("click", function(evt) {
+            evt.preventDefault();
+            panel.hidden = !panel.hidden;
+            toggle.setAttribute("aria-expanded", String(!panel.hidden));
+            toggle.classList.toggle("active", !panel.hidden);
+        });
+        // htmx does not swap a 4xx, so a rejected override never replaces the board; the
+        // 422 body (the validator's text) shows above it instead. Only /threads owns this
+        // box: hover, popover and dismiss requests also originate inside the list.
+        function isBoard(evt) { return evt.detail.pathInfo.requestPath.indexOf("/threads") === 0; }
+        list.addEventListener("htmx:responseError", function(evt) {
+            if (isBoard(evt)) errorBox.textContent = evt.detail.xhr.responseText;
+        });
+        list.addEventListener("htmx:afterRequest", function(evt) {
+            if (isBoard(evt) && evt.detail.successful) errorBox.textContent = "";
+        });
+        mirror();
+    })();
 </script>
 {% endblock %}

@@ -305,6 +305,12 @@ NOT_A_VIEW_KNOB: dict[str, str] = {
 
 _KNOB_BY_QUERY_KEY: dict[str, Knob] = {k.query_key: k for k in KNOBS}
 
+# The panel's sections, in the order the explorer lays them out; weight maps follow.
+GROUPS = ("size", "time", "burst", "following", "topics", "tiers")
+# A weight-map slider reaches at least this far, wider when the yml already goes past it.
+MAP_WEIGHT_HI = 3.0
+MAP_WEIGHT_STEP = 0.1
+
 
 class OverrideError(ValueError):
     """A request's knob overrides were rejected; the message is the response body (422)."""
@@ -413,3 +419,88 @@ def request_config(base: AppConfig) -> Callable[[Request], RequestConfig]:
         return RequestConfig(config, overrides)
 
     return dependency
+
+
+def _fmt(value: float) -> str:
+    """A number as the panel and the query write it: ``2``, ``0.25``, never ``2.0``."""
+    return format(float(value), "g")
+
+
+@dataclass(frozen=True)
+class PanelKnob:
+    """One row of the panel: a knob, or one named entry of a weight map, with its yml value."""
+
+    key: str  # the query key (``heat.velocity-weight``), what parse_overrides accepts
+    label: str
+    help: str
+    yml: str  # the yml's value, written as the query would write it
+    lo: str = ""
+    hi: str = ""
+    step: str = ""
+    tick: float = 0.0  # where the yml value sits on the slider, percent from the left
+    choices: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class PanelGroup:
+    name: str
+    knobs: tuple[PanelKnob, ...]
+    dimmed: str = ""  # why the group does nothing right now; empty = live
+
+
+def _tick(value: float, lo: float, hi: float) -> float:
+    if hi <= lo:
+        return 0.0
+    return round(min(100.0, max(0.0, (value - lo) / (hi - lo) * 100)), 2)
+
+
+def _panel_knob(knob: Knob, heat: HeatConfig) -> PanelKnob:
+    value = getattr(heat, knob.key)
+    if knob.choices:
+        return PanelKnob(knob.query_key, knob.label, knob.help, str(value), choices=knob.choices)
+    return PanelKnob(
+        knob.query_key,
+        knob.label,
+        knob.help,
+        _fmt(value),
+        _fmt(knob.lo),
+        _fmt(knob.hi),
+        _fmt(knob.step),
+        _tick(value, knob.lo, knob.hi),
+    )
+
+
+def _map_group(field: str, weights: dict[str, float], prefix: str) -> PanelGroup:
+    rows = []
+    for name in sorted(weights):
+        hi = max(MAP_WEIGHT_HI, weights[name])
+        rows.append(
+            PanelKnob(
+                f"{PREFIX}{field}.{name}",
+                f"{prefix}{name}",
+                f"{field} entry from the yml; an override replaces it for this view",
+                _fmt(weights[name]),
+                "0",
+                _fmt(hi),
+                _fmt(MAP_WEIGHT_STEP),
+                _tick(weights[name], 0, hi),
+            )
+        )
+    return PanelGroup(field, tuple(rows))
+
+
+def panel_groups(config: AppConfig) -> list[PanelGroup]:
+    """Every knob the panel shows, grouped, with the yml's value; the two weight maps last.
+
+    Rendered from ``KNOBS`` and the yml only, never from a request: the panel shows what the
+    yml says, and the viewer's overrides ride on top of it in the browser. The topic group is
+    dimmed when ``topics.api-key`` is empty, since no thread carries a probability then.
+    """
+    groups = []
+    for name in GROUPS:
+        knobs = tuple(_panel_knob(k, config.heat) for k in KNOBS if k.group == name)
+        dimmed = "no rater configured" if name == "topics" and not config.topics.api_key else ""
+        groups.append(PanelGroup(name, knobs, dimmed))
+    groups.append(_map_group("channel-weights", config.heat.channel_weights, "#"))
+    groups.append(_map_group("people-weights", config.heat.people_weights, ""))
+    return [g for g in groups if g.knobs]

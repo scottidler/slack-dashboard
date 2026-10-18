@@ -128,6 +128,15 @@ startup; there is no hot-reload yet).
 - **Group by** - `channel | size | velocity | participants`.
 - **Hover** a row for the AI summary; **click** to open the Slack thread.
 - **Dismiss** - the small control on each row; one click, permanent.
+- **Knobs** - the `knobs` toggle beside group-by opens a dense panel of every heat knob
+  (size, time, burst, following, topics, tiers, then the channel and people weights), each
+  with the yml's value as a tick. Drag one and the server re-ranks the current data with it;
+  `reset` per knob, `reset all`. Only changed knobs are in the URL
+  (`?heat.velocity-weight=60`), so a reload or a pasted link reproduces the board. A value
+  the validator rejects shows its message above the board, which keeps its last render.
+  `copy as yml` renders the changed knobs as a `heat:` block to paste into the yml by hand:
+  the site never writes the config. Opens and dismisses made from an overridden board are
+  logged with their `overrides`.
 
 Opens and dismisses are appended to `events.jsonl` beside the config, each with
 the thread's rank, score and tier at that moment. They are the "what did I act

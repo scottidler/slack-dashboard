@@ -211,6 +211,13 @@ position.
    (opened or dismissed), alongside the three existing labels.
 3. Rerun the loop on that label. Expect the purity ceiling to move; expect the involvement
    keeps to hold.
+4. Try a keeper on the live board first: the site's knob panel (`knobs` toggle) re-ranks the
+   current data with any heat knob, and `copy as yml` renders the changed ones for the yml.
+   Opens and dismisses made from an overridden board carry `overrides` in `events.jsonl`;
+   exclude those rows from the label.
+5. Purity now credits only rows needed at the look (`before_me`), and the following knobs
+   (`followed-drop`, `followed-rebuild-per-msg`) are owner policy the loop cannot move; the
+   evaluator fixes them from the yml. Replays are comparable only from that change on.
 
 ## Verification
 

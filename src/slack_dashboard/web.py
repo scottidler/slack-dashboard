@@ -29,7 +29,7 @@ from slack_dashboard.heat import (
     replies_in_window,
     score_threads,
 )
-from slack_dashboard.knobs import OverrideError, RequestConfig, request_config
+from slack_dashboard.knobs import OverrideError, RequestConfig, panel_groups, request_config
 from slack_dashboard.llm.provider import LlmProvider
 from slack_dashboard.slack.mrkdwn import strip_mrkdwn
 from slack_dashboard.slack.poller import SlackPoller
@@ -596,6 +596,13 @@ def create_routes(
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> HTMLResponse:
         return templates.TemplateResponse(request, "index.html")
+
+    @app.get("/knobs", response_class=HTMLResponse)
+    async def knobs_panel(request: Request) -> HTMLResponse:
+        # The panel shows the yml's values; the browser layers the viewer's overrides on top.
+        return templates.TemplateResponse(
+            request, "partials/knobs.html", {"groups": panel_groups(config)}
+        )
 
     @app.get("/threads", response_class=HTMLResponse)
     async def threads(
