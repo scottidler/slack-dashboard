@@ -20,7 +20,9 @@
      hx-get="/knobs"
      hx-trigger="load"
      hx-swap="innerHTML"></div>
+<div id="knob-charts" hidden></div>
 <form id="knob-form" hidden></form>
+<script src="/static/chart.js"></script>
 <div id="knob-error" role="alert"></div>
 {# The selected grouping lives in a JS global re-sent via hx-vals on EVERY request
    (load, the 30s poll, and the focus-driven poll), so the periodic refresh can no
@@ -90,6 +92,7 @@
         var form = document.getElementById("knob-form");
         var errorBox = document.getElementById("knob-error");
         var toggle = document.getElementById("knob-toggle");
+        var charts = document.getElementById("knob-charts");
         var map = {};
         new URLSearchParams(location.search).forEach(function(value, key) {
             if (key.indexOf("heat.") === 0) map[key] = value;
@@ -135,7 +138,47 @@
         function hydrate() {
             panel.querySelectorAll(".knob").forEach(show);
         }
-        panel.addEventListener("htmx:afterSwap", hydrate);
+        // The shaping charts: the raw inputs of every board thread under the current overrides
+        // (/knobs/inputs), binned by chart() from the shared chart.js, the knob's curve on top.
+        // The curve parameters are the knob values in force: the override, else the yml's.
+        function knobValue(key) {
+            if (key in map) return map[key];
+            var row = panel.querySelector('[data-knob="' + key + '"]');
+            return row ? row.dataset.yml : null;
+        }
+        var drawn = 0;
+        function drawCharts() {
+            if (panel.hidden || knobValue("heat.base-cap") === null) return;
+            var seq = ++drawn;
+            fetch("/knobs/inputs?" + new URLSearchParams(map)).then(function(resp) {
+                return resp.ok ? resp.json() : Promise.reject(resp.status);
+            }).then(function(rows) {
+                if (seq !== drawn) return;
+                var K = function(name) { return Number(knobValue("heat." + name)); };
+                var cap = K("base-cap"), baseK = K("base-k"), half = K("atrophy-half-life-work-hours");
+                var hyper = knobValue("heat.atrophy-curve") === "hyperbolic";
+                var vols = rows.map(function(r) { return r.volume; });
+                var tsls = rows.map(function(r) { return r["since-last"]; });
+                var leaders = rows.filter(function(r) { return r["p-leader"] !== null; })
+                    .map(function(r) { return r["p-leader"]; });
+                var scores = rows.map(function(r) { return r.score; });
+                var html =
+                    chart("volume -> base", "base = " + cap + " * v / (v + " + baseK + ")", vols, 0,
+                        Math.max.apply(null, [10].concat(vols)),
+                        function(v) { return cap * v / (v + baseK); }, cap) +
+                    chart("hours since last -> atrophy", (hyper ? "1 / (1 + t / h)" : "0.5 ^ (t / h)") + ", h = " + half + " at p(leader) 0.5",
+                        tsls, 0, Math.max.apply(null, [4].concat(tsls)),
+                        function(t) { return hyper ? 1 / (1 + t / half) : Math.pow(0.5, t / half); }, 1);
+                if (leaders.length) {
+                    html += chart("p(leader) -> vote", "vote = " + K("leader-weight") + " * p; curve = p",
+                        leaders, 0, 1, function(x) { return x; }, 1);
+                }
+                html += chart("score on this board", "bars only: the board's score distribution under these knobs",
+                    scores, 0, Math.max.apply(null, [10].concat(scores)), null, 1);
+                charts.innerHTML = html;
+            }).catch(function() {});
+        }
+        panel.addEventListener("htmx:afterSwap", function() { hydrate(); drawCharts(); });
         panel.addEventListener("input", function(evt) {
             var row = evt.target.closest(".knob");
             if (row) set(row, evt.target.value);
@@ -185,6 +228,8 @@
             panel.hidden = !panel.hidden;
             toggle.setAttribute("aria-expanded", String(!panel.hidden));
             toggle.classList.toggle("active", !panel.hidden);
+            charts.hidden = panel.hidden;
+            drawCharts();
         });
         // htmx does not swap a 4xx, so a rejected override never replaces the board; the
         // 422 body (the validator's text) shows above it instead. Only /threads owns this
@@ -194,7 +239,9 @@
             if (isBoard(evt)) errorBox.textContent = evt.detail.xhr.responseText;
         });
         list.addEventListener("htmx:afterRequest", function(evt) {
-            if (isBoard(evt) && evt.detail.successful) errorBox.textContent = "";
+            if (!isBoard(evt) || !evt.detail.successful) return;
+            errorBox.textContent = "";
+            drawCharts();
         });
         mirror();
     })();

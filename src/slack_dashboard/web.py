@@ -6,7 +6,8 @@ from typing import Annotated
 
 import markdown as md
 from fastapi import Depends, FastAPI, Query, Request
-from fastapi.responses import HTMLResponse, PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
@@ -29,7 +30,13 @@ from slack_dashboard.heat import (
     replies_in_window,
     score_threads,
 )
-from slack_dashboard.knobs import OverrideError, RequestConfig, panel_groups, request_config
+from slack_dashboard.knobs import (
+    OverrideError,
+    RequestConfig,
+    panel_groups,
+    request_config,
+    shaping_inputs,
+)
 from slack_dashboard.llm.provider import LlmProvider
 from slack_dashboard.slack.mrkdwn import strip_mrkdwn
 from slack_dashboard.slack.poller import SlackPoller
@@ -39,6 +46,7 @@ from slack_dashboard.worktime import business_hours_between
 logger = logging.getLogger(__name__)
 
 _TEMPLATE_DIR = Path(__file__).parent / "templates"
+_STATIC_DIR = Path(__file__).parent / "static"
 
 # Row flags: the thread states that used to be an emoji column, now plain words with a
 # tooltip each. Render order: following (leads), unanswered, new, vip, spiking, heated, revived.
@@ -593,6 +601,9 @@ def create_routes(
         # overrides cannot leak into the event log, the poller, or another viewer.
         return score_threads(poller.eligible(heat, now), heat, now)
 
+    # chart.js is shared with bin/explore.html, which inlines the same file when published.
+    app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
+
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> HTMLResponse:
         return templates.TemplateResponse(request, "index.html")
@@ -603,6 +614,15 @@ def create_routes(
         return templates.TemplateResponse(
             request, "partials/knobs.html", {"groups": panel_groups(config)}
         )
+
+    @app.get("/knobs/inputs")
+    async def knobs_inputs(
+        view: Annotated[RequestConfig, Depends(view_config)],
+    ) -> JSONResponse:
+        # One row per thread /threads would render under the same overrides, at one instant.
+        now = datetime.now(UTC).timestamp()
+        heat = view.config.heat
+        return JSONResponse(shaping_inputs(_rank(heat, now), heat, now))
 
     @app.get("/threads", response_class=HTMLResponse)
     async def threads(

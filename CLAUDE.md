@@ -89,6 +89,9 @@ skip install.
 - `knobs.py` - `KNOBS` (the heat knobs a viewer may override) and the request-scoped
   config: `heat.*` query params merged over the yml's `heat`, re-validated, 422 on a bad
   value. Routes score with the pure `heat.score_threads`; nothing is written back.
+- `static/chart.js` - the shaping charts' `chart()`, served at `/static/chart.js` and loaded
+  by the app page; `bin/explore.html` names the same file and `bin/explore.py` inlines it
+  into the published explorer. `GET /knobs/inputs` feeds the app's four charts.
 - `events.py` - append-only `events.jsonl` of opens and dismisses with board position:
   the label the next tuning round needs. Nothing in the app reads it.
 - `web.py` - FastAPI routes + `group_threads` (none/channel/size/velocity) + row/deep-link

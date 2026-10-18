@@ -442,3 +442,40 @@ def test_poller_eligible_drops_dismissed_and_stale_and_writes_nothing(
     narrowed = YML.heat.model_copy(update={"max_thread_age_days": 1})
     assert "two days quiet" not in {t.first_message for t in poller.eligible(narrowed, T)}
     assert {k: (t.heat_score, t.heat_tier) for k, t in poller.threads.items()} == before
+
+
+# ---- shaping charts ----
+
+
+def test_knobs_inputs_is_one_row_per_board_thread_with_the_overridden_score(
+    client: TestClient,
+) -> None:
+    rows = client.get("/knobs/inputs").json()
+    board = _rows(client.get("/threads").text)
+    assert len(rows) == len(board) == 5  # dismissed, stale and (yml 3-day) none else
+    assert set(rows[0]) == {"volume", "since-last", "p-leader", "score"}
+    overridden = client.get("/knobs/inputs?heat.velocity-weight=60").json()
+    assert len(overridden) == len(rows)
+    assert sorted(r["score"] for r in overridden) != sorted(r["score"] for r in rows)
+    assert max(r["since-last"] for r in rows) >= 0
+    assert all(r["p-leader"] is None for r in rows)  # no jev rating on the fixture board
+
+
+def test_knobs_inputs_volume_follows_the_reply_weight_override(client: TestClient) -> None:
+    base = sorted(r["volume"] for r in client.get("/knobs/inputs").json())
+    heavy = sorted(r["volume"] for r in client.get("/knobs/inputs?heat.reply-weight=3").json())
+    assert heavy != base
+    assert all(h >= b for h, b in zip(heavy, base, strict=True))
+
+
+def test_knobs_inputs_narrowed_age_drops_rows_like_threads(client: TestClient) -> None:
+    query = "?heat.max-thread-age-days=1"
+    assert len(client.get("/knobs/inputs" + query).json()) == len(
+        _rows(client.get("/threads" + query).text)
+    )
+
+
+def test_knobs_inputs_rejects_a_bad_override_with_422(client: TestClient) -> None:
+    resp = client.get("/knobs/inputs?heat.velocity-weight=abc")
+    assert resp.status_code == 422
+    assert "heat.velocity-weight" in resp.text

@@ -43,6 +43,10 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATE = Path(__file__).resolve().parent / "explore.html"
 _FORMULA = Path(__file__).resolve().parent / "formula.py"
+# The shared chart code the app page also loads. explore.html names it by its repo-relative
+# path; the published page is one standalone file, so render_page inlines it in that tag's place.
+_CHART_JS = _REPO_ROOT / "src" / "slack_dashboard" / "static" / "chart.js"
+_CHART_TAG = '<script src="../src/slack_dashboard/static/chart.js"></script>'
 # Shape knobs the page adds over heat.py. Live values = the live formula; the tuned column is
 # what the autoresearch loop (bin/program.md) settled on and is hard-coded in formula.score.
 # The explorer's names for the shape knobs the app now reads from the yml (HeatConfig
@@ -379,6 +383,15 @@ def build(config: AppConfig, corpus: Path) -> dict[str, Any]:
     return data
 
 
+def render_page(payload: str) -> str:
+    """The explorer as one standalone file: the data in, the shared chart script inlined."""
+    template = _TEMPLATE.read_text()
+    if _CHART_TAG not in template:
+        raise ValueError(f"{_TEMPLATE} does not load {_CHART_TAG}")
+    page = template.replace(_CHART_TAG, "<script>\n" + _CHART_JS.read_text() + "</script>")
+    return page.replace("__DATA__", payload)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--corpus", type=Path, default=_default_corpus())
@@ -389,7 +402,7 @@ def main(argv: list[str] | None = None) -> int:
     config = load_config(_config_path())
     data = build(config, args.corpus)
     payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
-    html = _TEMPLATE.read_text().replace("__DATA__", payload)
+    html = render_page(payload)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(html)
     print(f"{args.out} ({args.out.stat().st_size // 1024} KiB)")

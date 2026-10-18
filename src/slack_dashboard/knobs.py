@@ -18,6 +18,7 @@ from fastapi import Request
 from pydantic import ValidationError
 
 from slack_dashboard.config import AppConfig, HeatConfig
+from slack_dashboard.heat import Ranked, heat_breakdown
 
 logger = logging.getLogger(__name__)
 
@@ -504,3 +505,23 @@ def panel_groups(config: AppConfig) -> list[PanelGroup]:
     groups.append(_map_group("channel-weights", config.heat.channel_weights, "#"))
     groups.append(_map_group("people-weights", config.heat.people_weights, ""))
     return [g for g in groups if g.knobs]
+
+
+def shaping_inputs(ranked: list[Ranked], config: HeatConfig, now: float) -> list[dict[str, Any]]:
+    """The raw inputs the shaping charts bin, one row per ranked thread, under ``config``.
+
+    ``volume`` feeds base, ``since-last`` (working hours) feeds atrophy, ``p-leader`` feeds the
+    vote (``None`` until jev rates the thread), ``score`` is the request's overridden score.
+    """
+    rows: list[dict[str, Any]] = []
+    for r in ranked:
+        b = heat_breakdown(r.entry, config, now)
+        rows.append(
+            {
+                "volume": b.message_count * config.reply_weight + b.people_term,
+                "since-last": b.time_since_last,
+                "p-leader": b.p_leader,
+                "score": r.score,
+            }
+        )
+    return rows
