@@ -221,7 +221,7 @@ records the yml rank from `_record_event` (`poller.py:134`) and has no board sna
 **Overrides** (`knobs.py`, one FastAPI dependency used by `/threads`, `/summarize`,
 `/channel`):
 
-- `heat.<kebab-key>=<value>` for a scalar `HeatConfig` field, e.g. `heat.velocity-weight=30`,
+- `heat.<kebab-key>=<value>` for a `KNOBS` key, e.g. `heat.velocity-weight=30`,
   `heat.atrophy-curve=hyperbolic`.
 - `heat.channel-weights.<channel>=<float>` and `heat.people-weights.<user-id>=<float>` for
   the two maps. A name absent from the yml map is added; one present is replaced.
@@ -565,6 +565,11 @@ static file both pages load, so the chart code exists once.
   calls.
 - The metadata sweep is one paced history call per channel per refresh interval (about
   1.2 s each, `client.py:35`), inside the existing refresh budget.
+- The sweep reads every parent with a reply (`min_replies=1`), not the channel's
+  `min-replies`: a socket-tracked thread below it is on the board too.
+- Limit: the sweep and the reconnect reconcile read only the first history page
+  (`fetch_threads` ignores `next_cursor`). A tracked parent past the newest page is not
+  swept. Pagination is deferred until that is an observed problem.
 
 ### Security
 - The site is behind Authelia. Overrides are read-only against in-memory data, validated

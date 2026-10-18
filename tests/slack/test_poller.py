@@ -1,5 +1,5 @@
 import time
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -796,6 +796,39 @@ class TestSubscribed:
         assert poller.ranked_threads()[0].heat_score > followed_score
 
     @pytest.mark.asyncio
+    async def test_sweep_reaches_a_tracked_thread_below_min_replies(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The real fetch_threads filter runs: only Slack's web client is mocked.
+        monkeypatch.setattr("slack_dashboard.slack.client.asyncio.sleep", AsyncMock())
+        web = AsyncMock()
+        web.conversations_history = AsyncMock(
+            return_value=MagicMock(
+                data={
+                    "ok": True,
+                    "messages": [{"ts": _NOW, "user": "U1", "reply_count": 1, "subscribed": False}],
+                }
+            )
+        )
+        web.users_info = AsyncMock(return_value=MagicMock(data={"user": {"name": "u1"}}))
+        slack = SlackClient(web)
+        slack.fetch_replies = AsyncMock(  # type: ignore[method-assign]
+            return_value=[
+                _root(_NOW, subscribed=True, last_read=_REPLY_1),
+                {"ts": _REPLY_1, "user": "U2", "text": "r1"},
+            ]
+        )
+        config = AppConfig(channels={"general": "C111"})
+        assert config.fetch.min_replies == 3  # the one-reply thread is below it
+        poller = SlackPoller(slack, config)
+        poller._channel_map = config.channels
+        # Tracked via the socket path, which has no min-replies gate.
+        await poller._fetch_thread("C111", "general", _NOW, incremental=False)
+        assert poller.threads[("C111", _NOW)].subscribed is True
+        await poller._sweep_metadata()
+        assert poller.threads[("C111", _NOW)].subscribed is False
+
+    @pytest.mark.asyncio
     async def test_sweep_follows_and_sets_last_read_on_a_quiet_thread(self) -> None:
         mock_slack = _make_mock_slack()
         mock_slack.fetch_replies = AsyncMock(return_value=[_root(_NOW, subscribed=False)])
@@ -852,3 +885,27 @@ class TestSubscribed:
         task.cancel()
         await task  # the loop swallows its own cancellation and returns
         assert task.done()
+
+
+@pytest.mark.asyncio
+async def test_root_only_incremental_fetch_never_moves_the_watermark_back() -> None:
+    def replies(channel_id: str, thread_ts: str, oldest: str | None = None) -> list[dict[str, str]]:
+        # Slack always returns the root, plus the replies after oldest.
+        everything = [
+            {"ts": _NOW, "user": "U1", "text": "root"},
+            {"ts": _REPLY_1, "user": "U2", "text": "r1"},
+        ]
+        return [r for r in everything if r["ts"] == _NOW or oldest is None or r["ts"] > oldest]
+
+    mock_slack = _make_mock_slack()
+    mock_slack.fetch_replies = AsyncMock(side_effect=replies)
+    poller = SlackPoller(mock_slack, AppConfig(channels={"general": "C111"}))
+    key = ("C111", _NOW)
+    await poller._fetch_thread("C111", "general", _NOW, incremental=False)
+    assert poller.thread_watermarks[key] == _REPLY_1
+    for _ in range(3):
+        await poller._fetch_thread("C111", "general", _NOW, incremental=True)
+        assert poller.thread_watermarks[key] == _REPLY_1
+    entry = poller.threads[key]
+    assert entry.message_count == 2
+    assert entry.participants == {"U1": 1, "U2": 1}

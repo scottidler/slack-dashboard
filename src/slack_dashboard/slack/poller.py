@@ -323,11 +323,10 @@ class SlackPoller:
         """
         updated = 0
         for channel_name, channel_id in self._channel_map.items():
-            min_replies = resolve_min_replies(channel_name, self._config.fetch)
             try:
-                parents = await self._slack.fetch_threads(
-                    channel_id, min_replies=min_replies, oldest=None
-                )
+                # min_replies=1, not the channel's: a socket-tracked thread below min-replies
+                # is on the board too, and its follow state must reach it.
+                parents = await self._slack.fetch_threads(channel_id, min_replies=1, oldest=None)
             except Exception:
                 logger.exception("_sweep_metadata: history failed for channel=%s", channel_name)
                 continue
@@ -383,7 +382,10 @@ class SlackPoller:
             return
 
         latest_ts = max(r["ts"] for r in replies)
-        self._thread_watermarks[key] = latest_ts
+        # A root-only incremental response would pull the watermark back to thread_ts, and the
+        # next fetch would re-add replies already counted.
+        watermark = max(latest_ts, oldest, key=float) if oldest else latest_ts
+        self._thread_watermarks[key] = watermark
 
         # The root is the message whose ts == thread_ts, never "the first item": with oldest
         # set the client concatenates pages. It carries Slack's follow state for me.

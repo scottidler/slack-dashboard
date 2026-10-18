@@ -1,6 +1,10 @@
 """The knob panel: GET /knobs renders every KNOBS row and weight-map entry with the yml's value."""
 
+import json
 import re
+import shutil
+import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -8,8 +12,8 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import slack_dashboard.web as web_mod
-from slack_dashboard.config import AppConfig, HeatConfig, TopicsConfig
-from slack_dashboard.knobs import KNOBS, MAPS, panel_groups, parse_overrides
+from slack_dashboard.config import AppConfig, HeatConfig, TopicsConfig, load_config
+from slack_dashboard.knobs import KNOBS, MAPS, apply_overrides, panel_groups, parse_overrides
 from slack_dashboard.llm.provider import LlmProvider
 
 
@@ -126,3 +130,45 @@ def test_index_has_the_toggle_the_error_box_and_the_form() -> None:
     assert 'id="knob-error"' in html
     assert 'id="knob-form"' in html
     assert 'hx-get="/knobs"' in html
+
+
+def test_every_slider_end_is_a_value_the_server_accepts() -> None:
+    config = _config()
+    config.heat.max_thread_age_days = 3  # narrows-only: the slider must stop at the yml
+    for group in panel_groups(config):
+        for knob in group.knobs:
+            if knob.choices:
+                continue
+            for end in (knob.lo, knob.hi):
+                apply_overrides(config, {knob.key: end})  # a ValueError is the 422
+    age = next(k for g in panel_groups(config) for k in g.knobs if "max-thread-age" in k.key)
+    assert age.hi == "3"
+    assert age.tick == 100.0
+
+
+INDEX = Path(__file__).resolve().parent.parent / "src" / "slack_dashboard" / "templates"
+
+
+def _render_yml(overrides: dict[str, str]) -> str:
+    """The page's own renderYml(), run under node over ``overrides`` as the knob map."""
+    node = shutil.which("node")
+    assert node, "node is required to run the page's renderYml"
+    page = (INDEX / "index.html").read_text()
+    match = re.search(r"^( *)function renderYml\(\) \{\n.*?^\1\}$", page, re.M | re.S)
+    assert match, "renderYml() not found in index.html"
+    script = f"var map = {json.dumps(overrides)};\n{match.group(0)}\n"
+    script += "process.stdout.write(renderYml());"
+    return subprocess.run([node, "-e", script], capture_output=True, text=True, check=True).stdout
+
+
+def test_copy_as_yml_loads_back_with_yaml_special_map_names(tmp_path: Path) -> None:
+    names = ["on", "123", "null", "yes", "~", "true", "sre-internal"]
+    overrides = {f"heat.channel-weights.{n}": "2" for n in names}
+    overrides["heat.people-weights.U0AAA"] = "1.5"
+    overrides["heat.velocity-weight"] = "40"
+    path = tmp_path / "slack-dashboard.yml"
+    path.write_text(_render_yml(overrides))
+    heat = load_config(path).heat
+    assert heat.channel_weights == dict.fromkeys(names, 2.0)
+    assert heat.people_weights == {"U0AAA": 1.5}
+    assert heat.velocity_weight == 40

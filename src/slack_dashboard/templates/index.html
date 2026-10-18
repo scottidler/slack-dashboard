@@ -191,10 +191,10 @@
             var scalars = [], maps = {};
             Object.keys(map).forEach(function(key) {
                 var name = key.slice("heat.".length), dot = name.indexOf(".");
-                var yamlKey = function(text) { return /^[A-Za-z0-9][\w.-]*$/.test(text) ? text : JSON.stringify(text); };
                 if (dot < 0) { scalars.push("  " + name + ": " + map[key]); return; }
                 var field = name.slice(0, dot);
-                (maps[field] = maps[field] || []).push("    " + yamlKey(name.slice(dot + 1)) + ": " + map[key]);
+                // Always quoted: a bare on, 123 or null would load back as a bool, int or None.
+                (maps[field] = maps[field] || []).push("    " + JSON.stringify(name.slice(dot + 1)) + ": " + map[key]);
             });
             var lines = scalars.slice();
             Object.keys(maps).forEach(function(field) { lines.push("  " + field + ":"); lines = lines.concat(maps[field]); });

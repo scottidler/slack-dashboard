@@ -135,3 +135,22 @@ Design doc: `docs/design/2026-10-18-following-and-live-knobs.md`
 - The published explorer on marquee still carries the old inline `chart()`; the republish (`marquee replace`) is the finalization step and was not run.
 - Success criteria ran on a local instance on port 8899 (the scratch yml's port; 8889 is the docker container). Criterion 1 on live data: `/knobs/inputs` row count 58 and `/threads?compact=false` row count 58 (`rg -c 'class="thread-row'`), after the startup backfill had settled. Criterion 2: `rg -c "function chart\(" bin/explore.html src/slack_dashboard/static/` printed only `src/slack_dashboard/static/chart.js:1`.
 - Browser check (headless `/usr/bin/google-chrome` via playwright): opening the panel drew 4 `figure`s (30 bars each; curve path on the first three, none on the score chart). Setting `base-k` to 40 and `velocity-weight` to 60 changed the volume chart's note from `v / (v + 15)` to `v / (v + 40)`, redrew the score distribution, and the URL carried both; no page errors. NOT VERIFIED: a real mouse drag, and the deployed board.
+
+## Implementation audit fixes
+
+### Design decisions
+- The sweep calls `fetch_threads(min_replies=1, oldest=None)` | `slack/poller.py:_sweep_metadata` | the socket path tracks threads below the channel's `min-replies`, so the channel value hid their follow state from the sweep. 1, not 0: the loop already skips reply-less parents, which carry no follow state. Test `TestSubscribed.test_sweep_reaches_a_tracked_thread_below_min_replies` runs `SlackClient.fetch_threads` and its filter over a mocked web client.
+- A narrows-only knob's slider `hi` is `min(knob.hi, yml)`, and the tick uses that `hi` | `knobs.py:_panel_knob` | `apply_overrides` 422s above the yml, so the slider stops there. Test `test_every_slider_end_is_a_value_the_server_accepts` sends every rendered row's `lo` and `hi` through `apply_overrides` against the panel's config.
+- `copy as yml` always quotes map keys with `JSON.stringify` | `templates/index.html:renderYml` | the bare-key regex left `on`, `123`, `null`, `yes`, `true`, `~` unquoted, and they loaded back as bool, int or None. Test `test_copy_as_yml_loads_back_with_yaml_special_map_names` extracts the page's own `renderYml`, runs it under node, and loads the output with `load_config`. Scalar keys stay bare: they are `KNOBS` names, kebab ASCII.
+- The thread watermark is `max(latest reply ts, oldest)` on an incremental fetch | `slack/poller.py:_fetch_thread` | a root-only response pulled it back to `thread_ts` and the next fetch re-added counted replies (count 2 -> 3, participant U2 1 -> 2). Only the stored watermark changes; `last_activity` still comes from the response. Test `test_root_only_incremental_fetch_never_moves_the_watermark_back`.
+- Doc: API Design says "for a `KNOBS` key"; Performance records the `min_replies=1` sweep and the first-history-page limit.
+
+### Deviations
+- None from the audit's fixes. The watermark compares by `float`, not by string `max` as the rest of `_fetch_thread` does, so it holds across ts strings of different lengths.
+
+### Tradeoffs
+- The renderYml test needs node on the machine running `otto ci` and fails with a named assertion when it is missing, rather than skipping. A skip would hide the check that the exporter's output loads.
+- Pagination for the sweep and reconcile stays deferred (doc Performance) vs building it now: one page is the bound `_reconcile_channel` already lives with.
+
+### Open questions
+- The done-means-live items from the earlier phases are still open: deployed shakedown, marquee republish, release, committed dotfiles yml.

@@ -459,15 +459,17 @@ def _panel_knob(knob: Knob, heat: HeatConfig) -> PanelKnob:
     value = getattr(heat, knob.key)
     if knob.choices:
         return PanelKnob(knob.query_key, knob.label, knob.help, str(value), choices=knob.choices)
+    # A narrows-only knob above the yml's value is a 422, so the slider stops at the yml.
+    hi = min(knob.hi, value) if knob.narrows_only else knob.hi
     return PanelKnob(
         knob.query_key,
         knob.label,
         knob.help,
         _fmt(value),
         _fmt(knob.lo),
-        _fmt(knob.hi),
+        _fmt(hi),
         _fmt(knob.step),
-        _tick(value, knob.lo, knob.hi),
+        _tick(value, knob.lo, hi),
     )
 
 
