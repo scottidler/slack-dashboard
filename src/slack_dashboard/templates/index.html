@@ -1,4 +1,13 @@
 {% extends "base.html" %}
+{% block side %}
+<nav class="rail">
+    <button type="button" id="knob-toggle" class="rail-btn" aria-expanded="false" aria-controls="knob-panel" title="knobs: re-rank the board with your own knob values; nothing is saved">⚙</button>
+</nav>
+<aside id="knob-panel" hidden
+       hx-get="/knobs"
+       hx-trigger="load"
+       hx-swap="innerHTML"></aside>
+{% endblock %}
 {% block content %}
 <div id="conn-status"
      hx-get="/status"
@@ -12,15 +21,8 @@
        class="group-choice{{ ' active' if loop.first }}"
        data-group-by="{{ choice }}">{{ choice }}</a>
     {% endfor %}
-    <span class="group-sep">|</span>
-    <a href="#" id="knob-toggle" class="knob-toggle" aria-expanded="false" title="re-rank the board with your own knob values; nothing is saved">knobs</a>
     <span class="legend" title="strip: posts per working hour over the last 12, newest at the right (height: 1, 2-3, 4-7, 8+; a floor line = none)&#10;Nh: working hours since the last post (the atrophy input)&#10;marks: one slot per state, lit when it applies, dim when not; hover any for its meaning">strip · Nh · marks</span>
 </div>
-<div id="knob-panel" hidden
-     hx-get="/knobs"
-     hx-trigger="load"
-     hx-swap="innerHTML"></div>
-<div id="knob-charts" hidden></div>
 <form id="knob-form" hidden></form>
 <script src="/static/chart.js"></script>
 <div id="knob-error" role="alert"></div>
@@ -36,6 +38,7 @@
      hx-swap="innerHTML">
     <p>Loading threads...</p>
 </div>
+<div id="knob-charts" hidden></div>
 <script>
     window.slackDashGroupBy = window.slackDashGroupBy || "none";
     // Compact (top-N) is the default at rest; the global is re-sent via hx-vals on every
