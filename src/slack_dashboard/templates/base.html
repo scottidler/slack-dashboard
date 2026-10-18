@@ -86,13 +86,15 @@
         .thread-main { flex: 1 1 auto; min-width: 0; position: relative; }
         .row-link { display: block; min-width: 0; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .row-title { margin-left: 0; }
-        /* Stats column: fixed-width cells so the numbers line up down the board; muted so
-           the title stays the loudest thing on the row. Flags are words, left-aligned. */
-        .row-stats { flex: 0 0 auto; display: grid; grid-template-columns: 2.6em 4.4em 6.2em 6.2em 12em; gap: 0.6em; font-size: 0.85em; color: var(--pico-muted-color); font-variant-numeric: tabular-nums; white-space: nowrap; text-align: right; }
-        .row-stats .stat { cursor: help; }
-        .row-stats .dim { opacity: 0.4; }
-        .row-stats .flags { text-align: left; overflow: hidden; text-overflow: ellipsis; }
-        .row-stats .flag { color: var(--pico-color); cursor: help; margin-right: 0.45em; }
+        /* The explorer's row cells, between the channel and the title: the activity strip
+           (monospace blocks, tier-colored, dim floor for an empty hour), the working hours
+           since the last post, and the words (jev topics, then state flags). Fixed widths
+           so the titles still line up. */
+        .row-strip { flex: 0 0 auto; width: 12ch; letter-spacing: 1px; font-size: 0.95em; line-height: 1; font-family: "DejaVu Sans Mono", "JetBrains Mono", ui-monospace, monospace; white-space: nowrap; cursor: help; }
+        .row-strip i { font-style: normal; color: var(--pico-muted-border-color); }
+        .row-age { flex: 0 0 auto; width: 3.6em; text-align: right; font-size: 0.85em; color: var(--pico-muted-color); font-variant-numeric: tabular-nums; white-space: nowrap; cursor: help; }
+        .row-tags { flex: 0 0 auto; width: 11em; font-size: 0.85em; color: var(--pico-muted-color); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .row-tags .tag { cursor: help; margin-right: 0.45em; }
         .row-summary { display: none; position: absolute; top: 100%; left: 0; z-index: 30; min-width: 26em; max-width: 44em; max-height: 24em; overflow-y: auto; margin-top: 0.15em; }
         .thread-main:hover .row-summary { display: block; }
         .summary-hint { font-size: 0.8em; color: var(--pico-muted-color); font-style: italic; }

@@ -116,12 +116,13 @@ startup; there is no hot-reload yet).
 
 ## UI
 
-- **Compact rows** - `Nm|Np  #channel  title  score  Nh  lead  done  flags`, grouped
-  (default by channel). Every trackable thread renders - there is no row cap. The
-  stats column is the numbers that decide the rank (score, working hours since the
-  last post, jev's p(needs a leader) and p(resolved)) and the thread's state as words
-  (`me`, `unanswered`, `new`, `vip`, `spiking`, `heated`, `revived`), each with a
-  tooltip. No glyphs to memorize.
+- **Compact rows** - `Nm|Np  #channel  strip  Nh  words  title`, grouped (default by
+  channel). Every trackable thread renders - there is no row cap. The strip is one
+  block per working hour over the last 12 (newest right; height = posts in that hour:
+  1, 2-3, 4-7, 8+; a dim floor for none), `Nh` is working hours since the last post,
+  and the words are jev's topics at 60%+ (`social`, `incident`, `leader`, `access`,
+  `resolved`, `non-work`) then the thread's state (`me`, `unanswered`, `new`, `vip`,
+  `spiking`, `heated`, `revived`), each with a tooltip. No glyphs to memorize.
 - **Group by** - `channel | size | velocity | participants`.
 - **Hover** a row for the AI summary; **click** to open the Slack thread.
 - **Dismiss** - the small control on each row; one click, permanent.

@@ -9,7 +9,12 @@ from fastapi.responses import HTMLResponse, Response
 from fastapi.templating import Jinja2Templates
 from markupsafe import Markup
 
-from slack_dashboard.config import AppConfig, HeatConfig, resolve_channel_weight
+from slack_dashboard.config import (
+    AppConfig,
+    HeatConfig,
+    WorkWindowConfig,
+    resolve_channel_weight,
+)
 from slack_dashboard.connection import ConnectionState
 from slack_dashboard.heat import (
     HeatBreakdown,
@@ -24,6 +29,7 @@ from slack_dashboard.llm.provider import LlmProvider
 from slack_dashboard.slack.mrkdwn import strip_mrkdwn
 from slack_dashboard.slack.poller import SlackPoller
 from slack_dashboard.thread import ThreadEntry
+from slack_dashboard.worktime import business_hours_between
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +46,33 @@ _FLAG_HELP: dict[str, str] = {
     "heated": "a contentious back-and-forth or a hostile tone",
     "revived": "an old thread that went quiet and has new activity",
 }
+# Topic words: the jev topics the row shows when p >= _TAG_THRESHOLD (same cut as the
+# explorer's tag column), plus non-work when p(work) falls under _NON_WORK_THRESHOLD.
+_TAG_THRESHOLD = 0.6
+_NON_WORK_THRESHOLD = 0.4
+_TOPIC_HELP: dict[str, str] = {
+    "social": "jev: social or personal, no work content",
+    "incident": "jev: an outage, breakage or degradation being handled",
+    "leader": "jev: needs a manager or director to decide, approve, assign or escalate",
+    "access": "jev: a request for access, permissions, roles or credentials",
+    "resolved": "jev: already answered, fixed or closed",
+    "non-work": "jev: not about work",
+}
+_TAG_HELP: dict[str, str] = {**_TOPIC_HELP, **_FLAG_HELP}
+
+# Activity strip: one block per working hour over the last _STRIP_HOURS, newest at the
+# right; height is the number of posts in that hour (1, 2-3, 4-7, 8+). An empty hour is
+# the dim floor block. Same cells and cuts as the explorer's strip.
+_STRIP_HOURS = 12
+_STRIP_BLOCKS = (
+    "",
+    "\N{LOWER ONE QUARTER BLOCK}",
+    "\N{LOWER HALF BLOCK}",
+    "\N{LOWER THREE QUARTERS BLOCK}",
+    "\N{FULL BLOCK}",
+)
+_STRIP_FLOOR = "\N{LOWER ONE EIGHTH BLOCK}"
+
 # The strip still uses these three glyphs for velocity, damping and the base chip's crown.
 _VIP = "\N{CROWN}"
 _SPIKING = "\N{HIGH VOLTAGE SIGN}"
@@ -95,13 +128,13 @@ class RowView:
     message_count: int
     participant_count: int
     heat_tier: str
-    # The stats column: the score, the atrophy input, the two jev probabilities (None until
-    # rated) and the state flags as words. This replaced the emoji column: the numbers that
-    # decide the rank are on the row, and nothing has to be memorized.
-    score: float
+    # The explorer's row, ported: an activity strip (one level per working hour, 12 hours,
+    # newest right; empty hours are None), working hours since the last post, the jev topic
+    # words at p >= 0.6, and the state flags as words. The score itself stays on the hover
+    # strip: the shape of the activity and the words say why a row is where it is.
+    strip: list[int | None]
     since_last: float
-    p_leader: float | None
-    p_resolved: float | None
+    tags: list[str]
     flags: list[str]
     deep_link: str
     channel_link: str
@@ -222,9 +255,62 @@ def _markdown_filter(text: str) -> Markup:
     return Markup(md.markdown(text))
 
 
-def _pct(p: float | None) -> str:
-    """A probability as a whole percent for the stats column; "?" until jev has rated."""
-    return "?" if p is None else f"{p * 100:.0f}%"
+def _strip_level(count: int) -> int:
+    """Block height for a working hour's post count: 1 -> 1, 2-3 -> 2, 4-7 -> 3, 8+ -> 4."""
+    if count <= 0:
+        return 0
+    if count == 1:
+        return 1
+    if count <= 3:
+        return 2
+    if count <= 7:
+        return 3
+    return 4
+
+
+def _activity_strip(thread: ThreadEntry, work: WorkWindowConfig, now: float) -> list[int | None]:
+    """Posts per working hour over the last ``_STRIP_HOURS``, oldest first, as block levels.
+
+    Each post (the root and every retained reply) lands in the bucket for how many working
+    hours back it was; nights and weekends are skipped, so a strip always spans twelve
+    working hours however many calendar days that is. An hour with no posts is ``None``
+    (the dim floor in the template). Posts more than twelve working hours back fall off the
+    left edge, which is the point: the strip is the thread's recent shape.
+    """
+    buckets = [0] * _STRIP_HOURS
+    stamps = {f"{ts:.6f}" for ts in thread.reply_timestamps}
+    stamps.add(f"{float(thread.thread_ts):.6f}")
+    for key in stamps:
+        back = business_hours_between(float(key), now, work)
+        if back < _STRIP_HOURS:
+            buckets[_STRIP_HOURS - 1 - int(back)] += 1
+    logger.debug(
+        "_activity_strip: channel=%s thread_ts=%s posts=%d buckets=%s",
+        thread.channel_id,
+        thread.thread_ts,
+        len(stamps),
+        buckets,
+    )
+    return [_strip_level(n) if n else None for n in buckets]
+
+
+def _topic_tags(thread: ThreadEntry) -> list[str]:
+    """The jev topic words a row shows: every topic at p >= 0.6, non-work when p(work) < 0.4.
+
+    An unrated thread has no words; the words appear once the rater has run. Order is the
+    explorer's: social, incident, leader, access, resolved, then non-work.
+    """
+    topics = thread.topics
+    if topics is None:
+        return []
+    tags = [
+        q
+        for q in ("social", "incident", "leader", "access", "resolved")
+        if topics.get(q, 0.0) >= _TAG_THRESHOLD
+    ]
+    if "work" in topics and topics["work"] < _NON_WORK_THRESHOLD:
+        tags.append("non-work")
+    return tags
 
 
 def deep_link(workspace: str, channel_id: str, thread_ts: str, team_id: str = "") -> str:
@@ -349,8 +435,7 @@ def _build_row(
     self_user_id: str | None = None,
     below_fold: bool = False,
 ) -> RowView:
-    # One breakdown per row: the same arithmetic path that ranked the thread, read here for
-    # the stats column (score, atrophy input, jev probabilities).
+    # The same arithmetic path that ranked the thread, read here for the atrophy input.
     breakdown = heat_breakdown(thread, config.heat, self_user_id, now)
     return RowView(
         channel_id=thread.channel_id,
@@ -360,10 +445,9 @@ def _build_row(
         message_count=thread.message_count,
         participant_count=len(thread.participants),
         heat_tier=thread.heat_tier,
-        score=breakdown.overall,
+        strip=_activity_strip(thread, config.heat.work_window, now),
         since_last=breakdown.time_since_last,
-        p_leader=breakdown.p_leader,
-        p_resolved=breakdown.p_resolved,
+        tags=_topic_tags(thread),
         flags=_flags(thread, config, now, app_start_at, self_user_id),
         deep_link=deep_link(
             config.workspace, thread.channel_id, thread.thread_ts, config.slack.team_id
@@ -493,8 +577,9 @@ def create_routes(
     if templates is None:
         templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
     templates.env.filters["markdown"] = _markdown_filter
-    templates.env.globals["pct"] = _pct
-    templates.env.globals["FLAG_HELP"] = _FLAG_HELP
+    templates.env.globals["STRIP_BLOCKS"] = _STRIP_BLOCKS
+    templates.env.globals["STRIP_FLOOR"] = _STRIP_FLOOR
+    templates.env.globals["TAG_HELP"] = _TAG_HELP
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request) -> HTMLResponse:

@@ -10,7 +10,7 @@ from slack_dashboard.config import AppConfig, HeatConfig, SlackConfig
 from slack_dashboard.llm.provider import LlmProvider, SummaryResult
 from slack_dashboard.slack.poller import SlackPoller
 from slack_dashboard.thread import ReplyRecord, ThreadEntry
-from slack_dashboard.web import _flags, create_routes
+from slack_dashboard.web import _activity_strip, _flags, _strip_level, _topic_tags, create_routes
 
 # A far-past app_start_at so the storm suppressor window (new_window_minutes * 60)
 # is already expired for all Phase 1 and Phase 3 tests that want the storm suppressor
@@ -1074,35 +1074,93 @@ def test_summarize_topic_chips_show_the_probabilities() -> None:
     assert "votes +36.0" in response.text
 
 
-# --- The stats column (replaced the emoji column) ----------------------------------------
+# --- The explorer's row: activity strip, hours since last, words ----------------------
 
 
-def test_threads_row_renders_the_stats_column(client: TestClient) -> None:
+def _posts_at(thread: ThreadEntry, stamps: list[float]) -> None:
+    thread.replies = [ReplyRecord(ts=ts, author_id="U2", text="x", is_root=False) for ts in stamps]
+
+
+def _work_noon(day: int = 24) -> float:
+    # A Tuesday at 12:00 Pacific (19:00 UTC on 2026-03-24): inside the work window.
+    return datetime(2026, 3, day, 19, 0, 0, tzinfo=UTC).timestamp()
+
+
+def test_activity_strip_buckets_posts_by_working_hour_newest_right() -> None:
+    now = _work_noon()
+    thread = _make_thread()
+    thread.thread_ts = f"{now - 5.5 * 3600:.6f}"  # root at 06:30, 5.5 working hours back
+    _posts_at(thread, [now - 60, now - 120, now - 2.5 * 3600])  # 2 in this hour, 1 two back
+    strip = _activity_strip(thread, _CONFIG.heat.work_window, now)
+    assert len(strip) == 12
+    assert strip[11] == 2  # 2-3 posts
+    assert strip[9] == 1  # one post
+    assert strip[6] == 1  # the root
+    assert [i for i, level in enumerate(strip) if level is None] == [0, 1, 2, 3, 4, 5, 7, 8, 10]
+
+
+def test_activity_strip_levels_follow_the_explorer_cuts() -> None:
+    assert [_strip_level(n) for n in (0, 1, 2, 3, 4, 7, 8, 40)] == [0, 1, 2, 2, 3, 3, 4, 4]
+
+
+def test_activity_strip_skips_nights_and_weekends() -> None:
+    # A post at 09:00 Pacific Monday is 3 working hours before Monday noon, and a post
+    # Friday at 17:00 is 1 (Fri) + 6 (Mon) = 7 working hours back from Monday noon: the
+    # weekend between them counts zero. 2026-03-23 is a Monday.
+    now = _work_noon(23)
+    thread = _make_thread()
+    thread.thread_ts = f"{now - 400 * 86400:.6f}"  # root far off the left edge
+    monday_nine = now - 3 * 3600
+    friday_five = datetime(2026, 3, 21, 0, 0, 0, tzinfo=UTC).timestamp()  # Fri 17:00 PDT
+    _posts_at(thread, [monday_nine, friday_five])
+    strip = _activity_strip(thread, _CONFIG.heat.work_window, now)
+    assert strip[11 - 3] == 1
+    assert strip[11 - 7] == 1
+    assert sum(1 for level in strip if level is not None) == 2
+
+
+def test_activity_strip_drops_posts_older_than_twelve_working_hours() -> None:
+    now = _work_noon()
+    thread = _make_thread()
+    thread.thread_ts = f"{now - 30 * 86400:.6f}"
+    _posts_at(thread, [now - 2 * 86400])  # Sunday noon: 18 working hours back
+    assert _activity_strip(thread, _CONFIG.heat.work_window, now) == [None] * 12
+
+
+def test_topic_tags_are_the_jev_topics_at_sixty_percent() -> None:
+    thread = _make_thread()
+    assert _topic_tags(thread) == []
+    thread.topics = {"work": 0.9, "social": 0.1, "leader": 0.8, "access": 0.6, "resolved": 0.59}
+    assert _topic_tags(thread) == ["leader", "access"]
+    thread.topics = {"work": 0.3, "social": 0.7}
+    assert _topic_tags(thread) == ["social", "non-work"]
+
+
+def test_threads_row_renders_strip_age_and_words(client: TestClient) -> None:
     response = client.get("/threads")
     assert response.status_code == 200
-    assert 'class="row-stats"' in response.text
-    # Unrated: both jev cells read "?" and are dimmed. The score and the atrophy input are
-    # numbers, not glyphs.
-    assert ">lead ?</span>" in response.text
-    assert ">done ?</span>" in response.text
-    assert 'class="stat dim"' in response.text
-    assert "row-emoji" not in response.text
+    row = response.text.split('class="thread-row')[1].split("</div>")[0]
+    assert 'class="row-strip heat-hot"' in row
+    assert row.count("<i>\N{LOWER ONE EIGHTH BLOCK}</i>") == 12  # no posts in the window
+    assert 'class="row-age"' in row
+    assert 'class="row-tags"' in row
+    assert "row-stats" not in row and "row-emoji" not in row and "lead " not in row
 
 
-def test_threads_row_stats_show_jev_percentages_and_flags_as_words() -> None:
+def test_threads_row_shows_topic_words_and_flags_with_tooltips() -> None:
     app = FastAPI()
     poller = _make_mock_poller()
     type(poller).self_user_id = PropertyMock(return_value="U1")
     thread = _make_thread()
-    thread.topics = {"leader": 0.8, "resolved": 0.1}
-    config = AppConfig(heat=HeatConfig(leader_weight=45.0, resolved_drop=1.0))
+    thread.topics = {"work": 0.9, "leader": 0.8, "resolved": 0.1}
     poller.ranked_threads.return_value = [thread]
     poller.threads = {("C123", "1234567890.123456"): thread}
-    create_routes(app, poller, MockLlm(), config)
+    create_routes(app, poller, MockLlm(), _CONFIG)
     response = TestClient(app).get("/threads")
     assert response.status_code == 200
-    assert ">lead 80%</span>" in response.text
-    assert ">done 10%</span>" in response.text
-    assert '<span class="flag" title="you have posted in this thread">me</span>' in response.text
     row = response.text.split('class="thread-row')[1].split("</div>")[0]
+    leader = row.index(">leader</span>")
+    me = row.index(">me</span>")
+    assert leader < me  # topics first, then the state flags
+    assert 'title="you have posted in this thread">me</span>' in row
     assert "\N{BUST IN SILHOUETTE}" not in row

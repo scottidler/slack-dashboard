@@ -30,6 +30,12 @@
             <span class="channel-pop"><span id="chan-{{ sid }}" class="channel-pop-body">&hellip;</span></span>
         </span>
         {% endif %}
+        {# The explorer's row: activity strip (one block per working hour, 12 hours, newest
+           right, dim floor = none), working hours since the last post, then the jev topic
+           words and the state flags. Each word carries its meaning in a tooltip. #}
+        <span class="row-strip heat-{{ row.heat_tier }}" title="posts per working hour over the last 12, newest at the right (height: 1, 2-3, 4-7, 8+)">{% for level in row.strip %}{% if level is none %}<i>{{ STRIP_FLOOR }}</i>{% else %}{{ STRIP_BLOCKS[level] }}{% endif %}{% endfor %}</span>
+        <span class="row-age" title="working hours since the last post: the atrophy input (nights and weekends count zero)">{{ '%.1f' % row.since_last }}h</span>
+        <span class="row-tags">{% for tag in row.tags + row.flags %}<span class="tag" title="{{ TAG_HELP[tag] }}">{{ tag }}</span>{% endfor %}</span>
         {# Summary detail loads/shows only on hovering the title, not the whole row. #}
         <span class="thread-main"
               hx-get="/summarize/{{ row.channel_id }}/{{ row.thread_ts }}"
@@ -40,15 +46,6 @@
                 <span class="row-title heat-{{ row.heat_tier }}">{{ row.display_title }}</span>
             </a>
             <span class="row-summary"><span id="summary-{{ sid }}" class="row-summary-body"><span class="summary-hint">Hover to summarize&hellip;</span></span></span>
-        </span>
-        {# The stats column: what decides the rank, as numbers, plus the state flags as words.
-           Each cell carries its meaning in a tooltip; nothing here needs a legend. #}
-        <span class="row-stats">
-            <span class="stat" title="heat score: the number the rows are sorted by">{{ '%.0f' % row.score }}</span>
-            <span class="stat" title="working hours since the last post: the atrophy input (nights and weekends count zero)">{{ '%.1f' % row.since_last }}h</span>
-            <span class="stat{{ ' dim' if row.p_leader is none }}" title="jev: how likely this thread needs a leader to decide, approve or escalate; feeds the leader vote, the gate and the half-life stretch">lead {{ pct(row.p_leader) }}</span>
-            <span class="stat{{ ' dim' if row.p_resolved is none }}" title="jev: how likely this thread is already answered or fixed; feeds the resolved gate">done {{ pct(row.p_resolved) }}</span>
-            <span class="flags">{% for flag in row.flags %}<span class="flag" title="{{ FLAG_HELP[flag] }}">{{ flag }}</span>{% endfor %}</span>
         </span>
     </div>
     {% endfor %}
