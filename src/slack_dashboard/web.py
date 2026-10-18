@@ -613,8 +613,9 @@ def create_routes(
     @app.get("/knobs", response_class=HTMLResponse)
     async def knobs_panel(request: Request) -> HTMLResponse:
         # The panel shows the yml's values; the browser layers the viewer's overrides on top.
+        people = {uid: await poller.resolve_user(uid) for uid in config.heat.people_weights}
         return templates.TemplateResponse(
-            request, "partials/knobs.html", {"groups": panel_groups(config)}
+            request, "partials/knobs.html", {"groups": panel_groups(config, people)}
         )
 
     @app.get("/knobs/inputs")

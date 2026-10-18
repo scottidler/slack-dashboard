@@ -55,6 +55,7 @@ class SlackPoller:
         self._queue = FetchQueue()
         self._consumer_task: asyncio.Task[None] | None = None
         self._refresh_task: asyncio.Task[None] | None = None
+        self._names_task: asyncio.Task[None] | None = None
         self._worker_semaphore = asyncio.Semaphore(10)
         self._active_workers: set[asyncio.Task[None]] = set()
         self._channel_watermarks: dict[str, str] = {}
@@ -271,9 +272,12 @@ class SlackPoller:
         self._queue.seed_channels(self._channel_map, priority=PRIORITY_BACKFILL)
         self._consumer_task = asyncio.create_task(self._consume_loop())
         self._refresh_task = asyncio.create_task(self._refresh_loop())
+        # The knob panel labels people-weights rows by name; the client resolves one user at
+        # a time, so warm them here rather than stall the first /knobs after a restart.
+        self._names_task = asyncio.create_task(self._warm_people_names())
 
     async def stop(self) -> None:
-        for task in [self._consumer_task, self._refresh_task]:
+        for task in [self._consumer_task, self._refresh_task, self._names_task]:
             if task:
                 task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -580,6 +584,14 @@ class SlackPoller:
         if not user_id:
             return ""
         return await self._slack.resolve_user(user_id)
+
+    async def resolve_user(self, user_id: str) -> str:
+        """Display name for a user id (cached by the client; the id itself on failure)."""
+        return await self._resolve_user(user_id)
+
+    async def _warm_people_names(self) -> None:
+        for user_id in self._config.heat.people_weights:
+            await self._resolve_user(user_id)
 
     def _update_heat(self, entry: ThreadEntry) -> None:
         # Provisional per-entry update on ingest; the authoritative, rank-aware tier is set

@@ -10,7 +10,7 @@ result is a config object that lives for one request.
 
 import json
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -308,9 +308,10 @@ _KNOB_BY_QUERY_KEY: dict[str, Knob] = {k.query_key: k for k in KNOBS}
 
 # The panel's sections, in the order the explorer lays them out; weight maps follow.
 GROUPS = ("size", "time", "burst", "following", "topics", "tiers")
-# A weight-map slider reaches at least this far, wider when the yml already goes past it.
-MAP_WEIGHT_HI = 3.0
-MAP_WEIGHT_STEP = 0.1
+# A weight-map slider reaches at least this far (hi, step), wider when the yml already goes
+# past it. Channel weights are multipliers around 1.0; people weights are volume points, the
+# same unit as participant-weight, so each map gets its own scale.
+MAP_SCALE = {"channel-weights": (3.0, 0.1), "people-weights": (20.0, 1.0)}
 
 
 class OverrideError(ValueError):
@@ -473,39 +474,43 @@ def _panel_knob(knob: Knob, heat: HeatConfig) -> PanelKnob:
     )
 
 
-def _map_group(field: str, weights: dict[str, float], prefix: str) -> PanelGroup:
+def _map_group(field: str, weights: dict[str, float], labels: Mapping[str, str]) -> PanelGroup:
+    top, step = MAP_SCALE[field]
     rows = []
-    for name in sorted(weights):
-        hi = max(MAP_WEIGHT_HI, weights[name])
+    for name in sorted(weights, key=lambda n: (labels.get(n, n).lower(), n)):
+        hi = max(top, weights[name])
         rows.append(
             PanelKnob(
                 f"{PREFIX}{field}.{name}",
-                f"{prefix}{name}",
-                f"{field} entry from the yml; an override replaces it for this view",
+                labels.get(name, name),
+                f"{name}: {field} entry from the yml; an override replaces it for this view",
                 _fmt(weights[name]),
                 "0",
                 _fmt(hi),
-                _fmt(MAP_WEIGHT_STEP),
+                _fmt(step),
                 _tick(weights[name], 0, hi),
             )
         )
     return PanelGroup(field, tuple(rows))
 
 
-def panel_groups(config: AppConfig) -> list[PanelGroup]:
+def panel_groups(config: AppConfig, people: Mapping[str, str] | None = None) -> list[PanelGroup]:
     """Every knob the panel shows, grouped, with the yml's value; the two weight maps last.
 
     Rendered from ``KNOBS`` and the yml only, never from a request: the panel shows what the
     yml says, and the viewer's overrides ride on top of it in the browser. The topic group is
     dimmed when ``topics.api-key`` is empty, since no thread carries a probability then.
+    ``people`` maps a people-weights user id to the name its row shows (the id is the
+    fallback and stays in the tooltip and the query key).
     """
     groups = []
     for name in GROUPS:
         knobs = tuple(_panel_knob(k, config.heat) for k in KNOBS if k.group == name)
         dimmed = "no rater configured" if name == "topics" and not config.topics.api_key else ""
         groups.append(PanelGroup(name, knobs, dimmed))
-    groups.append(_map_group("channel-weights", config.heat.channel_weights, "#"))
-    groups.append(_map_group("people-weights", config.heat.people_weights, ""))
+    channels = {name: f"#{name}" for name in config.heat.channel_weights}
+    groups.append(_map_group("channel-weights", config.heat.channel_weights, channels))
+    groups.append(_map_group("people-weights", config.heat.people_weights, people or {}))
     return [g for g in groups if g.knobs]
 
 

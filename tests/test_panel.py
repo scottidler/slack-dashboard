@@ -5,7 +5,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -30,9 +30,14 @@ def _config(api_key: str = "") -> AppConfig:
     )
 
 
+_NAMES = {"U0AAA": "Ada Lovelace"}
+
+
 def _client(config: AppConfig) -> TestClient:
     app = FastAPI()
-    web_mod.create_routes(app, MagicMock(), MagicMock(spec=LlmProvider), config)
+    poller = MagicMock()
+    poller.resolve_user = AsyncMock(side_effect=lambda uid: _NAMES.get(uid, uid))
+    web_mod.create_routes(app, poller, MagicMock(spec=LlmProvider), config)
     return TestClient(app)
 
 
@@ -65,6 +70,26 @@ def test_each_row_carries_the_yml_value() -> None:
     assert rows["heat.atrophy-curve"]["yml"] == "hyperbolic"
     assert rows["heat.channel-weights.sre-internal"]["yml"] == "2"
     assert rows["heat.people-weights.U0AAA"]["yml"] == "1.5"
+
+
+def test_people_rows_show_the_name_on_their_own_scale() -> None:
+    html = _client(_config()).get("/knobs").text
+    row = re.search(
+        r'<div class="knob" data-knob="heat\.people-weights\.U0AAA".*?</div>\s*</div>', html, re.S
+    )
+    assert row is not None
+    assert ">Ada Lovelace</label>" in row.group(0)
+    assert 'title="U0AAA: people-weights entry' in row.group(0)
+    # People weights are volume points (participant-weight's unit), not channel multipliers.
+    assert 'max="20" step="1"' in row.group(0)
+    channel = re.search(
+        r'<div class="knob" data-knob="heat\.channel-weights\.sre-internal".*?</div>\s*</div>',
+        html,
+        re.S,
+    )
+    assert channel is not None
+    assert ">#sre-internal</label>" in channel.group(0)
+    assert 'max="3" step="0.1"' in channel.group(0)
 
 
 def test_yml_value_is_the_tick_and_the_choice_is_preselected() -> None:
