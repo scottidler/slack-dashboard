@@ -452,7 +452,7 @@ def test_topic_keys_load_in_kebab_case(tmp_path: Path) -> None:
             "leader-gate-floor": 0.3,
             "resolved-drop": 1.0,
         },
-        "topics": {"api-key": "ts-set", "model": "jev-1.13.0"},
+        "topics": {"api-key": "ts-set", "model": "jev-1.14.0"},
     }
     config = load_config(write_config(tmp_path, data))
     assert config.heat.atrophy_curve == "hyperbolic"
@@ -460,7 +460,7 @@ def test_topic_keys_load_in_kebab_case(tmp_path: Path) -> None:
     assert config.heat.leader_gate_floor == 0.3
     assert config.heat.resolved_drop == 1.0
     assert config.topics.api_key == "ts-set"
-    assert config.topics.model == "jev-1.13.0"
+    assert config.topics.model == "jev-1.14.0"
     assert config.topics.endpoint.startswith("https://api.typesafe.ai/")
 
 

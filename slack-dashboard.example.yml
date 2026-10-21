@@ -213,7 +213,7 @@ llm:
 # the probabilities with no key here fails at boot; a ${VAR} that is unset fails at boot.
 topics:
   api-key: ${TYPESAFE_API_KEY}
-  model: jev-1.13.0
+  model: jev-1.14.0
 
 server:
   host: 0.0.0.0

@@ -98,7 +98,7 @@ commented starting point.
 | `heat.leader-gate-floor` | `1.0` | Gate `floor + (1 - floor) * p(leader)`; `1.0` is off. Tuned: `0.3`. |
 | `heat.resolved-drop` | `0.0` | Gate `1 - resolved-drop * p(resolved)`. Tuned: `1.0`. |
 | `topics.api-key` | `""` | jev (TypeSafe) key. Empty = no topic rating; required when any topic knob is on. |
-| `topics.model` | `jev-1.13.0` | Pinned jev model; an answer from any other model is rejected. |
+| `topics.model` | `jev-1.14.0` | Pinned jev model; an answer from any other model is rejected. |
 | `heat.tier-method` | `relative` | `relative` (rank-aware top-N) or `absolute` (raw score thresholds). |
 | `heat.tier-hot-count` | `3` | Relative mode: number of top threads painted hot. |
 | `heat.tier-warm-count` | `10` | Relative mode: number of next threads painted warm. |

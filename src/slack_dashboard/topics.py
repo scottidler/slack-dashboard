@@ -26,7 +26,7 @@ from slack_dashboard.thread import ThreadEntry
 logger = logging.getLogger(__name__)
 
 ENDPOINT = "https://api.typesafe.ai/v1/systemone"
-MODEL = "jev-1.13.0"
+MODEL = "jev-1.14.0"
 MAX_REPLIES = 12
 MAX_POST_CHARS = 400
 MAX_STATE_CHARS = 4000

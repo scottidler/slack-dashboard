@@ -373,7 +373,7 @@ class TopicsConfig(_KebabModel):
     """
 
     api_key: str = ""
-    model: str = "jev-1.13.0"
+    model: str = "jev-1.14.0"
     endpoint: str = "https://api.typesafe.ai/v1/systemone"
 
 
