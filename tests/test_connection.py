@@ -50,6 +50,24 @@ def test_pending_survives_polls_while_disconnected() -> None:
     assert state.observe(True) is True
 
 
+def test_poll_seen_drop_arms_reconcile_without_on_close() -> None:
+    # slack_sdk's "session seems to be already closed" reconnect never fires on_close
+    # (2026-10-16 21:11). The poll seeing connected -> disconnected must arm reconcile alone.
+    state = ConnectionState(socket_enabled=True, connected=True)
+    assert state.observe(False) is False
+    assert state.reconcile_pending is True
+    assert state.observe(True) is True
+    assert state.reconcile_pending is False
+
+
+def test_steady_disconnected_polls_reconcile_once() -> None:
+    state = ConnectionState(socket_enabled=True, connected=True)
+    state.observe(False)
+    state.observe(False)
+    assert state.observe(True) is True
+    assert state.observe(True) is False
+
+
 def test_mark_disconnected_sets_status() -> None:
     state = ConnectionState(socket_enabled=True, connected=True)
     state.mark_disconnected()

@@ -14,12 +14,14 @@ class ConnectionState:
     When it drops, the banner warns that the view may be missing recent activity; on
     reconnect the poller reconciles the gap.
 
-    The disconnect edge (``mark_disconnected``, fired from slack_sdk's on_close listener)
-    and the reconnect edge (``observe``, fired from the is_connected() poll) compose through
-    ``reconcile_pending``. Because the on_close edge sets the flag, a disconnect+reconnect
-    that happens entirely between two polls is still caught: the next ``observe(True)`` sees
-    the pending flag and triggers a reconcile. Without this, a sub-poll reconnect would
-    silently skip catch-up.
+    Two disconnect edges arm ``reconcile_pending``: ``mark_disconnected`` (slack_sdk's
+    on_close listener, which fires only on a WebSocket CLOSE frame) and a connected ->
+    disconnected transition seen by ``observe`` (the is_connected() poll, which catches the
+    drops slack_sdk reconnects from without calling on_close). The reconnect edge
+    (``observe`` seeing connected again) consumes the flag. Because the on_close edge sets
+    the flag, a disconnect+reconnect that happens entirely between two polls is still
+    caught: the next ``observe(True)`` sees the pending flag and triggers a reconcile.
+    Without this, a sub-poll reconnect would silently skip catch-up.
     """
 
     socket_enabled: bool = False
@@ -45,6 +47,11 @@ class ConnectionState:
         last successful reconcile. Clears the pending flag when it fires so reconcile runs
         once per disconnect, not once per poll.
         """
+        if self.connected and not connected:
+            # slack_sdk's "session seems to be already closed" path reconnects without
+            # firing on_close, so the poll's own drop edge must arm the reconcile too.
+            logger.info("Socket Mode drop seen by poll; reconcile armed")
+            self.reconcile_pending = True
         self.connected = connected
         if connected and self.reconcile_pending:
             self.reconcile_pending = False
