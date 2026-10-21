@@ -1218,3 +1218,25 @@ def test_threads_row_lights_the_topic_and_flag_slots() -> None:
         'title="Slack follows this thread for you (started, commented, mentioned, or followed)">'
         "\N{WAVING HAND SIGN}</span>"
     ) in row
+
+
+def test_row_cells_before_the_title_are_fixed_width() -> None:
+    # Every cell left of the title must have a fixed width, or a wider value in one row
+    # (16m|4p vs 4m|2p) shifts every column after it. min-width alone did that (2026-10-20).
+    import re
+    from pathlib import Path
+
+    css = (Path(__file__).parent.parent / "src/slack_dashboard/templates/base.html").read_text()
+    css = re.sub(r"/\*.*?\*/", "", css, flags=re.DOTALL)
+    rules = re.findall(r"([^{}]+)\{([^}]*)\}", css)
+    for selector in (
+        ".row-counts",
+        ".count-replies",
+        ".count-people",
+        ".channel-badge",
+        ".row-strip",
+        ".row-age",
+    ):
+        bodies = [body for sel, body in rules if selector in [s.strip() for s in sel.split(",")]]
+        assert bodies, selector
+        assert any(re.search(r"(?<![-\w])width:", b) for b in bodies), f"{selector} not fixed"

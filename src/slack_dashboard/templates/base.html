@@ -67,9 +67,14 @@
         /* Dismiss is the far-left control, ahead of the counts. */
         .dismiss-btn { flex: 0 0 auto; background: none; border: none; color: var(--pico-muted-color); cursor: pointer; padding: 0 0.15em; width: auto; margin: 0; font-size: 0.85em; }
         .dismiss-btn:hover { color: #e74c3c; }
-        /* Counts: compact column (Nr|Np); tabular figures keep the digits aligned. */
-        .row-counts { flex: 0 0 auto; min-width: 3.4em; font-size: 1em; color: var(--pico-muted-color); white-space: nowrap; font-variant-numeric: tabular-nums; }
-        .count-replies, .count-people { cursor: help; }
+        /* Counts: compact column (Nm|Np). Fixed widths, never min-width: a content-sized
+           cell let "16m|4p" push every column after it 10.5px right of "4m|2p" (measured
+           2026-10-20). Messages right-align and people left-align around the pipe, so the
+           pipe holds one x for up to 999m|99p. */
+        .row-counts { flex: 0 0 auto; width: 5.2em; font-size: 1em; color: var(--pico-muted-color); white-space: nowrap; font-variant-numeric: tabular-nums; }
+        .count-replies, .count-people { display: inline-block; cursor: help; }
+        .count-replies { width: 2.7em; text-align: right; }
+        .count-people { width: 2em; }
         .count-sep { opacity: 0.45; margin: 0 0.1em; }
         /* Channel handle + its hover popover (all of the channel's threads, ranked). */
         /* Center the badge inside its cell via flex so the inline-block+overflow:hidden

@@ -518,6 +518,7 @@ class SlackPoller:
             topics_watermark=existing.topics_watermark if existing else 0,
             subscribed=existing.subscribed if existing else False,
             last_read=existing.last_read if existing else None,
+            mention_names=await self._slack.mention_names([first_message]),
         )
         if root is None:
             logger.warning(

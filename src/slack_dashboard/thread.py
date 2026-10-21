@@ -86,6 +86,9 @@ class ThreadEntry:
     # ``last_read`` is the ts of the last message I read in Slack; None means unknown.
     subscribed: bool = False
     last_read: float | None = None
+    # Display names for the users mentioned in first_message, so the fallback title reads
+    # @jess rather than @user. Filled by the poller's thread fetch.
+    mention_names: dict[str, str] = field(default_factory=dict)
 
     @property
     def reply_timestamps(self) -> list[float]:
@@ -118,7 +121,7 @@ class ThreadEntry:
         """
         if self.title:
             return self.title
-        return " ".join(strip_mrkdwn(self.first_message).split())[:80]
+        return " ".join(strip_mrkdwn(self.first_message, self.mention_names).split())[:80]
 
     def needs_retitle(self, retitle_reply_growth: int, retitle_reply_percent: int) -> bool:
         if self.title is None:

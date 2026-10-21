@@ -30,6 +30,7 @@ class _Llm(LlmProvider):
 def _mock_slack() -> AsyncMock:
     client = AsyncMock(spec=SlackClient)
     client.resolve_user = AsyncMock(side_effect=lambda uid: uid)
+    client.mention_names = AsyncMock(return_value={})
     client.fetch_threads = AsyncMock(
         return_value=[{"ts": _NOW, "text": "prod is down", "reply_count": 2, "thread_ts": _NOW}]
     )
@@ -106,6 +107,7 @@ async def test_reconnect_recovers_reply_missed_during_disconnect() -> None:
 
     mock_slack = AsyncMock(spec=SlackClient)
     mock_slack.resolve_user = AsyncMock(side_effect=lambda uid: uid)
+    mock_slack.mention_names = AsyncMock(return_value={})
     # Phase A - backfill sees the parent + one reply
     mock_slack.fetch_threads = AsyncMock(
         return_value=[{"ts": parent, "thread_ts": parent, "reply_count": 1, "latest_reply": r1}]

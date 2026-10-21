@@ -24,6 +24,7 @@ def _make_mock_slack() -> AsyncMock:
     client.resolve_channels = AsyncMock(return_value={"general": "C111"})
     client.resolve_user = AsyncMock(side_effect=lambda uid: uid)
     client.resolve_self = AsyncMock(return_value="USELF")
+    client.mention_names = AsyncMock(return_value={})
     client.fetch_threads = AsyncMock(
         return_value=[
             {"ts": _NOW, "text": "Root message", "reply_count": 3, "thread_ts": _NOW},
@@ -78,6 +79,20 @@ async def test_participants_keyed_by_user_id_not_display_name() -> None:
     assert set(entry.participants) == {"U1", "U2", "U3"}
     # started_by still uses the resolved display name for attribution, not the id.
     assert entry.started_by == "display-U1"
+
+
+@pytest.mark.asyncio
+async def test_full_fetch_stores_names_for_root_mentions() -> None:
+    # The fallback row title reads these; without them it printed "@user" (2026-10-20).
+    mock_slack = _make_mock_slack()
+    mock_slack.mention_names = AsyncMock(return_value={"U9": "jess"})
+    poller = SlackPoller(mock_slack, AppConfig(channels={"general": "C111"}))
+    await poller._process_item(
+        FetchItem(priority=PRIORITY_BACKFILL, channel_id="C111", channel_name="general")
+    )
+    entry = poller.threads[("C111", _NOW)]
+    assert entry.mention_names == {"U9": "jess"}
+    mock_slack.mention_names.assert_awaited_with(["root"])
 
 
 @pytest.mark.asyncio

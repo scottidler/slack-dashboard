@@ -89,6 +89,21 @@ def test_display_title_fallback_strips_wire_tokens() -> None:
     assert "<" not in entry.display_title
 
 
+def test_display_title_fallback_names_mentioned_users() -> None:
+    entry = ThreadEntry(
+        channel_id="C123",
+        channel_name="sre-sec",
+        thread_ts="1111111111.111111",
+        first_message="thoughts <@U7> or <@U8>?",
+        started_by="keegan",
+        message_count=2,
+        participants={"U1": 1},
+        last_activity=datetime(2026, 3, 24, 12, 0, 0, tzinfo=UTC),
+        mention_names={"U7": "jess", "U8": "tonyo"},
+    )
+    assert entry.display_title == "thoughts @jess or @tonyo?"
+
+
 def test_needs_retitle_no_existing_title() -> None:
     entry = ThreadEntry(
         channel_id="C123",
