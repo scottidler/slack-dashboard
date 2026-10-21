@@ -689,8 +689,10 @@ def create_routes(
         heat_chips = _heat_strip(breakdown, view.config.heat, entry.channel_name)
         # The detail header quotes the thread's first message (its real "title") and
         # attributes it to the author; bullets summarizing the thread render below.
+        # Mentions render as the person's name: a bare "@user" tells the reader nothing.
+        names = await poller.mention_names([entry.first_message, *entry.summary_texts])
         detail = {
-            "quote": strip_mrkdwn(entry.first_message),
+            "quote": strip_mrkdwn(entry.first_message, names),
             "author": entry.started_by,
             "heat": heat_chips,
             "overrides_json": view.overrides_json,
@@ -702,7 +704,7 @@ def create_routes(
         # Tone rides this summary call; feed the full retained exchange
         # (entry.replies via summary_texts), not just the root message, so the
         # tone score reflects the whole conversation.
-        messages = [strip_mrkdwn(t) for t in entry.summary_texts]
+        messages = [strip_mrkdwn(t, names) for t in entry.summary_texts]
         result = await llm.generate_summary(messages)
         if result.bullets is None:
             return templates.TemplateResponse(

@@ -63,7 +63,8 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
     llm = AnthropicProvider(anthropic_client, model=config.llm.model)
 
     async def on_title_needed(entry: ThreadEntry, reply_texts: list[str]) -> None:
-        messages = [strip_mrkdwn(t) for t in reply_texts]
+        names = await slack_client.mention_names(reply_texts)
+        messages = [strip_mrkdwn(t, names) for t in reply_texts]
         title = await llm.generate_title(messages)
         if title:
             entry.title = title
@@ -73,7 +74,8 @@ def _build_app(config: AppConfig) -> tuple[FastAPI, SlackPoller]:
         # Tone is rated on the full retained exchange (entry.replies), not the
         # delta/root that triggered the summary, so a hostile back-and-forth
         # under a polite root is scored on the whole conversation.
-        messages = [strip_mrkdwn(t) for t in entry.summary_texts]
+        names = await slack_client.mention_names(entry.summary_texts)
+        messages = [strip_mrkdwn(t, names) for t in entry.summary_texts]
         result = await llm.generate_summary(messages)
         # A parseable TONE-only response yields bullets="" (falsy but valid):
         # check `is not None` so the tone signal is not dropped with the summary.

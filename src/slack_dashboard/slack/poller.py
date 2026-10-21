@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import logging
+from collections.abc import Iterable
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -588,6 +589,10 @@ class SlackPoller:
     async def resolve_user(self, user_id: str) -> str:
         """Display name for a user id (cached by the client; the id itself on failure)."""
         return await self._resolve_user(user_id)
+
+    async def mention_names(self, texts: Iterable[str]) -> dict[str, str]:
+        """Display names for the users mentioned in ``texts`` (see ``SlackClient``)."""
+        return await self._slack.mention_names(texts)
 
     async def _warm_people_names(self) -> None:
         for user_id in self._config.heat.people_weights:

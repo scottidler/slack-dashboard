@@ -68,6 +68,7 @@ def _make_mock_poller(threads: list[ThreadEntry] | None = None) -> AsyncMock:
     type(poller).app_start_at = PropertyMock(return_value=_FAR_PAST_APP_START)
     # self_user_id is a property on SlackPoller (the listener reads it); the routes do not.
     type(poller).self_user_id = PropertyMock(return_value=None)
+    poller.mention_names.return_value = {}
     if threads is not None:
         poller.eligible.return_value = threads
     return poller
@@ -308,6 +309,20 @@ def test_summarize_cached(client: TestClient) -> None:
     response = client.get("/summarize/C123/1234567890.123456")
     assert response.status_code == 200
     assert "Mock summary" in response.text
+
+
+def test_summarize_quote_names_mentioned_users() -> None:
+    app = FastAPI()
+    poller = _make_mock_poller()
+    thread = _make_thread()
+    thread.first_message = "thoughts <@U7> or <@U8>?"
+    poller.threads = {("C123", "1234567890.123456"): thread}
+    poller.mention_names.return_value = {"U7": "jess", "U8": "tonyo"}
+    create_routes(app, poller, MockLlm(), _CONFIG)
+    response = TestClient(app).get("/summarize/C123/1234567890.123456")
+    assert response.status_code == 200
+    assert "thoughts @jess or @tonyo?" in response.text
+    assert "@user" not in response.text
 
 
 def test_summarize_not_found(client: TestClient) -> None:

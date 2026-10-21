@@ -1,10 +1,13 @@
 import asyncio
 import logging
+from collections.abc import Iterable
 from typing import Any
 
 from slack_sdk.http_retry.async_handler import AsyncRetryHandler
 from slack_sdk.http_retry.builtin_async_handlers import AsyncRateLimitErrorRetryHandler
 from slack_sdk.web.async_client import AsyncWebClient
+
+from slack_dashboard.slack.mrkdwn import mention_ids
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +88,19 @@ class SlackClient:
         except Exception:
             self._user_cache[user_id] = user_id
             return user_id
+
+    async def mention_names(self, texts: Iterable[str]) -> dict[str, str]:
+        """Display name for every user ``<@U...>``-mentioned in ``texts``.
+
+        An id that fails to resolve is left out, so the mention renders as ``@user``
+        rather than as the raw id."""
+        names: dict[str, str] = {}
+        for user_id in dict.fromkeys(uid for text in texts for uid in mention_ids(text)):
+            name = await self.resolve_user(user_id)
+            if name != user_id:
+                names[user_id] = name
+        logger.debug("mention_names: resolved %d mentioned user(s)", len(names))
+        return names
 
     async def resolve_channels(self, names: list[str]) -> dict[str, str]:
         name_set = set(names)

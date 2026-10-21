@@ -1,9 +1,26 @@
-from slack_dashboard.slack.mrkdwn import strip_mrkdwn
+from slack_dashboard.slack.mrkdwn import mention_ids, strip_mrkdwn
 
 
 def test_strip_user_mentions() -> None:
     text = "Hey <@U12345> can you look at this?"
     assert strip_mrkdwn(text) == "Hey @user can you look at this?"
+
+
+def test_user_mentions_render_resolved_names() -> None:
+    # A hover quote reading "thoughts @user or @user?" told the reader nothing (2026-10-20).
+    text = "thoughts <@U1> or <@U2>?"
+    assert strip_mrkdwn(text, {"U1": "jess", "U2": "tonyo"}) == "thoughts @jess or @tonyo?"
+
+
+def test_unresolved_mention_falls_back_to_label_then_user() -> None:
+    text = "<@U1|keegan> and <@U2>"
+    assert strip_mrkdwn(text, {}) == "@keegan and @user"
+    assert strip_mrkdwn(text, {"U1": "keegan.r"}) == "@keegan.r and @user"
+
+
+def test_mention_ids_in_order_deduped() -> None:
+    assert mention_ids("<@U2> <@U1|x> <@U2> <!subteam^S1>") == ["U2", "U1"]
+    assert mention_ids("") == []
 
 
 def test_strip_channel_links() -> None:

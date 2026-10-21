@@ -198,3 +198,22 @@ async def test_resolve_self_none_when_user_id_absent() -> None:
     client_mock.auth_test = AsyncMock(return_value=_mock_response({"ok": True}))
     client = SlackClient(client_mock)
     assert await client.resolve_self() is None
+
+
+@pytest.mark.asyncio
+async def test_mention_names_resolves_each_id_once_and_drops_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(asyncio, "sleep", AsyncMock(return_value=None))
+
+    def users_info(user: str) -> MagicMock:
+        if user == "UBAD":
+            raise RuntimeError("user_not_found")
+        return _mock_response({"user": {"profile": {"display_name": f"name-{user}"}}})
+
+    slack = AsyncMock()
+    slack.users_info = AsyncMock(side_effect=users_info)
+    client = SlackClient(slack)
+    names = await client.mention_names(["hi <@U1> <@UBAD>", "and <@U1> again"])
+    assert names == {"U1": "name-U1"}
+    assert slack.users_info.await_count == 2
