@@ -1,5 +1,5 @@
 # Local deploy for slack-dashboard. Bring up with the secrets in the environment:
-#   eval "$(manifest age decrypt ~/repos/scottidler/keep/.secrets)" && docker compose up -d --build
+#   eval "$(manifest -C ~/repos/scottidler/keep/manifest.yml secrets env)" && docker compose up -d --build
 #
 # The five secrets are passed through from that shell (no values are stored here).
 # Config is bind-mounted read-only from ~/.config; mutable state (observed.db,

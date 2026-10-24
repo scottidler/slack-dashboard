@@ -71,7 +71,7 @@ age`. keep stores the Anthropic key as `ESCOTE_ANTHROPIC_API_KEY` and the jev ke
 secret is empty or an unresolved `${VAR}`:
 
 ```bash
-eval "$(manifest age decrypt ~/repos/scottidler/keep/.secrets)"
+eval "$(manifest -C ~/repos/scottidler/keep/manifest.yml secrets env)"
 ANTHROPIC_API_KEY="$ESCOTE_ANTHROPIC_API_KEY" TYPESAFE_API_KEY="$ESCOTE_TYPESAFE_API_KEY" uv run slack-dashboard   # serves on server.host:server.port (currently 0.0.0.0:8889)
 ```
 
